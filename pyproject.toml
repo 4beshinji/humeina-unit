@@ -1,0 +1,48 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "voisona-yomiage"
+version = "0.1.0"
+description = "高品質な音声読み上げシステム — NLPパイプラインによる話者識別・シーン判別・感情分析"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "aiohttp>=3.9",
+    "typer>=0.9",
+    "fastapi>=0.110",
+    "uvicorn>=0.27",
+    "pyyaml>=6.0",
+    "pydantic>=2.0",
+    "pydantic-settings>=2.0",
+    "loguru>=0.7",
+    "beautifulsoup4>=4.12",
+    "lxml>=5.0",
+    "feedparser>=6.0",
+    "apscheduler>=3.10",
+    "sounddevice>=0.4",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+mqtt = ["aiomqtt>=2.0"]
+slack = ["slack-sdk>=3.0"]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff>=0.3"]
+
+[project.scripts]
+yomiage = "yomiage.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/yomiage"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

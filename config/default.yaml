@@ -1,0 +1,54 @@
+tts:
+  primary_provider: voisona
+  fallback_provider: voicevox
+  lookahead_chunks: 5
+  max_chunk_chars: 200
+
+voisona:
+  url: ${VOISONA_URL:-http://192.168.1.173:32766}
+  username: ${VOISONA_USERNAME}
+  password: ${VOISONA_PASSWORD}
+  default_voice: nurse-robot-type-t_ja_JP
+  language: ja_JP
+
+voicevox:
+  url: ${VOICEVOX_URL:-http://localhost:50021}
+  default_speaker: 47
+
+ollama:
+  url: ${OLLAMA_URL:-http://localhost:11434}
+  model: ${OLLAMA_MODEL:-qwen3.5:3b}
+  summary_model: ${OLLAMA_SUMMARY_MODEL}
+
+news:
+  daily_schedule: "08:00"
+  poll_interval_minutes: 5
+  urgency_threshold: 0.8
+  foreign_language: translate
+  sources:
+    - nhk_main
+    - bbc_world
+    - guardian_world
+  tts:
+    speed: 1.1
+
+slack:
+  enabled: false
+  channels: []
+  mention_boost: 0.5
+  importance_threshold: 0.6
+
+reader:
+  auto_advance: true
+  bookmark_auto_save: true
+
+batch:
+  output_dir: output
+  default_mode: voisona
+  analysis_window_chars: 3000
+  analysis_window_sentences: 25
+  manifest_save_interval: 10
+  silence_duration: 1.5
+  concat_format: wav
+  cleanup_after_concat: false
+  voisona_vm_mount: ${VOISONA_VM_MOUNT:-Z:}

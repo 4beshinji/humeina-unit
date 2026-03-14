@@ -1,0 +1,33 @@
+providers:
+  voisona:
+    voices:
+      - id: "nurse-robot-type-t_ja_JP"
+        label: "ナースロボ＿タイプT"
+        gender: female
+        age_group: young_adult
+        favorite: true
+  voicevox:
+    voices:
+      - id: 47
+        label: "ナースロボ＿タイプT（ノーマル）"
+        gender: female
+        age_group: young_adult
+        favorite: true
+        default: true
+      - id: 46
+        label: "ナースロボ＿タイプT（楽々）"
+        gender: female
+        age_group: young_adult
+        favorite: false
+      - id: 48
+        label: "ナースロボ＿タイプT（恐怖）"
+        gender: female
+        age_group: young_adult
+        favorite: false
+      - id: 49
+        label: "ナースロボ＿タイプT（内緒話）"
+        gender: female
+        age_group: young_adult
+        favorite: false
+
+favorites_only: true
