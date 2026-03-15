@@ -1,0 +1,138 @@
+voice_name: nurse-robot-type-t_ja_JP
+display_name: ナースロボ＿タイプT
+
+# ボイスバンク固有: スタイルウェイトの要素定義
+style_names:
+- Normal
+- Happy
+- Angry
+- Sad
+- Smol
+
+# 実用パラメータ範囲（tune range で決定）
+ranges:
+  pitch: [-200, 250]
+  huskiness: [-8, 12]
+  alp: [-0.4, 0.5]
+  speed: [0.7, 1.3]
+  intonation: [0.5, 1.5]
+  volume: [-3, 3]
+
+# 8アーキタイプ（性別×年齢）+ ナレーター
+presets:
+  male_child:
+    description: 男児
+    params:
+      pitch: 120
+      huskiness: -3
+      alp: 0.35
+      speed: 1.1
+      intonation: 1.2
+  male_young:
+    description: 若い男性
+    params:
+      pitch: -120
+      huskiness: 3
+      alp: -0.25
+      speed: 0.95
+      intonation: 1.0
+  male_adult:
+    description: 成人男性
+    params:
+      pitch: -160
+      huskiness: 6
+      alp: -0.35
+      speed: 0.9
+      intonation: 0.9
+  male_elder:
+    description: 老年男性
+    params:
+      pitch: -100
+      huskiness: 10
+      alp: -0.2
+      speed: 0.8
+      intonation: 0.8
+  female_child:
+    description: 女児
+    params:
+      pitch: 150
+      huskiness: -5
+      alp: 0.4
+      speed: 1.15
+      intonation: 1.3
+  female_young:
+    description: 若い女性（基本）
+    params:
+      pitch: 0
+      huskiness: 0
+      alp: 0.0
+      speed: 1.0
+      intonation: 1.0
+  female_adult:
+    description: 成人女性
+    params:
+      pitch: -30
+      huskiness: 2
+      alp: -0.1
+      speed: 0.95
+      intonation: 0.9
+  female_elder:
+    description: 老年女性
+    params:
+      pitch: -60
+      huskiness: 8
+      alp: -0.15
+      speed: 0.85
+      intonation: 0.8
+  narrator:
+    description: ナレーター（中性的）
+    params:
+      pitch: 0
+      huskiness: 0
+      alp: 0.0
+      speed: 0.95
+      intonation: 1.0
+
+# 感情マスク（ボイスバンク固有のstyle_weights + パラメータオフセット）
+emotions:
+  neutral:
+    style_weights: [1.0, 0.0, 0.0, 0.0, 0.0]
+  happy:
+    style_weights: [0.3, 0.7, 0.0, 0.0, 0.0]
+    param_offsets:
+      pitch: 20
+      speed: 1.05
+  angry:
+    style_weights: [0.2, 0.0, 0.8, 0.0, 0.0]
+    param_offsets:
+      pitch: -30
+      volume: 1
+      huskiness: 3
+  sad:
+    style_weights: [0.2, 0.0, 0.0, 0.8, 0.0]
+    param_offsets:
+      pitch: -10
+      speed: 0.9
+      volume: -1
+  surprised:
+    style_weights: [0.5, 0.3, 0.0, 0.0, 0.2]
+    param_offsets:
+      pitch: 40
+      speed: 1.1
+  scared:
+    style_weights: [0.3, 0.0, 0.2, 0.5, 0.0]
+    param_offsets:
+      speed: 1.1
+      huskiness: -2
+  gentle:
+    style_weights: [0.4, 0.3, 0.0, 0.0, 0.3]
+    param_offsets:
+      speed: 0.95
+      volume: -1
+
+noise:
+  pitch: 15
+  huskiness: 2
+  alp: 0.05
+  speed: 0.03
+  intonation: 0.05

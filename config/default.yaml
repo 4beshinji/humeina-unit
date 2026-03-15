@@ -52,3 +52,4 @@ batch:
   concat_format: wav
   cleanup_after_concat: false
   voisona_vm_mount: ${VOISONA_VM_MOUNT:-Z:}
+  voice_profile_dir: config/voice_profiles

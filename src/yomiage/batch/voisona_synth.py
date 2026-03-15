@@ -23,11 +23,15 @@ class VoisonaBatchSynthesizer(BatchSynthesizer):
         param_mapper: ParamMapper,
         character_db: CharacterDB | None = None,
         vm_mount: str = "Z:",
+        voice_profile: "VoiceProfile | None" = None,
     ):
+        from ..tools.voice_profile import VoiceProfile
+
         self.provider = VoisonaProvider(config)
         self.param_mapper = param_mapper
         self.character_db = character_db
         self.vm_mount = vm_mount
+        self.voice_profile: VoiceProfile | None = voice_profile
 
     async def synthesize_sentence(
         self, entry: SentenceEntry, output_dir: Path
@@ -102,39 +106,104 @@ class VoisonaBatchSynthesizer(BatchSynthesizer):
         """SentenceEntryからTTSパラメータを構築."""
         params: dict = {}
 
-        # キャラクターベースパラメータ
+        # Determine archetype and character
+        archetype = None
+        char = None
         if entry.speaker and self.character_db:
             char = self.character_db.characters.get(entry.speaker)
             if char and char.base_params:
-                params.update(char.base_params)
-                if char.voice_id:
-                    params["voice_id"] = char.voice_id
-        elif entry.viewpoint_character and self.character_db:
-            char = self.character_db.characters.get(entry.viewpoint_character)
-            if char and char.base_params:
-                # 地の文は控えめにキャラパラメータを適用
-                for k in ("pitch", "huskiness", "alp"):
-                    if k in char.base_params:
-                        params[k] = char.base_params[k] * 0.3
+                archetype = char.base_params.get("_archetype")
 
-        # シーン・感情パラメータ
-        scene_mods = self.param_mapper.scenes.get(entry.scene, {})
-        if scene_mods:
-            params["speed"] = params.get("speed", 1.0) * scene_mods.get("speed", 1.0)
-            params["volume"] = params.get("volume", 0.0) + scene_mods.get("volume", 0.0)
+        # --- VoiceProfile path: use compute_params for full param resolution ---
+        if self.voice_profile and archetype and archetype in self.voice_profile.presets:
+            noise_seed = entry.speaker if entry.speaker else None
+            params = self.voice_profile.compute_params(
+                preset=archetype,
+                emotion=entry.emotion,
+                intensity=entry.intensity,
+                noise_seed=noise_seed,
+            )
+            if char and char.voice_id:
+                params["voice_id"] = char.voice_id
 
-        emotion_style = self.param_mapper.emotion_styles.get(entry.emotion)
-        if emotion_style:
-            intensity = entry.intensity
-            if intensity < 1.0:
-                neutral = self.param_mapper.emotion_styles.get(
-                    "neutral", [1.0, 0.0, 0.0, 0.0, 0.0]
-                )
-                emotion_style = [
-                    n * (1 - intensity) + s * intensity
-                    for n, s in zip(neutral, emotion_style)
-                ]
-            params["style_weights"] = emotion_style
+            # Apply scene modifiers on top
+            scene_mods = self.param_mapper.scenes.get(entry.scene, {})
+            if scene_mods:
+                params["speed"] = params.get("speed", 1.0) * scene_mods.get("speed", 1.0)
+                params["volume"] = params.get("volume", 0.0) + scene_mods.get("volume", 0.0)
+
+        elif entry.speaker and char and char.base_params:
+            # Fallback: legacy path (no VoiceProfile or unknown archetype)
+            bp = {k: v for k, v in char.base_params.items() if not k.startswith("_")}
+            params.update(bp)
+            if char.voice_id:
+                params["voice_id"] = char.voice_id
+
+            scene_mods = self.param_mapper.scenes.get(entry.scene, {})
+            if scene_mods:
+                params["speed"] = params.get("speed", 1.0) * scene_mods.get("speed", 1.0)
+                params["volume"] = params.get("volume", 0.0) + scene_mods.get("volume", 0.0)
+
+            emotion_style = self.param_mapper.emotion_styles.get(entry.emotion)
+            if emotion_style:
+                intensity = entry.intensity
+                if intensity < 1.0:
+                    neutral = self.param_mapper.emotion_styles.get(
+                        "neutral", [1.0, 0.0, 0.0, 0.0, 0.0]
+                    )
+                    emotion_style = [
+                        n * (1 - intensity) + s * intensity
+                        for n, s in zip(neutral, emotion_style)
+                    ]
+                params["style_weights"] = emotion_style
+
+        else:
+            # Narration: viewpoint character with subdued params
+            if entry.viewpoint_character and self.character_db:
+                vp_char = self.character_db.characters.get(entry.viewpoint_character)
+                if vp_char and vp_char.base_params:
+                    vp_archetype = vp_char.base_params.get("_archetype")
+                    if self.voice_profile and vp_archetype and vp_archetype in self.voice_profile.presets:
+                        # Use VoiceProfile narrator preset with subdued character influence
+                        vp_params = self.voice_profile.compute_params(
+                            preset="narrator",
+                            emotion=entry.emotion,
+                            intensity=entry.intensity * 0.5,
+                        )
+                        # Blend in a bit of viewpoint character's pitch/huskiness/alp
+                        char_params = self.voice_profile.compute_params(
+                            preset=vp_archetype, emotion="neutral", intensity=0.0,
+                        )
+                        for k in ("pitch", "huskiness", "alp"):
+                            if k in char_params:
+                                vp_params[k] = vp_params.get(k, 0) * 0.7 + char_params[k] * 0.3
+                        params = vp_params
+                    else:
+                        for k in ("pitch", "huskiness", "alp"):
+                            bp = vp_char.base_params
+                            if k in bp and not k.startswith("_"):
+                                params[k] = bp[k] * 0.3
+
+            # Scene + emotion (fallback/narration)
+            if "speed" not in params or "volume" not in params:
+                scene_mods = self.param_mapper.scenes.get(entry.scene, {})
+                if scene_mods:
+                    params["speed"] = params.get("speed", 1.0) * scene_mods.get("speed", 1.0)
+                    params["volume"] = params.get("volume", 0.0) + scene_mods.get("volume", 0.0)
+
+            if "style_weights" not in params:
+                emotion_style = self.param_mapper.emotion_styles.get(entry.emotion)
+                if emotion_style:
+                    intensity = entry.intensity
+                    if intensity < 1.0:
+                        neutral = self.param_mapper.emotion_styles.get(
+                            "neutral", [1.0, 0.0, 0.0, 0.0, 0.0]
+                        )
+                        emotion_style = [
+                            n * (1 - intensity) + s * intensity
+                            for n, s in zip(neutral, emotion_style)
+                        ]
+                    params["style_weights"] = emotion_style
 
         if entry.tts_params:
             params.update(entry.tts_params)

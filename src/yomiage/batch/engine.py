@@ -49,6 +49,26 @@ class BatchEngine:
         self.analysis_window_chars = batch_cfg.get("analysis_window_chars", 3000)
         self.analysis_window_sentences = batch_cfg.get("analysis_window_sentences", 25)
 
+        # Load VoiceProfile if available
+        self.voice_profile = None
+        if mode == "voisona":
+            self.voice_profile = self._load_voice_profile(batch_cfg)
+
+    def _load_voice_profile(self, batch_cfg: dict):
+        """Load VoiceProfile from configured directory."""
+        from ..tools.voice_profile import VoiceProfile
+
+        profile_dir = Path(batch_cfg.get("voice_profile_dir", "config/voice_profiles"))
+        voice_name = self.config.get("voisona", {}).get(
+            "default_voice", "nurse-robot-type-t_ja_JP"
+        )
+        profile = VoiceProfile.find(voice_name, search_dirs=[profile_dir])
+        if profile:
+            logger.info(f"Loaded voice profile: {profile.display_name}")
+        else:
+            logger.debug(f"No voice profile found for {voice_name}")
+        return profile
+
     def _create_synthesizer(
         self, character_db: CharacterDB | None = None
     ) -> BatchSynthesizer:
@@ -60,6 +80,7 @@ class BatchEngine:
                 param_mapper=self.param_mapper,
                 character_db=character_db,
                 vm_mount=self.vm_mount,
+                voice_profile=self.voice_profile,
             )
         else:
             from .voicevox_synth import VoicevoxBatchSynthesizer
@@ -82,6 +103,7 @@ class BatchEngine:
             ollama=self.ollama,
             analysis_window_chars=self.analysis_window_chars,
             analysis_window_sentences=self.analysis_window_sentences,
+            voice_profile=self.voice_profile,
         )
         return await analyzer.analyze(
             url,

@@ -474,6 +474,162 @@ def batch_status(
         typer.echo(f"Manifest not found for work_id: {work_id}")
 
 
+# --- Tune ---
+
+tune_app = typer.Typer(help="ボイスプロファイル チューニングツール")
+app.add_typer(tune_app, name="tune")
+
+
+def _load_profile(voice_name: str):
+    from .tools.voice_profile import VoiceProfile
+
+    profile = VoiceProfile.find(voice_name)
+    if profile:
+        return profile
+
+    # Not found — create default template
+    typer.echo(f"Profile not found for '{voice_name}', creating default template")
+    profile = VoiceProfile.create_default(voice_name, voice_name)
+    return profile
+
+
+def _profile_path(voice_name: str) -> "Path":
+    """Derive YAML path for a voice profile."""
+    # Strip language suffix for filename
+    stem = voice_name.replace("_ja_JP", "").replace("_", "-")
+    return Path(f"config/voice_profiles/{stem}.yaml")
+
+
+def _create_tuner(config: dict, voice_name: str, text: str | None = None):
+    from .tools.tuner import DEFAULT_TEST_TEXT, create_tuner_from_config
+
+    profile = _load_profile(voice_name)
+    return create_tuner_from_config(
+        config, profile, test_text=text or DEFAULT_TEST_TEXT
+    ), profile
+
+
+@tune_app.command("range")
+def tune_range(
+    voice_name: str = typer.Argument(help="ボイス名 (例: nurse-robot-type-t_ja_JP)"),
+    text: str | None = typer.Option(None, "--text", "-t", help="テスト文"),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """Phase 1: パラメータ実用範囲を探索."""
+    _setup_logging(verbose)
+    config = _load_config()
+
+    async def _run():
+        tuner, profile = _create_tuner(config, voice_name, text)
+        await tuner.explore_range()
+        path = _profile_path(voice_name)
+        profile.save(path)
+        typer.echo(f"Profile saved: {path}")
+
+    asyncio.run(_run())
+
+
+@tune_app.command("preset")
+def tune_preset(
+    voice_name: str = typer.Argument(help="ボイス名"),
+    text: str | None = typer.Option(None, "--text", "-t", help="テスト文"),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """Phase 2: アーキタイププリセット作成."""
+    _setup_logging(verbose)
+    config = _load_config()
+
+    async def _run():
+        tuner, profile = _create_tuner(config, voice_name, text)
+        await tuner.create_preset()
+        path = _profile_path(voice_name)
+        profile.save(path)
+        typer.echo(f"Profile saved: {path}")
+
+    asyncio.run(_run())
+
+
+@tune_app.command("emotion")
+def tune_emotion(
+    voice_name: str = typer.Argument(help="ボイス名"),
+    base: str = typer.Option("female_young", "--base", "-b", help="ベースプリセット"),
+    text: str | None = typer.Option(None, "--text", "-t", help="テスト文"),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """Phase 3: 感情マスク調整."""
+    _setup_logging(verbose)
+    config = _load_config()
+
+    async def _run():
+        tuner, profile = _create_tuner(config, voice_name, text)
+        await tuner.tune_emotion(base_preset=base)
+        path = _profile_path(voice_name)
+        profile.save(path)
+        typer.echo(f"Profile saved: {path}")
+
+    asyncio.run(_run())
+
+
+@tune_app.command("noise")
+def tune_noise(
+    voice_name: str = typer.Argument(help="ボイス名"),
+    base: str = typer.Option("female_young", "--base", "-b", help="ベースプリセット"),
+    text: str | None = typer.Option(None, "--text", "-t", help="テスト文"),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """Phase 4: ノイズ調整."""
+    _setup_logging(verbose)
+    config = _load_config()
+
+    async def _run():
+        tuner, profile = _create_tuner(config, voice_name, text)
+        await tuner.calibrate_noise(base_preset=base)
+        path = _profile_path(voice_name)
+        profile.save(path)
+        typer.echo(f"Profile saved: {path}")
+
+    asyncio.run(_run())
+
+
+@tune_app.command("demo")
+def tune_demo(
+    voice_name: str = typer.Argument(help="ボイス名"),
+    text: str | None = typer.Option(None, "--text", "-t", help="テスト文"),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """Phase 5: 全プリセット × 全感情デモ再生."""
+    _setup_logging(verbose)
+    config = _load_config()
+
+    async def _run():
+        tuner, _profile = _create_tuner(config, voice_name, text)
+        await tuner.demo(text=text)
+
+    asyncio.run(_run())
+
+
+@tune_app.command("test")
+def tune_test(
+    voice_name: str = typer.Argument(help="ボイス名"),
+    preset: str = typer.Argument(help="プリセット名 (例: male_young)"),
+    emotion: str = typer.Option("neutral", "--emotion", "-e", help="感情"),
+    intensity: float = typer.Option(0.7, "--intensity", "-i", help="感情強度 (0.0-1.0)"),
+    text: str | None = typer.Option(None, "--text", "-t", help="テスト文"),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """単発プリセット × 感情テスト."""
+    _setup_logging(verbose)
+    config = _load_config()
+
+    async def _run():
+        tuner, _profile = _create_tuner(config, voice_name, text)
+        await tuner.test_single(
+            preset=preset, emotion=emotion, intensity=intensity, text=text
+        )
+
+    asyncio.run(_run())
+
+
 @batch_app.command("retry")
 def batch_retry(
     work_id: str = typer.Argument(help="作品ID"),

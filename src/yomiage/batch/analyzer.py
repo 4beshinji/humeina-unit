@@ -39,20 +39,19 @@ JSON配列で回答（新規キャラクターのみ）:
 
 CHAR_VOICE_SYSTEM = """\
 あなたはTTSパラメータ設計者です。キャラクターの特徴に基づいて、\
-音声合成パラメータを設計してください。JSON形式で回答してください。"""
+最も近いアーキタイプを選んでください。JSON形式で回答してください。"""
 
 CHAR_VOICE_PROMPT = """\
 キャラクター一覧:
 {characters}
 
-各キャラクターに以下のパラメータを設定してください（VoiSona Talk用）:
-- pitch: -600〜600（低い声:-200〜-100, 高い声:100〜200）
-- huskiness: -20〜20（ハスキー:10〜15, クリア:-5〜-10）
-- alp: -1.0〜1.0（大人っぽい:-0.3, 子供っぽい:0.3）
-- speed: 0.5〜2.0（ゆっくり:0.8〜0.9, 速い:1.1〜1.2）
+各キャラクターに最も近いアーキタイプを選んでください:
+  male_child（男児）, male_young（若い男性）, male_adult（成人男性）, male_elder（老年男性）,
+  female_child（女児）, female_young（若い女性）, female_adult（成人女性）, female_elder（老年女性）,
+  narrator（ナレーター）
 
 JSON配列で回答:
-[{{"name": "キャラ名", "pitch": 0, "huskiness": 0, "alp": 0.0, "speed": 1.0}}]"""
+[{{"name": "キャラ名", "archetype": "female_young"}}]"""
 
 # --- Pass 2 prompts ---
 
@@ -85,13 +84,17 @@ class BatchAnalyzer:
         speaker_extractor: SpeakerExtractor | None = None,
         analysis_window_chars: int = 3000,
         analysis_window_sentences: int = 25,
+        voice_profile: "VoiceProfile | None" = None,
     ):
+        from ..tools.voice_profile import VoiceProfile
+
         self.ollama = ollama
         self.processor = text_processor or TextProcessor()
         self.classifier = classifier or TextClassifier()
         self.speaker_extractor = speaker_extractor or SpeakerExtractor()
         self.window_chars = analysis_window_chars
         self.window_sentences = analysis_window_sentences
+        self.voice_profile: VoiceProfile | None = voice_profile
 
     async def analyze(
         self,
@@ -298,7 +301,9 @@ class BatchAnalyzer:
             pass
 
     async def _generate_voice_params(self, char_db: CharacterDB) -> None:
-        """LLMでキャラクターごとのVoiSonaパラメータを生成."""
+        """LLMでキャラクターごとのアーキタイプを選択し、VoiceProfileからパラメータを割当."""
+        from ..tools.voice_profile import ARCHETYPE_NAMES
+
         chars_desc = []
         for name, char in char_db.characters.items():
             chars_desc.append(
@@ -316,6 +321,9 @@ class BatchAnalyzer:
         if not isinstance(result, list):
             return
 
+        # Track archetype usage for noise differentiation
+        archetype_count: dict[str, int] = {}
+
         for entry in result:
             if not isinstance(entry, dict) or "name" not in entry:
                 continue
@@ -323,14 +331,39 @@ class BatchAnalyzer:
             char = char_db.characters.get(name)
             if not char:
                 continue
-            char.base_params = {
-                k: entry[k]
-                for k in ("pitch", "huskiness", "alp", "speed")
-                if k in entry
-            }
+
+            archetype = entry.get("archetype", "female_young")
+            if archetype not in ARCHETYPE_NAMES:
+                archetype = "female_young"
+
+            if self.voice_profile and archetype in self.voice_profile.presets:
+                # Use VoiceProfile: compute_params with noise for duplicates
+                archetype_count[archetype] = archetype_count.get(archetype, 0) + 1
+                noise_seed = name if archetype_count[archetype] > 1 else None
+                params = self.voice_profile.compute_params(
+                    preset=archetype,
+                    emotion="neutral",
+                    intensity=0.0,
+                    noise_seed=noise_seed,
+                )
+                # Store archetype for downstream reference
+                params.pop("style_weights", None)
+                char.base_params = params
+                char.base_params["_archetype"] = archetype
+            else:
+                # Fallback: use preset params directly from VoiceProfile suggestion
+                from ..tools.voice_profile import VoiceProfile
+
+                fallback = VoiceProfile.create_default(
+                    self.voice_profile.voice_name if self.voice_profile else "",
+                    "",
+                )
+                suggested = fallback.suggest_preset_params(archetype)
+                char.base_params = suggested
+                char.base_params["_archetype"] = archetype
 
         char_db._save()
-        logger.info(f"Voice params generated for {len(result)} characters")
+        logger.info(f"Voice archetypes assigned for {len(result)} characters")
 
     def _map_segments_to_sentences(
         self, sentences: list[str], segments: list
