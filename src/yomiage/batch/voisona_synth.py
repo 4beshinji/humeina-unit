@@ -3,6 +3,7 @@
 import asyncio
 import struct
 from pathlib import Path
+from typing import Any
 
 import aiohttp
 from loguru import logger
@@ -23,15 +24,13 @@ class VoisonaBatchSynthesizer(BatchSynthesizer):
         param_mapper: ParamMapper,
         character_db: CharacterDB | None = None,
         vm_mount: str = "Z:",
-        voice_profile: "VoiceProfile | None" = None,
+        voice_profile: Any = None,
     ):
-        from ..tools.voice_profile import VoiceProfile
-
         self.provider = VoisonaProvider(config)
         self.param_mapper = param_mapper
         self.character_db = character_db
         self.vm_mount = vm_mount
-        self.voice_profile: VoiceProfile | None = voice_profile
+        self.voice_profile = voice_profile
 
     async def synthesize_sentence(
         self, entry: SentenceEntry, output_dir: Path
@@ -163,7 +162,12 @@ class VoisonaBatchSynthesizer(BatchSynthesizer):
                 vp_char = self.character_db.characters.get(entry.viewpoint_character)
                 if vp_char and vp_char.base_params:
                     vp_archetype = vp_char.base_params.get("_archetype")
-                    if self.voice_profile and vp_archetype and vp_archetype in self.voice_profile.presets:
+                    has_profile = (
+                        self.voice_profile
+                        and vp_archetype
+                        and vp_archetype in self.voice_profile.presets
+                    )
+                    if has_profile:
                         # Use VoiceProfile narrator preset with subdued character influence
                         vp_params = self.voice_profile.compute_params(
                             preset="narrator",

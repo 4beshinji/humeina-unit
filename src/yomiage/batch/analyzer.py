@@ -1,6 +1,7 @@
 """Phase A: 2-stage LLM full-text analysis for batch pipeline."""
 
 import hashlib
+from typing import Any
 
 from loguru import logger
 
@@ -47,7 +48,8 @@ CHAR_VOICE_PROMPT = """\
 
 各キャラクターに最も近いアーキタイプを選んでください:
   male_child（男児）, male_young（若い男性）, male_adult（成人男性）, male_elder（老年男性）,
-  female_child（女児）, female_young（若い女性）, female_adult（成人女性）, female_elder（老年女性）,
+  female_child（女児）, female_young（若い女性）, female_adult（成人女性）,
+  female_elder（老年女性）,
   narrator（ナレーター）
 
 JSON配列で回答:
@@ -84,17 +86,15 @@ class BatchAnalyzer:
         speaker_extractor: SpeakerExtractor | None = None,
         analysis_window_chars: int = 3000,
         analysis_window_sentences: int = 25,
-        voice_profile: "VoiceProfile | None" = None,
+        voice_profile: Any = None,
     ):
-        from ..tools.voice_profile import VoiceProfile
-
         self.ollama = ollama
         self.processor = text_processor or TextProcessor()
         self.classifier = classifier or TextClassifier()
         self.speaker_extractor = speaker_extractor or SpeakerExtractor()
         self.window_chars = analysis_window_chars
         self.window_sentences = analysis_window_sentences
-        self.voice_profile: VoiceProfile | None = voice_profile
+        self.voice_profile = voice_profile
 
     async def analyze(
         self,

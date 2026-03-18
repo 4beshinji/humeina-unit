@@ -13,7 +13,6 @@ from __future__ import annotations
 import asyncio
 import random
 import subprocess
-import tempfile
 from pathlib import Path
 from typing import Any
 
