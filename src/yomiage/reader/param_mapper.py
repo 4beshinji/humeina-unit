@@ -15,9 +15,13 @@ class ParamMapper:
     def __init__(self, scene_config: dict | None = None):
         self.scenes = {}
         self.emotion_styles = {}
+        self.voicevox_emotion_styles: dict = {}
+        self.voicepeak_emotion_styles: dict = {}
         if scene_config:
             self.scenes = scene_config.get("scenes", {})
             self.emotion_styles = scene_config.get("emotion_styles", {})
+            self.voicevox_emotion_styles = scene_config.get("voicevox_emotion_styles", {})
+            self.voicepeak_emotion_styles = scene_config.get("voicepeak_emotion_styles", {})
 
     @classmethod
     def from_config_file(cls, path: Path) -> "ParamMapper":

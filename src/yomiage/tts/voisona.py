@@ -51,6 +51,10 @@ class VoisonaProvider(TTSProvider):
         return "voisona"
 
     @property
+    def is_slow(self) -> bool:
+        return True
+
+    @property
     def healthy(self) -> bool:
         return self._healthy
 

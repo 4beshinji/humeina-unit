@@ -104,6 +104,7 @@ class VoisonaBatchSynthesizer(BatchSynthesizer):
     def _build_params(self, entry: SentenceEntry) -> dict:
         """SentenceEntryからTTSパラメータを構築."""
         params: dict = {}
+        voice_profile_handled_emotion = False
 
         # Determine archetype and character
         archetype = None
@@ -113,7 +114,7 @@ class VoisonaBatchSynthesizer(BatchSynthesizer):
             if char and char.base_params:
                 archetype = char.base_params.get("_archetype")
 
-        # --- VoiceProfile path: use compute_params for full param resolution ---
+        # --- VoiceProfile path: compute_params handles preset + emotion + noise ---
         if self.voice_profile and archetype and archetype in self.voice_profile.presets:
             noise_seed = entry.speaker if entry.speaker else None
             params = self.voice_profile.compute_params(
@@ -124,12 +125,7 @@ class VoisonaBatchSynthesizer(BatchSynthesizer):
             )
             if char and char.voice_id:
                 params["voice_id"] = char.voice_id
-
-            # Apply scene modifiers on top
-            scene_mods = self.param_mapper.scenes.get(entry.scene, {})
-            if scene_mods:
-                params["speed"] = params.get("speed", 1.0) * scene_mods.get("speed", 1.0)
-                params["volume"] = params.get("volume", 0.0) + scene_mods.get("volume", 0.0)
+            voice_profile_handled_emotion = True
 
         elif entry.speaker and char and char.base_params:
             # Fallback: legacy path (no VoiceProfile or unknown archetype)
@@ -137,24 +133,6 @@ class VoisonaBatchSynthesizer(BatchSynthesizer):
             params.update(bp)
             if char.voice_id:
                 params["voice_id"] = char.voice_id
-
-            scene_mods = self.param_mapper.scenes.get(entry.scene, {})
-            if scene_mods:
-                params["speed"] = params.get("speed", 1.0) * scene_mods.get("speed", 1.0)
-                params["volume"] = params.get("volume", 0.0) + scene_mods.get("volume", 0.0)
-
-            emotion_style = self.param_mapper.emotion_styles.get(entry.emotion)
-            if emotion_style:
-                intensity = entry.intensity
-                if intensity < 1.0:
-                    neutral = self.param_mapper.emotion_styles.get(
-                        "neutral", [1.0, 0.0, 0.0, 0.0, 0.0]
-                    )
-                    emotion_style = [
-                        n * (1 - intensity) + s * intensity
-                        for n, s in zip(neutral, emotion_style)
-                    ]
-                params["style_weights"] = emotion_style
 
         else:
             # Narration: viewpoint character with subdued params
@@ -174,7 +152,6 @@ class VoisonaBatchSynthesizer(BatchSynthesizer):
                             emotion=entry.emotion,
                             intensity=entry.intensity * 0.5,
                         )
-                        # Blend in a bit of viewpoint character's pitch/huskiness/alp
                         char_params = self.voice_profile.compute_params(
                             preset=vp_archetype, emotion="neutral", intensity=0.0,
                         )
@@ -182,37 +159,47 @@ class VoisonaBatchSynthesizer(BatchSynthesizer):
                             if k in char_params:
                                 vp_params[k] = vp_params.get(k, 0) * 0.7 + char_params[k] * 0.3
                         params = vp_params
+                        voice_profile_handled_emotion = True
                     else:
                         for k in ("pitch", "huskiness", "alp"):
                             bp = vp_char.base_params
                             if k in bp and not k.startswith("_"):
                                 params[k] = bp[k] * 0.3
 
-            # Scene + emotion (fallback/narration)
-            if "speed" not in params or "volume" not in params:
-                scene_mods = self.param_mapper.scenes.get(entry.scene, {})
-                if scene_mods:
-                    params["speed"] = params.get("speed", 1.0) * scene_mods.get("speed", 1.0)
-                    params["volume"] = params.get("volume", 0.0) + scene_mods.get("volume", 0.0)
+        # Always apply scene modifiers
+        self._apply_scene_mods(params, entry.scene)
 
-            if "style_weights" not in params:
-                emotion_style = self.param_mapper.emotion_styles.get(entry.emotion)
-                if emotion_style:
-                    intensity = entry.intensity
-                    if intensity < 1.0:
-                        neutral = self.param_mapper.emotion_styles.get(
-                            "neutral", [1.0, 0.0, 0.0, 0.0, 0.0]
-                        )
-                        emotion_style = [
-                            n * (1 - intensity) + s * intensity
-                            for n, s in zip(neutral, emotion_style)
-                        ]
-                    params["style_weights"] = emotion_style
+        # Apply emotion style only when VoiceProfile didn't handle it
+        if not voice_profile_handled_emotion:
+            self._apply_emotion_style(params, entry.emotion, entry.intensity)
 
         if entry.tts_params:
             params.update(entry.tts_params)
 
         return params
+
+    def _apply_scene_mods(self, params: dict, scene: str) -> None:
+        """シーン修飾子をパラメータに適用."""
+        scene_mods = self.param_mapper.scenes.get(scene, {})
+        if scene_mods:
+            params["speed"] = params.get("speed", 1.0) * scene_mods.get("speed", 1.0)
+            params["volume"] = params.get("volume", 0.0) + scene_mods.get("volume", 0.0)
+
+    def _apply_emotion_style(self, params: dict, emotion: str, intensity: float) -> None:
+        """感情スタイルウェイトをパラメータに適用."""
+        if "style_weights" in params:
+            return
+        emotion_style = self.param_mapper.emotion_styles.get(emotion)
+        if emotion_style:
+            if intensity < 1.0:
+                neutral = self.param_mapper.emotion_styles.get(
+                    "neutral", [1.0, 0.0, 0.0, 0.0, 0.0]
+                )
+                emotion_style = [
+                    n * (1 - intensity) + s * intensity
+                    for n, s in zip(neutral, emotion_style)
+                ]
+            params["style_weights"] = emotion_style
 
 
 def write_silence_wav(

@@ -1,124 +1,76 @@
-"""Interactive voice tuning engine for VoiSona Talk.
+"""Interactive voice tuning engine for VOICEVOX.
 
 Phases:
   1. explore_range  — sweep each parameter to find usable bounds
   2. create_preset  — tune 9 archetype presets (8 gender×age + narrator)
-  3. tune_emotion   — adjust emotion masks (style_weights + param_offsets)
+  3. tune_emotion   — adjust emotion configs (style_id + param_offsets)
   4. calibrate_noise — dial in per-parameter noise magnitudes
   5. demo           — play all preset × emotion combinations
 """
 
 from __future__ import annotations
 
-import asyncio
 import random
 import subprocess
 from pathlib import Path
 from typing import Any
 
-import aiohttp
 from loguru import logger
 
-from ..tts.voisona import API_BASE, POLL_INTERVAL, POLL_TIMEOUT
-from .voice_profile import (
-    ALL_PARAM_KEYS,
-    API_LIMITS,
-    ARCHETYPE_NAMES,
-    BASE_VALUES,
-    EmotionConfig,
-    PresetConfig,
-    VoiceProfile,
+from ..tts.voicevox import VoicevoxProvider
+from .voice_profile import PresetConfig
+from .voicevox_profile import (
+    VOICEVOX_API_LIMITS,
+    VOICEVOX_ARCHETYPE_NAMES,
+    VOICEVOX_BASE_VALUES,
+    VOICEVOX_PARAM_KEYS,
+    VoicevoxEmotionConfig,
+    VoicevoxVoiceProfile,
 )
 
 DEFAULT_TEST_TEXT = "こんにちは、今日はいい天気ですね。"
-DEFAULT_TUNER_DIR = Path("output/_tuner")
+DEFAULT_TUNER_DIR = Path("output/_voicevox_tuner")
 
 
-class VoiceTuner:
-    """Interactive tuning engine — synthesize, play, and collect user feedback."""
+class VoicevoxTuner:
+    """Interactive tuning engine for VOICEVOX — synthesize, play, and collect feedback."""
 
     def __init__(
         self,
-        profile: VoiceProfile,
-        voisona_url: str = "http://192.168.1.173:32766",
-        voisona_user: str = "",
-        voisona_pass: str = "",
-        vm_mount: str = "Z:",
+        profile: VoicevoxVoiceProfile,
+        voicevox_url: str = "http://localhost:50021",
         test_text: str = DEFAULT_TEST_TEXT,
         output_dir: Path = DEFAULT_TUNER_DIR,
     ):
         self.profile = profile
-        self.api_url = f"{voisona_url}{API_BASE}"
-        self.username = voisona_user
-        self.password = voisona_pass
-        self.vm_mount = vm_mount
+        self.provider = VoicevoxProvider({"url": voicevox_url})
         self.test_text = test_text
         self.output_dir = output_dir
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-    def _auth(self) -> aiohttp.BasicAuth:
-        return aiohttp.BasicAuth(self.username, self.password)
-
     # --- Low-level synthesis + playback ---
 
     async def _synthesize(self, text: str, params: dict[str, Any]) -> Path:
-        """Synthesize text with params → WAV file on host."""
+        """Synthesize text with params → WAV file."""
         filename = f"tuner_{id(params) & 0xFFFF:04x}.wav"
         host_path = self.output_dir / filename
-        vm_path = f"{self.vm_mount}\\{self.output_dir.name}\\{filename}"
 
-        body: dict[str, Any] = {
-            "language": "ja_JP",
-            "text": text,
-            "voice_name": self.profile.voice_name,
-            "destination": "file",
-            "output_file_path": vm_path,
-            "force_enqueue": True,
-        }
+        speaker_id = params.get("speaker_id", self.profile.default_style_id)
+        speed = params.get("speed", 1.0)
+        pitch = params.get("pitch", 0.0)
+        intonation = params.get("intonation", 0.0)
+        volume = params.get("volume", 0.0)
 
-        global_params: dict[str, Any] = {}
-        for key in ALL_PARAM_KEYS:
-            if key in params and params[key] is not None:
-                global_params[key] = params[key]
-        if "style_weights" in params:
-            global_params["style_weights"] = params["style_weights"]
-
-        if global_params:
-            body["global_parameters"] = global_params
-
-        # POST synthesis
-        timeout = aiohttp.ClientTimeout(total=30)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post(
-                f"{self.api_url}/speech-syntheses",
-                json=body,
-                auth=self._auth(),
-            ) as resp:
-                if resp.status != 201:
-                    detail = await resp.text()
-                    raise RuntimeError(f"VoiSona POST failed: {resp.status} {detail}")
-                result = await resp.json()
-            uuid = result["uuid"]
-
-            # Poll until done
-            elapsed = 0.0
-            poll_timeout = aiohttp.ClientTimeout(total=POLL_TIMEOUT + 10)
-            async with aiohttp.ClientSession(timeout=poll_timeout) as poll_session:
-                while elapsed < POLL_TIMEOUT:
-                    async with poll_session.get(
-                        f"{self.api_url}/speech-syntheses/{uuid}",
-                        auth=self._auth(),
-                    ) as resp2:
-                        if resp2.status == 200:
-                            status = await resp2.json()
-                            if status.get("state") == "succeeded":
-                                return host_path
-                            if status.get("state") == "failed":
-                                raise RuntimeError(f"Synthesis failed: {status}")
-                    await asyncio.sleep(POLL_INTERVAL)
-                    elapsed += POLL_INTERVAL
-
-        raise RuntimeError(f"Synthesis timed out after {POLL_TIMEOUT}s")
+        await self.provider.synthesize_to_file(
+            text,
+            host_path,
+            speed=speed,
+            voice_id=str(speaker_id),
+            pitch=pitch,
+            intonation=intonation,
+            volume=volume,
+        )
+        return host_path
 
     def _play(self, wav_path: Path) -> None:
         """Play WAV file via aplay."""
@@ -170,7 +122,7 @@ class VoiceTuner:
         params_to_tune: list[str] | None = None,
     ) -> None:
         """Sweep each parameter to find usable boundaries."""
-        params_to_tune = params_to_tune or list(ALL_PARAM_KEYS)
+        params_to_tune = params_to_tune or list(VOICEVOX_PARAM_KEYS)
 
         print("\n=== Phase 1: Range Exploration ===")
         print(f"Test text: {self.test_text}")
@@ -179,21 +131,19 @@ class VoiceTuner:
 
         # Play center first
         print("Playing center (base values)...")
-        await self._synth_and_play(params=dict(BASE_VALUES))
+        await self._synth_and_play(params=dict(VOICEVOX_BASE_VALUES))
         if not self._ask_yn("Center sounds OK?"):
             print("Adjust center in config if needed. Continuing anyway.")
 
         for param in params_to_tune:
-            api_lo, api_hi = API_LIMITS[param]
-            base = BASE_VALUES[param]
+            api_lo, api_hi = VOICEVOX_API_LIMITS[param]
+            base = VOICEVOX_BASE_VALUES[param]
 
             print(f"\n--- Tuning: {param} (API range: {api_lo}~{api_hi}, base: {base}) ---")
 
-            # Sweep toward minimum
             lower_bound = await self._sweep_direction(
                 param, base, api_lo, initial_steps, refine_rounds, "min"
             )
-            # Sweep toward maximum
             upper_bound = await self._sweep_direction(
                 param, base, api_hi, initial_steps, refine_rounds, "max"
             )
@@ -218,10 +168,9 @@ class VoiceTuner:
         first_bad = None
 
         for i in range(1, steps + 1):
-            val = base + step_size * i
-            val = round(val, 3) if isinstance(BASE_VALUES[param], float) else round(val)
+            val = round(base + step_size * i, 4)
 
-            params = dict(BASE_VALUES)
+            params = dict(VOICEVOX_BASE_VALUES)
             params[param] = val
             print(f"  [{direction}] {param}={val}")
             await self._synth_and_play(params=params)
@@ -233,21 +182,14 @@ class VoiceTuner:
                 break
 
         if first_bad is None:
-            # All steps were OK — limit is usable
-            return round(limit, 3) if isinstance(BASE_VALUES[param], float) else round(limit)
+            return round(limit, 4)
 
-        # Binary search between last_ok and first_bad
         for _ in range(refine_rounds):
-            mid = (last_ok + first_bad) / 2
-            if isinstance(BASE_VALUES[param], (int,)):
-                mid = round(mid)
-            else:
-                mid = round(mid, 3)
-
+            mid = round((last_ok + first_bad) / 2, 4)
             if mid == last_ok or mid == first_bad:
                 break
 
-            params = dict(BASE_VALUES)
+            params = dict(VOICEVOX_BASE_VALUES)
             params[param] = mid
             print(f"  [refine] {param}={mid}")
             await self._synth_and_play(params=params)
@@ -269,7 +211,7 @@ class VoiceTuner:
         print("Ranges:", {k: list(v) for k, v in self.profile.ranges.items()})
         print()
 
-        for arch_name in ARCHETYPE_NAMES:
+        for arch_name in VOICEVOX_ARCHETYPE_NAMES:
             desc = self.profile.presets.get(arch_name, PresetConfig(description="")).description
             suggested = self.profile.suggest_preset_params(arch_name)
 
@@ -287,7 +229,6 @@ class VoiceTuner:
                     print("  Skipping (keeping suggested values)")
                     break
                 else:
-                    # Parse adjustments: "pitch -120 speed 0.95"
                     current = self._parse_adjustments(answer, current)
                     print(f"  Updated: {_format_params(current)}")
 
@@ -300,40 +241,41 @@ class VoiceTuner:
         print("\nPreset creation complete.")
 
     # ================================================================
-    # Phase 3: Emotion Mask Tuning
+    # Phase 3: Emotion Tuning
     # ================================================================
 
     async def tune_emotion(self, base_preset: str = "female_young") -> None:
-        """Tune emotion masks on top of a base preset."""
-        print(f"\n=== Phase 3: Emotion Mask Tuning (base: {base_preset}) ===")
+        """Tune emotion configs on top of a base preset."""
+        print(f"\n=== Phase 3: Emotion Tuning (base: {base_preset}) ===")
 
         preset_cfg = self.profile.presets.get(base_preset)
         if not preset_cfg:
             print(f"Preset '{base_preset}' not found, using base values")
-            base_params = dict(BASE_VALUES)
+            base_params = dict(VOICEVOX_BASE_VALUES)
         else:
-            base_params = dict(BASE_VALUES)
+            base_params = dict(VOICEVOX_BASE_VALUES)
             base_params.update(preset_cfg.params)
 
-        # Iterate emotions (skip neutral)
+        # List available styles
+        print(f"\nAvailable styles: {self.profile.styles}")
+
         emotion_names = [e for e in self.profile.emotions if e != "neutral"]
         if not emotion_names:
             emotion_names = ["happy", "angry", "sad", "surprised", "scared", "gentle"]
 
         for emo_name in emotion_names:
             emo_cfg = self.profile.emotions.get(
-                emo_name,
-                EmotionConfig(
-                    style_weights=[1.0] + [0.0] * (len(self.profile.style_names) - 1)
-                ),
+                emo_name, VoicevoxEmotionConfig()
             )
 
             print(f"\n--- Emotion: {emo_name} ---")
-            print(f"  style_weights: {emo_cfg.style_weights}")
+            print(f"  style_id: {emo_cfg.style_id}")
             print(f"  param_offsets: {emo_cfg.param_offsets}")
+            print(f"  intensity_threshold: {emo_cfg.intensity_threshold}")
 
-            current_sw = list(emo_cfg.style_weights)
+            current_style_id = emo_cfg.style_id
             current_offsets = dict(emo_cfg.param_offsets)
+            current_threshold = emo_cfg.intensity_threshold
 
             while True:
                 # Build combined params
@@ -343,39 +285,49 @@ class VoiceTuner:
                         combined[key] = combined.get(key, 1.0) * offset
                     else:
                         combined[key] = combined.get(key, 0) + offset
-                combined["style_weights"] = current_sw
+                if current_style_id is not None:
+                    combined["speaker_id"] = current_style_id
 
                 await self._synth_and_play(params=combined)
-                answer = self._ask("OK? [y/n/weights/offsets]", "y")
+                answer = self._ask("OK? [y/n/style/offsets/threshold]", "y")
 
                 if answer.lower() == "y":
                     break
                 elif answer.lower() == "n":
                     print("  Keeping current values")
                     break
-                elif answer.lower().startswith("w"):
-                    # "weights" or direct values: "0.2 0.8 0 0 0"
-                    raw = self._ask("  New weights (space-separated)")
+                elif answer.lower().startswith("s"):
+                    raw = self._ask(f"  Style ID (available: {self.profile.styles})")
                     try:
-                        current_sw = [float(x) for x in raw.split()]
+                        current_style_id = int(raw)
+                    except ValueError:
+                        # Try to look up by style name
+                        current_style_id = self.profile.styles.get(raw, current_style_id)
+                    print(f"  → style_id: {current_style_id}")
+                elif answer.lower().startswith("t"):
+                    raw = self._ask("  Threshold (0.0-1.0)")
+                    try:
+                        current_threshold = float(raw)
                     except ValueError:
                         print("  Invalid input")
-                    print(f"  → weights: {current_sw}")
+                    print(f"  → threshold: {current_threshold}")
                 elif answer.lower().startswith("o"):
-                    # "offsets" or direct: "pitch 30 speed 1.1"
                     raw = self._ask("  Offsets (key value ...)")
                     current_offsets = self._parse_adjustments(raw, current_offsets)
                     print(f"  → offsets: {current_offsets}")
                 else:
-                    # Try as adjustment to offsets
                     current_offsets = self._parse_adjustments(answer, current_offsets)
                     print(f"  → offsets: {current_offsets}")
 
-            self.profile.emotions[emo_name] = EmotionConfig(
-                style_weights=current_sw,
+            self.profile.emotions[emo_name] = VoicevoxEmotionConfig(
+                style_id=current_style_id,
                 param_offsets=current_offsets,
+                intensity_threshold=current_threshold,
             )
-            print(f"  → Saved: weights={current_sw}, offsets={current_offsets}")
+            print(
+                f"  → Saved: style_id={current_style_id}, "
+                f"offsets={current_offsets}, threshold={current_threshold}"
+            )
 
         print("\nEmotion tuning complete.")
 
@@ -388,7 +340,7 @@ class VoiceTuner:
         print(f"\n=== Phase 4: Noise Calibration (base: {base_preset}) ===")
 
         preset_cfg = self.profile.presets.get(base_preset)
-        base_params = dict(BASE_VALUES)
+        base_params = dict(VOICEVOX_BASE_VALUES)
         if preset_cfg:
             base_params.update(preset_cfg.params)
 
@@ -416,10 +368,10 @@ class VoiceTuner:
             if answer.startswith("g"):
                 break
             elif answer.startswith("too_s"):
-                current_noise = {k: round(v * 1.5, 3) for k, v in current_noise.items()}
+                current_noise = {k: round(v * 1.5, 4) for k, v in current_noise.items()}
                 print(f"  Noise × 1.5 → {current_noise}")
             elif answer.startswith("too_d"):
-                current_noise = {k: round(v * 0.7, 3) for k, v in current_noise.items()}
+                current_noise = {k: round(v * 0.7, 4) for k, v in current_noise.items()}
                 print(f"  Noise × 0.7 → {current_noise}")
             else:
                 print("  Unknown input, keeping current")
@@ -438,7 +390,7 @@ class VoiceTuner:
         text = text or self.test_text
         print("\n=== Phase 5: Demo ===")
 
-        for preset_name, preset_cfg in self.profile.presets.items():
+        for preset_name in self.profile.presets:
             for emo_name in self.profile.emotions:
                 params = self.profile.compute_params(
                     preset=preset_name,
@@ -478,7 +430,7 @@ class VoiceTuner:
     # --- Helpers ---
 
     def _parse_adjustments(self, raw: str, current: dict[str, float]) -> dict[str, float]:
-        """Parse 'pitch -120 speed 0.95' → update dict."""
+        """Parse 'pitch 0.05 speed 0.95' → update dict."""
         tokens = raw.split()
         result = dict(current)
         i = 0
@@ -486,42 +438,35 @@ class VoiceTuner:
             key = tokens[i]
             try:
                 val = float(tokens[i + 1])
-                if key in BASE_VALUES:
+                if key in VOICEVOX_BASE_VALUES:
                     result[key] = val
                 i += 2
             except ValueError:
                 i += 1
         return result
 
+
 def _format_params(params: dict) -> str:
     """Format params dict for display."""
     parts = []
-    for key in ALL_PARAM_KEYS:
+    for key in VOICEVOX_PARAM_KEYS:
         if key in params:
-            v = params[key]
-            if isinstance(v, float) and key not in ("speed", "alp", "intonation"):
-                parts.append(f"{key}={v:.0f}")
-            else:
-                parts.append(f"{key}={v}")
-    if "style_weights" in params:
-        parts.append(f"sw={params['style_weights']}")
+            parts.append(f"{key}={params[key]}")
+    if "speaker_id" in params:
+        parts.append(f"sid={params['speaker_id']}")
     return ", ".join(parts)
 
 
-def create_tuner_from_config(
+def create_voicevox_tuner_from_config(
     config: dict,
-    profile: VoiceProfile,
+    profile: VoicevoxVoiceProfile,
     test_text: str = DEFAULT_TEST_TEXT,
-) -> VoiceTuner:
-    """Create a VoiceTuner from app config dict."""
-    voisona_cfg = config.get("voisona", {})
-    batch_cfg = config.get("batch", {})
+) -> VoicevoxTuner:
+    """Create a VoicevoxTuner from app config dict."""
+    voicevox_cfg = config.get("voicevox", {})
 
-    return VoiceTuner(
+    return VoicevoxTuner(
         profile=profile,
-        voisona_url=voisona_cfg.get("url", "http://192.168.1.173:32766"),
-        voisona_user=voisona_cfg.get("username", ""),
-        voisona_pass=voisona_cfg.get("password", ""),
-        vm_mount=batch_cfg.get("voisona_vm_mount", "Z:"),
+        voicevox_url=voicevox_cfg.get("url", "http://localhost:50021"),
         test_text=test_text,
     )

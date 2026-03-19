@@ -184,7 +184,7 @@ class VoiceProfile:
             if hint >= 0:
                 params[key] = base + hint * (hi - base)
             else:
-                params[key] = base + (-hint) * (base - lo) * -1
+                params[key] = base + hint * (base - lo)
             # Round for readability
             if key in ("alp",):
                 params[key] = round(params[key], 2)

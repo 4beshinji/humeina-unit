@@ -1,0 +1,127 @@
+speaker_name: ナースロボ_タイプT
+display_name: ナースロボ＿タイプT
+
+default_style_id: 47
+
+# スタイル名 → スピーカーID
+styles:
+  normal: 47
+  fun: 46
+  fear: 48
+  whisper: 49
+
+# 実用パラメータ範囲
+ranges:
+  pitch: [-0.1, 0.1]
+  speed: [0.7, 1.5]
+  intonation: [0.5, 1.5]
+  volume: [-5, 5]
+
+# 8アーキタイプ（性別×年齢）+ ナレーター
+presets:
+  male_child:
+    description: 男児
+    params:
+      pitch: 0.04
+      speed: 1.075
+      intonation: 1.0
+      volume: 0.0
+  male_young:
+    description: 若い男性
+    params:
+      pitch: -0.045
+      speed: 0.94
+      intonation: 1.0
+      volume: 0.0
+  male_adult:
+    description: 成人男性
+    params:
+      pitch: -0.06
+      speed: 0.88
+      intonation: 1.0
+      volume: 0.0
+  male_elder:
+    description: 老年男性
+    params:
+      pitch: -0.035
+      speed: 0.76
+      intonation: 1.0
+      volume: 0.0
+  female_child:
+    description: 女児
+    params:
+      pitch: 0.055
+      speed: 1.1
+      intonation: 1.0
+      volume: 0.0
+  female_young:
+    description: 若い女性（基本）
+    params:
+      pitch: 0.0
+      speed: 1.0
+      intonation: 1.0
+      volume: 0.0
+  female_adult:
+    description: 成人女性
+    params:
+      pitch: -0.01
+      speed: 0.94
+      intonation: 1.0
+      volume: 0.0
+  female_elder:
+    description: 老年女性
+    params:
+      pitch: -0.02
+      speed: 0.8
+      intonation: 1.0
+      volume: 0.0
+  narrator:
+    description: ナレーター（中性的）
+    params:
+      pitch: 0.0
+      speed: 0.94
+      intonation: 1.0
+      volume: 0.0
+
+# 感情マスク（スタイルID切替 + パラメータオフセット）
+emotions:
+  neutral:
+    intensity_threshold: 0.5
+  happy:
+    param_offsets:
+      pitch: 0.02
+      speed: 1.05
+    intensity_threshold: 0.5
+  angry:
+    param_offsets:
+      pitch: -0.03
+      speed: 1.1
+      volume: 1.0
+    intensity_threshold: 0.5
+  sad:
+    param_offsets:
+      pitch: -0.01
+      speed: 0.9
+      volume: -1.0
+    intensity_threshold: 0.5
+  surprised:
+    param_offsets:
+      pitch: 0.04
+      speed: 1.1
+    intensity_threshold: 0.5
+  scared:
+    style_id: 48
+    param_offsets:
+      speed: 1.1
+    intensity_threshold: 0.4
+  gentle:
+    style_id: 49
+    param_offsets:
+      speed: 0.95
+      volume: -1.0
+    intensity_threshold: 0.4
+
+noise:
+  pitch: 0.01
+  speed: 0.03
+  intonation: 0.05

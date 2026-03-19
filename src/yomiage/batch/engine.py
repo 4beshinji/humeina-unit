@@ -53,6 +53,10 @@ class BatchEngine:
         self.voice_profile = None
         if mode == "voisona":
             self.voice_profile = self._load_voice_profile(batch_cfg)
+        elif mode == "voicevox":
+            self.voice_profile = self._load_voicevox_profile(batch_cfg)
+        elif mode == "voicepeak":
+            self.voice_profile = self._load_voicepeak_profile(batch_cfg)
 
     def _load_voice_profile(self, batch_cfg: dict):
         """Load VoiceProfile from configured directory."""
@@ -69,6 +73,43 @@ class BatchEngine:
             logger.debug(f"No voice profile found for {voice_name}")
         return profile
 
+    def _load_voicevox_profile(self, batch_cfg: dict):
+        """Load VoicevoxVoiceProfile from configured directory."""
+        from ..tools.voicevox_profile import VoicevoxVoiceProfile
+
+        profile_dir = Path(
+            batch_cfg.get("voicevox_profile_dir", "config/voicevox_profiles")
+        )
+        speaker_name = self.config.get("voicevox", {}).get(
+            "default_speaker_name", "ナースロボ_タイプT"
+        )
+        profile = VoicevoxVoiceProfile.find(speaker_name, search_dirs=[profile_dir])
+        if profile:
+            logger.info(f"Loaded VOICEVOX profile: {profile.display_name}")
+        else:
+            logger.debug(f"No VOICEVOX profile found for {speaker_name}")
+        return profile
+
+    def _load_voicepeak_profile(self, batch_cfg: dict):
+        """Load VoicepeakVoiceProfile from configured directory."""
+        from ..tools.voicepeak_profile import VoicepeakVoiceProfile
+
+        profile_dir = Path(
+            batch_cfg.get("voicepeak_profile_dir", "config/voicepeak_profiles")
+        )
+        narrator_name = self.config.get("voicepeak", {}).get(
+            "default_narrator", ""
+        )
+        if not narrator_name:
+            logger.debug("No default narrator configured for VOICEPEAK")
+            return None
+        profile = VoicepeakVoiceProfile.find(narrator_name, search_dirs=[profile_dir])
+        if profile:
+            logger.info(f"Loaded VOICEPEAK profile: {profile.display_name}")
+        else:
+            logger.debug(f"No VOICEPEAK profile found for {narrator_name}")
+        return profile
+
     def _create_synthesizer(
         self, character_db: CharacterDB | None = None
     ) -> BatchSynthesizer:
@@ -82,6 +123,15 @@ class BatchEngine:
                 vm_mount=self.vm_mount,
                 voice_profile=self.voice_profile,
             )
+        elif self.mode == "voicepeak":
+            from .voicepeak_synth import VoicepeakBatchSynthesizer
+
+            return VoicepeakBatchSynthesizer(
+                config=get_tts_config(self.config, "voicepeak"),
+                param_mapper=self.param_mapper,
+                character_db=character_db,
+                voice_profile=self.voice_profile,
+            )
         else:
             from .voicevox_synth import VoicevoxBatchSynthesizer
 
@@ -89,6 +139,7 @@ class BatchEngine:
                 config=get_tts_config(self.config, "voicevox"),
                 param_mapper=self.param_mapper,
                 character_db=character_db,
+                voice_profile=self.voice_profile,
             )
 
     # --- Phase A ---

@@ -14,6 +14,7 @@ from .nlp.splitter import TextSplitter
 from .reader.engine import ReadingEngine
 from .reader.param_mapper import ParamMapper
 from .tts.manager import TTSManager
+from .tts.voicepeak import VoicepeakProvider
 from .tts.voicevox import VoicevoxProvider
 from .tts.voisona import VoisonaProvider
 
@@ -29,6 +30,7 @@ def _create_engine(config: dict) -> ReadingEngine:
     providers = {
         "voisona": lambda: VoisonaProvider(get_tts_config(config, "voisona")),
         "voicevox": lambda: VoicevoxProvider(get_tts_config(config, "voicevox")),
+        "voicepeak": lambda: VoicepeakProvider(get_tts_config(config, "voicepeak")),
     }
 
     primary = providers.get(primary_name, providers["voicevox"])()

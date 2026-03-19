@@ -1,5 +1,7 @@
 """Phase A: 2-stage LLM full-text analysis for batch pipeline."""
 
+from __future__ import annotations
+
 import hashlib
 from typing import Any
 
@@ -163,9 +165,9 @@ class BatchAnalyzer:
 
         logger.info(f"Discovered {len(char_db.characters)} characters")
 
-        # キャラクターボイスパラメータ生成（VoiSonaモード）
-        if mode == "voisona" and char_db.characters:
-            await self._generate_voice_params(char_db)
+        # キャラクターボイスパラメータ生成
+        if char_db.characters:
+            await self._generate_voice_params(char_db, mode)
 
         # --- Pass 2: 章ごと詳細分析 ---
         logger.info("=== Pass 2: Detailed analysis ===")
@@ -300,7 +302,9 @@ class BatchAnalyzer:
             # エイリアスマージ（将来の拡張用）
             pass
 
-    async def _generate_voice_params(self, char_db: CharacterDB) -> None:
+    async def _generate_voice_params(
+        self, char_db: CharacterDB, mode: str = "voisona"
+    ) -> None:
         """LLMでキャラクターごとのアーキタイプを選択し、VoiceProfileからパラメータを割当."""
         from ..tools.voice_profile import ARCHETYPE_NAMES
 
@@ -336,34 +340,106 @@ class BatchAnalyzer:
             if archetype not in ARCHETYPE_NAMES:
                 archetype = "female_young"
 
-            if self.voice_profile and archetype in self.voice_profile.presets:
-                # Use VoiceProfile: compute_params with noise for duplicates
-                archetype_count[archetype] = archetype_count.get(archetype, 0) + 1
-                noise_seed = name if archetype_count[archetype] > 1 else None
-                params = self.voice_profile.compute_params(
-                    preset=archetype,
-                    emotion="neutral",
-                    intensity=0.0,
-                    noise_seed=noise_seed,
+            if mode == "voicevox":
+                self._assign_voicevox_params(
+                    char, archetype, name, archetype_count
                 )
-                # Store archetype for downstream reference
-                params.pop("style_weights", None)
-                char.base_params = params
-                char.base_params["_archetype"] = archetype
+            elif mode == "voicepeak":
+                self._assign_voicepeak_params(
+                    char, archetype, name, archetype_count
+                )
             else:
-                # Fallback: use preset params directly from VoiceProfile suggestion
-                from ..tools.voice_profile import VoiceProfile
-
-                fallback = VoiceProfile.create_default(
-                    self.voice_profile.voice_name if self.voice_profile else "",
-                    "",
+                self._assign_voisona_params(
+                    char, archetype, name, archetype_count
                 )
-                suggested = fallback.suggest_preset_params(archetype)
-                char.base_params = suggested
-                char.base_params["_archetype"] = archetype
 
         char_db._save()
         logger.info(f"Voice archetypes assigned for {len(result)} characters")
+
+    def _assign_voisona_params(
+        self,
+        char: Any,
+        archetype: str,
+        name: str,
+        archetype_count: dict[str, int],
+    ) -> None:
+        """VoiSona用パラメータ割当."""
+        if self.voice_profile and archetype in self.voice_profile.presets:
+            archetype_count[archetype] = archetype_count.get(archetype, 0) + 1
+            noise_seed = name if archetype_count[archetype] > 1 else None
+            params = self.voice_profile.compute_params(
+                preset=archetype,
+                emotion="neutral",
+                intensity=0.0,
+                noise_seed=noise_seed,
+            )
+            params.pop("style_weights", None)
+            char.base_params = params
+            char.base_params["_archetype"] = archetype
+        else:
+            from ..tools.voice_profile import VoiceProfile
+
+            fallback = VoiceProfile.create_default(
+                self.voice_profile.voice_name if self.voice_profile else "",
+                "",
+            )
+            suggested = fallback.suggest_preset_params(archetype)
+            char.base_params = suggested
+            char.base_params["_archetype"] = archetype
+
+    def _assign_voicevox_params(
+        self,
+        char: Any,
+        archetype: str,
+        name: str,
+        archetype_count: dict[str, int],
+    ) -> None:
+        """VOICEVOX用パラメータ割当."""
+        if self.voice_profile and archetype in self.voice_profile.presets:
+            archetype_count[archetype] = archetype_count.get(archetype, 0) + 1
+            noise_seed = name if archetype_count[archetype] > 1 else None
+            params = self.voice_profile.compute_params(
+                preset=archetype,
+                emotion="neutral",
+                intensity=0.0,
+                noise_seed=noise_seed,
+            )
+            char.base_params = params
+            char.base_params["_archetype"] = archetype
+        else:
+            from ..tools.voicevox_profile import VoicevoxVoiceProfile
+
+            fallback = VoicevoxVoiceProfile.create_default()
+            suggested = fallback.suggest_preset_params(archetype)
+            char.base_params = suggested
+            char.base_params["_archetype"] = archetype
+
+    def _assign_voicepeak_params(
+        self,
+        char: Any,
+        archetype: str,
+        name: str,
+        archetype_count: dict[str, int],
+    ) -> None:
+        """VOICEPEAK用パラメータ割当."""
+        if self.voice_profile and archetype in self.voice_profile.presets:
+            archetype_count[archetype] = archetype_count.get(archetype, 0) + 1
+            noise_seed = name if archetype_count[archetype] > 1 else None
+            params = self.voice_profile.compute_params(
+                preset=archetype,
+                emotion="neutral",
+                intensity=0.0,
+                noise_seed=noise_seed,
+            )
+            char.base_params = params
+            char.base_params["_archetype"] = archetype
+        else:
+            from ..tools.voicepeak_profile import VoicepeakVoiceProfile
+
+            fallback = VoicepeakVoiceProfile.create_default()
+            suggested = fallback.suggest_preset_params(archetype)
+            char.base_params = suggested
+            char.base_params["_archetype"] = archetype
 
     def _map_segments_to_sentences(
         self, sentences: list[str], segments: list

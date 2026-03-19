@@ -15,6 +15,12 @@ voicevox:
   url: ${VOICEVOX_URL:-http://localhost:50021}
   default_speaker: 47
 
+voicepeak:
+  path: voicepeak
+  default_narrator: ""
+  max_chars: 140
+  pitch_scale: 300
+
 ollama:
   url: ${OLLAMA_URL:-http://localhost:11434}
   model: ${OLLAMA_MODEL:-qwen3.5:3b}

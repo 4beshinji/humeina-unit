@@ -7,7 +7,6 @@ from loguru import logger
 
 from .base import AudioResult, TTSParams, TTSProvider
 from .playback import play_wav
-from .voisona import VoisonaProvider
 
 
 class TTSManager:
@@ -126,32 +125,62 @@ class TTSManager:
             return self.fallback
         return self.primary
 
-    def _is_voisona(self) -> bool:
-        return isinstance(self._select_provider(), VoisonaProvider)
+    def _is_slow_provider(self) -> bool:
+        return self._select_provider().is_slow
 
     async def _synth_loop(self) -> None:
-        if self._is_voisona():
-            await self._synth_loop_voisona()
+        if self._is_slow_provider():
+            await self._synth_loop_pipelined()
         else:
             await self._synth_loop_default()
 
     async def _synth_loop_default(self) -> None:
-        """VOICEVOX等: 1つずつ合成してaudio_queueに入れる."""
-        while not self._stop_event.is_set():
-            item = await self._queue.get()
-            if item is None:
-                await self._audio_queue.put(None)
-                break
-            text, params = item
-            try:
-                result = await self._do_synthesize(text, params)
-                await self._audio_queue.put(result)
-            except Exception as e:
-                logger.error(f"Synthesis failed: {e}")
-                await self._audio_queue.put(AudioResult(audio_data=b"", duration=0.0))
+        """VOICEVOX等: lookahead数のプリフェッチで合成してaudio_queueに入れる.
 
-    async def _synth_loop_voisona(self) -> None:
-        """VoiSona: パイプライン合成。
+        VOICEVOX is fast (local Docker), so we prefetch up to `lookahead`
+        items concurrently to keep the audio_queue populated.
+        """
+        pending: list[asyncio.Task] = []
+
+        while not self._stop_event.is_set():
+            # Fill up to lookahead pending tasks
+            while len(pending) < self.lookahead:
+                try:
+                    item = self._queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                if item is None:
+                    # Sentinel: wait for pending, then exit
+                    for task in pending:
+                        result = await task
+                        await self._audio_queue.put(result)
+                    await self._audio_queue.put(None)
+                    return
+                text, params = item
+                pending.append(asyncio.create_task(self._safe_synthesize(text, params)))
+
+            if not pending:
+                # Nothing in queue yet, wait for next item
+                item = await self._queue.get()
+                if item is None:
+                    await self._audio_queue.put(None)
+                    return
+                text, params = item
+                pending.append(asyncio.create_task(self._safe_synthesize(text, params)))
+
+            # Wait for the first (oldest) task to complete — preserves order
+            result = await pending.pop(0)
+            await self._audio_queue.put(result)
+
+    async def _safe_synthesize(self, text: str, params: TTSParams) -> AudioResult:
+        try:
+            return await self._do_synthesize(text, params)
+        except Exception as e:
+            logger.error(f"Synthesis failed: {e}")
+            return AudioResult(audio_data=b"", duration=0.0)
+
+    async def _synth_loop_pipelined(self) -> None:
+        """低速プロバイダー用パイプライン合成。
 
         チャンクNの再生中にチャンクN+1の合成を開始し、
         再生が途切れないようにする。順序はこちら側で厳密に管理。

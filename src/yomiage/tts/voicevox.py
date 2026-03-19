@@ -1,5 +1,7 @@
 """VOICEVOX TTS Provider — Docker-based Japanese speech synthesis."""
 
+from pathlib import Path
+
 import aiohttp
 from loguru import logger
 
@@ -23,6 +25,7 @@ class VoicevoxProvider(TTSProvider):
         self.pitch_scale = config.get("pitch_scale", 0.0)
         self.intonation_scale = config.get("intonation_scale", 1.0)
         self.default_speaker = config.get("default_speaker", 47)
+        self._voices_cache: list[dict] | None = None
 
         speakers = config.get("speakers", {})
         if speakers:
@@ -77,6 +80,19 @@ class VoicevoxProvider(TTSProvider):
         logger.debug(f"VOICEVOX synthesized: speaker={speaker_id}, speed={effective_speed}")
         return AudioResult(audio_data=audio_data, format="wav", sample_rate=24000)
 
+    async def synthesize_to_file(
+        self,
+        text: str,
+        output_path: str | Path,
+        voice: str = "neutral",
+        speed: float = 1.0,
+        **params,
+    ) -> AudioResult:
+        """Synthesize and write WAV directly to file."""
+        result = await self.synthesize(text, voice=voice, speed=speed, **params)
+        Path(output_path).write_bytes(result.audio_data)
+        return result
+
     async def is_available(self) -> bool:
         try:
             async with aiohttp.ClientSession(
@@ -87,7 +103,9 @@ class VoicevoxProvider(TTSProvider):
         except Exception:
             return False
 
-    async def list_voices(self) -> list[dict]:
+    async def list_voices(self, use_cache: bool = True) -> list[dict]:
+        if use_cache and self._voices_cache is not None:
+            return self._voices_cache
         try:
             async with aiohttp.ClientSession(
                 timeout=aiohttp.ClientTimeout(total=5)
@@ -104,6 +122,7 @@ class VoicevoxProvider(TTSProvider):
                                         "name": f"{speaker['name']}（{style['name']}）",
                                     }
                                 )
+                        self._voices_cache = voices
                         return voices
                     return []
         except Exception:

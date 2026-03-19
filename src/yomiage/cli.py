@@ -34,6 +34,7 @@ def _load_config() -> dict:
 def _create_tts_manager(config: dict, provider_override: str | None = None):
     from .config import get_tts_config
     from .tts.manager import TTSManager
+    from .tts.voicepeak import VoicepeakProvider
     from .tts.voicevox import VoicevoxProvider
     from .tts.voisona import VoisonaProvider
 
@@ -45,6 +46,7 @@ def _create_tts_manager(config: dict, provider_override: str | None = None):
     providers = {
         "voisona": lambda: VoisonaProvider(get_tts_config(config, "voisona")),
         "voicevox": lambda: VoicevoxProvider(get_tts_config(config, "voicevox")),
+        "voicepeak": lambda: VoicepeakProvider(get_tts_config(config, "voicepeak")),
     }
 
     primary = providers.get(primary_name, providers["voicevox"])()
@@ -355,7 +357,7 @@ def _create_batch_engine(
 @batch_app.command("analyze")
 def batch_analyze(
     url: str = typer.Argument(help="小説のURL"),
-    mode: str = typer.Option("voisona", "--mode", "-m", help="voisona / voicevox"),
+    mode: str = typer.Option("voisona", "--mode", "-m", help="voisona / voicevox / voicepeak"),
     chapters: str | None = typer.Option(None, "--chapters", help="チャプター範囲 (例: 1-5)"),
     output: str = typer.Option("output", "--output", "-o", help="出力ディレクトリ"),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
@@ -380,7 +382,7 @@ def batch_analyze(
 @batch_app.command("synthesize")
 def batch_synthesize(
     work_id: str = typer.Argument(help="作品ID (manifest.jsonのwork_id)"),
-    mode: str = typer.Option("voisona", "--mode", "-m", help="voisona / voicevox"),
+    mode: str = typer.Option("voisona", "--mode", "-m", help="voisona / voicevox / voicepeak"),
     output: str = typer.Option("output", "--output", "-o", help="出力ディレクトリ"),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
@@ -424,7 +426,7 @@ def batch_concat(
 @batch_app.command("run")
 def batch_run(
     url: str = typer.Argument(help="小説のURL"),
-    mode: str = typer.Option("voisona", "--mode", "-m", help="voisona / voicevox"),
+    mode: str = typer.Option("voisona", "--mode", "-m", help="voisona / voicevox / voicepeak"),
     chapters: str | None = typer.Option(None, "--chapters", help="チャプター範囲 (例: 1-5)"),
     output: str = typer.Option("output", "--output", "-o", help="出力ディレクトリ"),
     fmt: str = typer.Option("wav", "--format", "-f", help="wav / mp3 / flac"),
@@ -630,10 +632,167 @@ def tune_test(
     asyncio.run(_run())
 
 
+# --- VOICEPEAK Tune ---
+
+voicepeak_tune_app = typer.Typer(help="VOICEPEAK ボイスプロファイル チューニングツール")
+app.add_typer(voicepeak_tune_app, name="vp-tune")
+
+
+def _load_voicepeak_profile(narrator_name: str):
+    from .tools.voicepeak_profile import VoicepeakVoiceProfile
+
+    profile = VoicepeakVoiceProfile.find(narrator_name)
+    if profile:
+        return profile
+
+    typer.echo(f"Profile not found for '{narrator_name}', creating default template")
+    profile = VoicepeakVoiceProfile.create_default(narrator_name, narrator_name)
+    return profile
+
+
+def _voicepeak_profile_path(narrator_name: str) -> "Path":
+    """Derive YAML path for a voicepeak profile."""
+    stem = narrator_name.replace(" ", "-").lower()
+    return Path(f"config/voicepeak_profiles/{stem}.yaml")
+
+
+def _create_voicepeak_tuner(config: dict, narrator_name: str, text: str | None = None):
+    from .tools.voicepeak_tuner import (
+        DEFAULT_TEST_TEXT,
+        create_voicepeak_tuner_from_config,
+    )
+
+    profile = _load_voicepeak_profile(narrator_name)
+    return create_voicepeak_tuner_from_config(
+        config, profile, test_text=text or DEFAULT_TEST_TEXT
+    ), profile
+
+
+@voicepeak_tune_app.command("range")
+def vp_tune_range(
+    narrator_name: str = typer.Argument(help="ナレーター名"),
+    text: str | None = typer.Option(None, "--text", "-t", help="テスト文"),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """Phase 1: パラメータ実用範囲を探索."""
+    _setup_logging(verbose)
+    config = _load_config()
+
+    async def _run():
+        tuner, profile = _create_voicepeak_tuner(config, narrator_name, text)
+        await tuner.explore_range()
+        path = _voicepeak_profile_path(narrator_name)
+        profile.save(path)
+        typer.echo(f"Profile saved: {path}")
+
+    asyncio.run(_run())
+
+
+@voicepeak_tune_app.command("preset")
+def vp_tune_preset(
+    narrator_name: str = typer.Argument(help="ナレーター名"),
+    text: str | None = typer.Option(None, "--text", "-t", help="テスト文"),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """Phase 2: アーキタイププリセット作成."""
+    _setup_logging(verbose)
+    config = _load_config()
+
+    async def _run():
+        tuner, profile = _create_voicepeak_tuner(config, narrator_name, text)
+        await tuner.create_preset()
+        path = _voicepeak_profile_path(narrator_name)
+        profile.save(path)
+        typer.echo(f"Profile saved: {path}")
+
+    asyncio.run(_run())
+
+
+@voicepeak_tune_app.command("emotion")
+def vp_tune_emotion(
+    narrator_name: str = typer.Argument(help="ナレーター名"),
+    base: str = typer.Option("female_young", "--base", "-b", help="ベースプリセット"),
+    text: str | None = typer.Option(None, "--text", "-t", help="テスト文"),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """Phase 3: 感情パラメータ調整."""
+    _setup_logging(verbose)
+    config = _load_config()
+
+    async def _run():
+        tuner, profile = _create_voicepeak_tuner(config, narrator_name, text)
+        await tuner.tune_emotion(base_preset=base)
+        path = _voicepeak_profile_path(narrator_name)
+        profile.save(path)
+        typer.echo(f"Profile saved: {path}")
+
+    asyncio.run(_run())
+
+
+@voicepeak_tune_app.command("noise")
+def vp_tune_noise(
+    narrator_name: str = typer.Argument(help="ナレーター名"),
+    base: str = typer.Option("female_young", "--base", "-b", help="ベースプリセット"),
+    text: str | None = typer.Option(None, "--text", "-t", help="テスト文"),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """Phase 4: ノイズ調整."""
+    _setup_logging(verbose)
+    config = _load_config()
+
+    async def _run():
+        tuner, profile = _create_voicepeak_tuner(config, narrator_name, text)
+        await tuner.calibrate_noise(base_preset=base)
+        path = _voicepeak_profile_path(narrator_name)
+        profile.save(path)
+        typer.echo(f"Profile saved: {path}")
+
+    asyncio.run(_run())
+
+
+@voicepeak_tune_app.command("demo")
+def vp_tune_demo(
+    narrator_name: str = typer.Argument(help="ナレーター名"),
+    text: str | None = typer.Option(None, "--text", "-t", help="テスト文"),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """Phase 5: 全プリセット × 全感情デモ再生."""
+    _setup_logging(verbose)
+    config = _load_config()
+
+    async def _run():
+        tuner, _profile = _create_voicepeak_tuner(config, narrator_name, text)
+        await tuner.demo(text=text)
+
+    asyncio.run(_run())
+
+
+@voicepeak_tune_app.command("test")
+def vp_tune_test(
+    narrator_name: str = typer.Argument(help="ナレーター名"),
+    preset: str = typer.Argument(help="プリセット名 (例: male_young)"),
+    emotion: str = typer.Option("neutral", "--emotion", "-e", help="感情"),
+    intensity: float = typer.Option(0.7, "--intensity", "-i", help="感情強度 (0.0-1.0)"),
+    text: str | None = typer.Option(None, "--text", "-t", help="テスト文"),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """単発プリセット × 感情テスト."""
+    _setup_logging(verbose)
+    config = _load_config()
+
+    async def _run():
+        tuner, _profile = _create_voicepeak_tuner(config, narrator_name, text)
+        await tuner.test_single(
+            preset=preset, emotion=emotion, intensity=intensity, text=text
+        )
+
+    asyncio.run(_run())
+
+
 @batch_app.command("retry")
 def batch_retry(
     work_id: str = typer.Argument(help="作品ID"),
-    mode: str = typer.Option("voisona", "--mode", "-m", help="voisona / voicevox"),
+    mode: str = typer.Option("voisona", "--mode", "-m", help="voisona / voicevox / voicepeak"),
     output: str = typer.Option("output", "--output", "-o", help="出力ディレクトリ"),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:

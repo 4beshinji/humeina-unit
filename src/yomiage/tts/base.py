@@ -40,6 +40,11 @@ class TTSProvider(ABC):
     def healthy(self) -> bool:
         return True
 
+    @property
+    def is_slow(self) -> bool:
+        """低速プロバイダーはパイプライン合成戦略を使用."""
+        return False
+
     @abstractmethod
     async def synthesize(
         self, text: str, voice: str = "neutral", speed: float = 1.0, **params
