@@ -33,6 +33,7 @@ class SentenceEntry:
     viewpoint_character: str | None = None
     tts_params: dict | None = None
     audio_file: str | None = None  # "0001.wav"
+    duration: float | None = None  # WAV duration in seconds
     status: str = "pending"  # pending/synthesized/failed
 
 

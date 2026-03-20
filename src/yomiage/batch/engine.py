@@ -258,14 +258,73 @@ class BatchEngine:
 
         return concatenator.concat_chapters_then_full(manifest, self.output_dir)
 
+    # --- Phase D ---
+
+    def video(self, work_id: str) -> Path | None:
+        """Phase D: 動画生成."""
+        from ..video.composer import VideoComposer
+        from ..video.config import VideoConfig
+
+        manifest = BatchManifest.load(self.output_dir, work_id)
+        work_dir = manifest.output_dir(self.output_dir)
+
+        video_cfg = VideoConfig.from_dict(self.config.get("video", {}))
+        composer = VideoComposer(video_cfg, work_dir)
+        return composer.compose_all(manifest)
+
+    def subtitle(
+        self, work_id: str, fmt: str = "ass"
+    ) -> dict[int, Path]:
+        """字幕ファイル生成."""
+        from ..video.config import VideoConfig
+        from ..video.subtitle import SubtitleGenerator
+        from ..video.timeline import TimelineBuilder
+
+        manifest = BatchManifest.load(self.output_dir, work_id)
+        work_dir = manifest.output_dir(self.output_dir)
+
+        video_cfg = VideoConfig.from_dict(self.config.get("video", {}))
+        builder = TimelineBuilder(manifest, work_dir)
+        sub_gen = SubtitleGenerator(video_cfg)
+
+        timelines = builder.build_all()
+        outputs: dict[int, Path] = {}
+
+        sub_dir = work_dir / "video"
+        sub_dir.mkdir(parents=True, exist_ok=True)
+
+        for ch_index, events in sorted(timelines.items()):
+            ch_title = ""
+            for ch in manifest.chapters:
+                if ch.index == ch_index:
+                    ch_title = ch.title
+                    break
+
+            out_name = f"chapter_{ch_index + 1:03d}.{fmt}"
+            out_path = sub_dir / out_name
+
+            if fmt == "srt":
+                sub_gen.generate_srt(events, out_path)
+            else:
+                sub_gen.generate_ass(
+                    events, out_path,
+                    title=f"{manifest.work_title} - {ch_title}",
+                )
+            outputs[ch_index] = out_path
+
+        # durationをmanifestに書き戻し
+        manifest.save(self.output_dir)
+        return outputs
+
     # --- Full pipeline ---
 
     async def run(
         self,
         url: str,
         chapter_range: tuple[int, int] | None = None,
+        video: bool = False,
     ) -> Path | None:
-        """A + B + C フルパイプライン."""
+        """A + B + C (+ D) フルパイプライン."""
         # Phase A
         logger.info("=== Phase A: Analysis ===")
         manifest = await self.analyze(url, chapter_range)
@@ -276,7 +335,16 @@ class BatchEngine:
 
         # Phase C
         logger.info("=== Phase C: Concatenation ===")
-        return self.concat(manifest.work_id)
+        audio_output = self.concat(manifest.work_id)
+
+        # Phase D (optional)
+        if video:
+            logger.info("=== Phase D: Video Generation ===")
+            video_output = self.video(manifest.work_id)
+            if video_output:
+                return video_output
+
+        return audio_output
 
     # --- Status ---
 

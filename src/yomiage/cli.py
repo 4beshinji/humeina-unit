@@ -431,21 +431,62 @@ def batch_run(
     output: str = typer.Option("output", "--output", "-o", help="出力ディレクトリ"),
     fmt: str = typer.Option("wav", "--format", "-f", help="wav / mp3 / flac"),
     cleanup: bool = typer.Option(False, "--cleanup", help="結合後に個別ファイル削除"),
+    video: bool = typer.Option(False, "--video", help="動画も生成"),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
-    """A + B + C フルパイプライン."""
+    """A + B + C (+ D) フルパイプライン."""
     _setup_logging(verbose)
     config = _load_config()
 
     async def _run():
         engine = _create_batch_engine(config, mode, output, fmt, cleanup)
-        result = await engine.run(url, chapter_range=_parse_chapters(chapters))
+        result = await engine.run(
+            url, chapter_range=_parse_chapters(chapters), video=video
+        )
         if result:
             typer.echo(f"Output: {result}")
         else:
             typer.echo("Pipeline completed but no output generated")
 
     asyncio.run(_run())
+
+
+@batch_app.command("subtitle")
+def batch_subtitle(
+    work_id: str = typer.Argument(help="作品ID"),
+    fmt: str = typer.Option("ass", "--format", "-f", help="ass / srt"),
+    output: str = typer.Option("output", "--output", "-o", help="出力ディレクトリ"),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """字幕ファイル生成."""
+    _setup_logging(verbose)
+    config = _load_config()
+
+    engine = _create_batch_engine(config, output=output)
+    results = engine.subtitle(work_id, fmt=fmt)
+    if results:
+        for ch_index, path in sorted(results.items()):
+            typer.echo(f"  Chapter {ch_index + 1}: {path}")
+    else:
+        typer.echo("No subtitle files generated")
+
+
+@batch_app.command("video")
+def batch_video(
+    work_id: str = typer.Argument(help="作品ID"),
+    output: str = typer.Option("output", "--output", "-o", help="出力ディレクトリ"),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """Phase D: 動画生成."""
+    _setup_logging(verbose)
+    config = _load_config()
+
+    engine = _create_batch_engine(config, output=output)
+    result = engine.video(work_id)
+    if result:
+        typer.echo(f"Video: {result}")
+    else:
+        typer.echo("No video generated")
 
 
 @batch_app.command("status")

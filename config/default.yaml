@@ -48,6 +48,36 @@ reader:
   auto_advance: true
   bookmark_auto_save: true
 
+video:
+  enabled: false
+  resolution: [1920, 1080]
+  fps: 24
+  codec: libx264
+  crf: 23
+  preset: medium
+  subtitle:
+    font_size: 48
+    font_name: "Noto Sans JP"
+    outline_size: 3
+    margin_bottom: 60
+    max_chars_per_line: 20
+    speaker_colors:
+      _narrator: "#FFFFFF"
+      _dialogue: "#FFFF00"
+      _thought: "#87CEEB"
+  background:
+    transition: fade
+    transition_duration: 1.0
+    scene_colors:
+      daily: "#2C3E50"
+      battle: "#8B0000"
+      romance: "#FF69B4"
+      tense: "#1C1C1C"
+      comedy: "#FFD700"
+      sad: "#4A4A8A"
+      horror: "#0D0D0D"
+  assets_dir: assets
+
 batch:
   output_dir: output
   default_mode: voisona
