@@ -432,6 +432,7 @@ def batch_run(
     fmt: str = typer.Option("wav", "--format", "-f", help="wav / mp3 / flac"),
     cleanup: bool = typer.Option(False, "--cleanup", help="結合後に個別ファイル削除"),
     video: bool = typer.Option(False, "--video", help="動画も生成"),
+    style: str = typer.Option("subtitle", "--style", "-s", help="subtitle / portrait"),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
     """A + B + C (+ D) フルパイプライン."""
@@ -441,7 +442,8 @@ def batch_run(
     async def _run():
         engine = _create_batch_engine(config, mode, output, fmt, cleanup)
         result = await engine.run(
-            url, chapter_range=_parse_chapters(chapters), video=video
+            url, chapter_range=_parse_chapters(chapters),
+            video=video, style=style,
         )
         if result:
             typer.echo(f"Output: {result}")
@@ -474,6 +476,7 @@ def batch_subtitle(
 @batch_app.command("video")
 def batch_video(
     work_id: str = typer.Argument(help="作品ID"),
+    style: str = typer.Option("subtitle", "--style", "-s", help="subtitle / portrait"),
     output: str = typer.Option("output", "--output", "-o", help="出力ディレクトリ"),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
@@ -482,7 +485,7 @@ def batch_video(
     config = _load_config()
 
     engine = _create_batch_engine(config, output=output)
-    result = engine.video(work_id)
+    result = engine.video(work_id, style=style)
     if result:
         typer.echo(f"Video: {result}")
     else:

@@ -260,7 +260,9 @@ class BatchEngine:
 
     # --- Phase D ---
 
-    def video(self, work_id: str) -> Path | None:
+    def video(
+        self, work_id: str, style: str | None = None
+    ) -> Path | None:
         """Phase D: 動画生成."""
         from ..video.composer import VideoComposer
         from ..video.config import VideoConfig
@@ -269,6 +271,8 @@ class BatchEngine:
         work_dir = manifest.output_dir(self.output_dir)
 
         video_cfg = VideoConfig.from_dict(self.config.get("video", {}))
+        if style:
+            video_cfg.style = style
         composer = VideoComposer(video_cfg, work_dir)
         return composer.compose_all(manifest)
 
@@ -309,6 +313,7 @@ class BatchEngine:
                 sub_gen.generate_ass(
                     events, out_path,
                     title=f"{manifest.work_title} - {ch_title}",
+                    chapter_title=ch_title,
                 )
             outputs[ch_index] = out_path
 
@@ -323,6 +328,7 @@ class BatchEngine:
         url: str,
         chapter_range: tuple[int, int] | None = None,
         video: bool = False,
+        style: str | None = None,
     ) -> Path | None:
         """A + B + C (+ D) フルパイプライン."""
         # Phase A
@@ -340,7 +346,7 @@ class BatchEngine:
         # Phase D (optional)
         if video:
             logger.info("=== Phase D: Video Generation ===")
-            video_output = self.video(manifest.work_id)
+            video_output = self.video(manifest.work_id, style=style)
             if video_output:
                 return video_output
 

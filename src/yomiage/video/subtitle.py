@@ -119,10 +119,12 @@ class SubtitleGenerator:
         events: list[TimelineEvent],
         output: Path,
         title: str = "",
+        chapter_title: str = "",
     ) -> Path:
         """ASS字幕ファイルを生成."""
         width, height = self.config.resolution
         sc = self.sub_config
+        chapter_title_size = int(sc.font_size * 1.5)
 
         # ASS header
         lines: list[str] = [
@@ -163,11 +165,29 @@ class SubtitleGenerator:
                 f"2,20,20,{sc.margin_bottom},1"
             )
 
+        # チャプタータイトルスタイル（中央配置、大きめフォント、フェードアウト）
+        lines.append(
+            f"Style: ChapterTitle,{sc.font_name},{chapter_title_size},"
+            f"&H00FFFFFF,&H000000FF,&H00000000,&H80000000,"
+            f"1,0,0,0,100,100,0,0,1,{sc.outline_size + 1},2,"
+            f"5,20,20,20,1"  # Alignment=5 (center-center)
+        )
+
         lines.extend(["", "[Events]"])
         lines.append(
             "Format: Layer, Start, End, Style, Name, "
             "MarginL, MarginR, MarginV, Effect, Text"
         )
+
+        # チャプタータイトルオーバーレイ（冒頭3秒、フェードアウト）
+        if chapter_title:
+            ct_end = min(3.0, events[-1].end_time if events else 3.0)
+            lines.append(
+                f"Dialogue: 1,"
+                f"{_format_ass_time(0.0)},{_format_ass_time(ct_end)},"
+                f"ChapterTitle,,0,0,0,,"
+                f"{{\\fad(0,1000)}}{chapter_title}"
+            )
 
         # イベント生成
         for event in events:
