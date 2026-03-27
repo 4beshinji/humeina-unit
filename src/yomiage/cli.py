@@ -33,26 +33,20 @@ def _load_config() -> dict:
 
 def _create_tts_manager(config: dict, provider_override: str | None = None):
     from .config import get_tts_config
+    from .tts.factory import create_provider_from_dict
     from .tts.manager import TTSManager
-    from .tts.voicepeak import VoicepeakProvider
-    from .tts.voicevox import VoicevoxProvider
-    from .tts.voisona import VoisonaProvider
 
     tts_cfg = config.get("tts", {})
     primary_name = provider_override or tts_cfg.get("primary_provider", "voicevox")
     fallback_name = tts_cfg.get("fallback_provider")
     lookahead = tts_cfg.get("lookahead_chunks", 3)
 
-    providers = {
-        "voisona": lambda: VoisonaProvider(get_tts_config(config, "voisona")),
-        "voicevox": lambda: VoicevoxProvider(get_tts_config(config, "voicevox")),
-        "voicepeak": lambda: VoicepeakProvider(get_tts_config(config, "voicepeak")),
-    }
-
-    primary = providers.get(primary_name, providers["voicevox"])()
+    primary = create_provider_from_dict(primary_name, get_tts_config(config, primary_name))
     fallback = None
-    if fallback_name and fallback_name != primary_name and fallback_name in providers:
-        fallback = providers[fallback_name]()
+    if fallback_name and fallback_name != primary_name:
+        fallback = create_provider_from_dict(
+            fallback_name, get_tts_config(config, fallback_name)
+        )
 
     return TTSManager(primary=primary, fallback=fallback, lookahead=lookahead)
 
@@ -850,6 +844,122 @@ def batch_retry(
         typer.echo(f"Retry result: {manifest.progress_str()}")
         if manifest.failed_sentences:
             typer.echo(f"  Still failed: {len(manifest.failed_sentences)}")
+
+    asyncio.run(_run())
+
+
+# --- Studio ---
+
+studio_app = typer.Typer(help="動画作成アシスト（トークソフト動画素材生成）")
+app.add_typer(studio_app, name="studio")
+
+
+@studio_app.command("synth")
+def studio_synth(
+    script_file: Path = typer.Argument(help="台本ファイル (.txt/.csv/.json)"),
+    provider: str | None = typer.Option(None, "--provider", "-p", help="TTSプロバイダー"),
+    output: str = typer.Option("output", "--output", "-o", help="出力ディレクトリ"),
+    fmt: str = typer.Option("ymm4", "--format", "-f", help="ymm4 / plain"),
+    pause: float = typer.Option(0.3, "--pause", help="セリフ間ポーズ秒"),
+    speaker_map: Path | None = typer.Option(
+        None, "--speaker-map", help="話者マッピングYAML/JSONパス"
+    ),
+    project: str | None = typer.Option(None, "--project", "-n", help="プロジェクト名"),
+    no_cache: bool = typer.Option(False, "--no-cache", help="キャッシュ無効化"),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """台本から音声素材をバッチ合成."""
+    _setup_logging(verbose)
+    config = _load_config()
+
+    async def _run():
+        from .studio.engine import StudioEngine
+
+        engine = StudioEngine(config, output_dir=Path(output))
+        result = await engine.synth(
+            script_path=script_file,
+            speaker_map=speaker_map,
+            provider=provider,
+            output_format=fmt,
+            default_pause=pause,
+            project_name=project,
+            no_cache=no_cache,
+        )
+        typer.echo(
+            f"Complete: {len(result.results)} files\n"
+            f"  Project: {result.name}\n"
+            f"  Output: {result.output_dir}\n"
+            f"  Duration: {sum(r.duration for r in result.results):.1f}s"
+        )
+
+    asyncio.run(_run())
+
+
+@studio_app.command("preview")
+def studio_preview(
+    script_file: Path = typer.Argument(help="台本ファイル"),
+    line: int = typer.Option(1, "--line", "-l", help="行番号 (1-based)"),
+    provider: str | None = typer.Option(None, "--provider", "-p", help="TTSプロバイダー"),
+    speaker_map: Path | None = typer.Option(
+        None, "--speaker-map", help="話者マッピングYAML/JSONパス"
+    ),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """台本の指定行をプレビュー再生."""
+    _setup_logging(verbose)
+    config = _load_config()
+
+    async def _run():
+        from .studio.engine import StudioEngine
+
+        engine = StudioEngine(config)
+        await engine.preview(
+            script_path=script_file,
+            line_number=line,
+            speaker_map=speaker_map,
+            provider=provider,
+        )
+
+    asyncio.run(_run())
+
+
+@studio_app.command("voices")
+def studio_voices(
+    provider: str | None = typer.Option(None, "--provider", "-p", help="プロバイダーでフィルター"),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """利用可能なボイス一覧."""
+    _setup_logging(verbose)
+    config = _load_config()
+
+    async def _run():
+        from .config import get_tts_config
+        from .tts.voicepeak import VoicepeakProvider
+        from .tts.voicevox import VoicevoxProvider
+        from .tts.voisona import VoisonaProvider
+
+        providers_map = {
+            "voicevox": lambda: VoicevoxProvider(get_tts_config(config, "voicevox")),
+            "voisona": lambda: VoisonaProvider(get_tts_config(config, "voisona")),
+            "voicepeak": lambda: VoicepeakProvider(get_tts_config(config, "voicepeak")),
+        }
+
+        targets = [provider] if provider else list(providers_map.keys())
+        for name in targets:
+            factory = providers_map.get(name)
+            if not factory:
+                typer.echo(f"Unknown provider: {name}")
+                continue
+            prov = factory()
+            if not await prov.is_available():
+                typer.echo(f"\n[{name}] (unavailable)")
+                continue
+            voices = await prov.list_voices()
+            typer.echo(f"\n[{name}] ({len(voices)} voices)")
+            for v in voices:
+                vid = v.get("id", v.get("name", "?"))
+                vname = v.get("name", v.get("label", ""))
+                typer.echo(f"  {vid}: {vname}")
 
     asyncio.run(_run())
 

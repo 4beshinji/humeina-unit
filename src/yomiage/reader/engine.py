@@ -144,7 +144,7 @@ class ReadingEngine:
 
             # アルファベット→読み仮名変換（LLM）
             if self.scene_analyzer and TextProcessor.has_alphabet(clean_text):
-                clean_text = await self.scene_analyzer.ollama.romanize(clean_text)
+                clean_text = await self.scene_analyzer._backend.romanize(clean_text)
 
             # チャンク分割
             chunks = self.splitter.split(clean_text)

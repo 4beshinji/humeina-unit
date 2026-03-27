@@ -25,12 +25,16 @@ class CharacterProfile:
 class CharacterDB:
     """作品ごとのキャラクターデータベース（JSONファイル永続化）."""
 
-    def __init__(self, work_id: str, data_dir: Path | None = None):
+    def __init__(
+        self, work_id: str, data_dir: Path | None = None, *, persist: bool = True
+    ):
         self.work_id = work_id
+        self._persist = persist
         self.data_dir = data_dir or DEFAULT_CHAR_DIR
-        self.data_dir.mkdir(parents=True, exist_ok=True)
         self._characters: dict[str, CharacterProfile] = {}
-        self._load()
+        if persist:
+            self.data_dir.mkdir(parents=True, exist_ok=True)
+            self._load()
 
     def _path(self) -> Path:
         return self.data_dir / f"{self.work_id}.json"
@@ -47,6 +51,8 @@ class CharacterDB:
             logger.warning(f"Failed to load character DB: {e}")
 
     def _save(self) -> None:
+        if not self._persist:
+            return
         path = self._path()
         data = {name: asdict(char) for name, char in self._characters.items()}
         path.write_text(json.dumps(data, ensure_ascii=False, indent=2))

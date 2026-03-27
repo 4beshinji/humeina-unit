@@ -99,6 +99,13 @@ video:
     subtitle_font_size: 36
   assets_dir: assets
 
+studio:
+  default_format: ymm4
+  default_pause: 0.3
+  max_slug_chars: 15
+  default_provider: voicevox
+  cache_enabled: true
+
 batch:
   output_dir: output
   default_mode: voisona

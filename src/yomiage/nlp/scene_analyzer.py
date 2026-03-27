@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from loguru import logger
 
 from .classifier import SegmentType, TextSegment
+from .llm_backend import LLMBackend
 from .ollama_client import OllamaClient
 
 ANALYSIS_SYSTEM_PROMPT = """\
@@ -53,8 +54,19 @@ class AnalyzedSegment:
 class SceneAnalyzer:
     """SLMによるシーン・感情分析."""
 
-    def __init__(self, ollama: OllamaClient):
-        self.ollama = ollama
+    def __init__(self, backend: LLMBackend | OllamaClient):
+        # LLMBackendまたは旧OllamaClientを受け付ける（後方互換）
+        if isinstance(backend, LLMBackend):
+            self._backend = backend
+        else:
+            # OllamaClientを直接渡された場合はラップ
+            from .llm_backend import OllamaBackend
+
+            self._backend = OllamaBackend(
+                url=backend.url, model=backend.model
+            )
+        # 後方互換プロパティ
+        self.ollama = backend if isinstance(backend, OllamaClient) else None
 
     async def analyze_batch(
         self,
@@ -66,8 +78,8 @@ class SceneAnalyzer:
             return []
 
         # SLMが利用不可の場合はデフォルト値で返す
-        if not await self.ollama.is_available():
-            logger.warning("Ollama unavailable, using default analysis")
+        if not await self._backend.is_available():
+            logger.warning("LLM backend unavailable, using default analysis")
             return self._default_analysis(segments)
 
         # セグメントテキストを準備
@@ -87,7 +99,7 @@ class SceneAnalyzer:
         )
 
         try:
-            result = await self.ollama.generate_json(
+            result = await self._backend.generate_json(
                 prompt, system=ANALYSIS_SYSTEM_PROMPT
             )
         except Exception as e:
