@@ -211,6 +211,9 @@ def characters_assign(
 @app.command()
 def news(
     action: str = typer.Argument("daily", help="daily / check"),
+    provider: str | None = typer.Option(None, "--provider", "-p", help="TTSプロバイダー"),
+    output: str | None = typer.Option(None, "--output", "-o", help="音声ファイル出力先"),
+    gemini_key: str | None = typer.Option(None, "--gemini-key", envvar="GEMINI_API_KEY", help="Gemini APIキー（Ollamaフォールバック用）"),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
     """ニュース読み上げ."""
@@ -221,11 +224,20 @@ def news(
         from .news.scheduler import NewsScheduler
         from .nlp.ollama_client import OllamaClient
 
-        tts = _create_tts_manager(config)
+        tts = _create_tts_manager(config, provider)
         ollama_cfg = config.get("ollama", {})
+
+        fallback = None
+        if gemini_key:
+            from .nlp.gemini_client import GeminiClient
+
+            fallback = GeminiClient(api_key=gemini_key)
+            logger.info("Gemini API fallback enabled")
+
         ollama = OllamaClient(
             url=ollama_cfg.get("url", "http://localhost:11434"),
             model=ollama_cfg.get("summary_model") or ollama_cfg.get("model", "qwen3.5:3b"),
+            fallback=fallback,
         )
 
         news_cfg = config.get("news", {})
@@ -239,7 +251,7 @@ def news(
         )
 
         if action == "daily":
-            await scheduler.run_daily_summary()
+            await scheduler.run_daily_summary(output_path=output)
         elif action == "check":
             await scheduler.check_urgent()
         else:

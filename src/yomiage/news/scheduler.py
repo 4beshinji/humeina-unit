@@ -1,6 +1,9 @@
 """News scheduler — periodic fetching and reading."""
 
 import asyncio
+import io
+import wave
+from pathlib import Path
 
 from loguru import logger
 
@@ -42,8 +45,11 @@ class NewsScheduler:
         self._seen_urls: set[str] = set()
         self._running = False
 
-    async def run_daily_summary(self) -> None:
-        """日次サマリを生成・読み上げ."""
+    async def run_daily_summary(self, output_path: str | Path | None = None) -> None:
+        """日次サマリを生成・読み上げ.
+
+        output_path を指定すると音声をWAVファイルに保存する（再生はしない）。
+        """
         logger.info("Generating daily news summary")
         articles = await self.fetcher.fetch_all()
         summary = await self.summarizer.daily_summary(articles)
@@ -53,11 +59,35 @@ class NewsScheduler:
         logger.info(f"Daily summary: {len(summary)} chars, {len(chunks)} categories")
 
         params = TTSParams(speed=self.tts_speed)
-        await self.tts.start()
-        for chunk in chunks:
-            if chunk.strip():
-                await self.tts.enqueue(chunk, params)
-        await self.tts.drain()
+
+        if output_path:
+            await self._synthesize_to_file(chunks, params, Path(output_path))
+        else:
+            await self.tts.start()
+            for chunk in chunks:
+                if chunk.strip():
+                    await self.tts.enqueue(chunk, params)
+            await self.tts.drain()
+
+    async def _synthesize_to_file(
+        self, chunks: list[str], params: TTSParams, output_path: Path
+    ) -> None:
+        """チャンクを合成してWAVファイルに連結保存."""
+        audio_segments: list[bytes] = []
+        for i, chunk in enumerate(chunks):
+            if not chunk.strip():
+                continue
+            logger.info(f"Synthesizing chunk {i + 1}/{len(chunks)}")
+            result = await self.tts.synthesize_immediate(chunk, params)
+            if result.audio_data:
+                audio_segments.append(result.audio_data)
+
+        if not audio_segments:
+            logger.warning("No audio generated")
+            return
+
+        _concat_wav(audio_segments, output_path)
+        logger.info(f"News summary saved: {output_path}")
 
     async def check_urgent(self) -> None:
         """速報チェック."""
@@ -91,3 +121,23 @@ class NewsScheduler:
 
     def stop(self) -> None:
         self._running = False
+
+
+def _concat_wav(segments: list[bytes], output_path: Path) -> None:
+    """複数のWAVバイト列を1つのWAVファイルに連結."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    out_params = None
+    all_frames = b""
+
+    for data in segments:
+        with wave.open(io.BytesIO(data), "rb") as wf:
+            if out_params is None:
+                out_params = wf.getparams()
+            all_frames += wf.readframes(wf.getnframes())
+
+    if out_params is None:
+        return
+
+    with wave.open(str(output_path), "wb") as out:
+        out.setparams(out_params)
+        out.writeframes(all_frames)

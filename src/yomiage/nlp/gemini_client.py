@@ -1,29 +1,20 @@
-"""Ollama API client for SLM inference."""
-
-from __future__ import annotations
+"""Google Gemini API client — fallback for Ollama."""
 
 import json
-from typing import TYPE_CHECKING
 
 import aiohttp
 from loguru import logger
 
-if TYPE_CHECKING:
-    from .gemini_client import GeminiClient
+GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
+DEFAULT_MODEL = "gemini-2.0-flash"
 
 
-class OllamaClient:
-    """Ollama REST API クライアント."""
+class GeminiClient:
+    """Gemini REST API クライアント（OllamaClient互換インターフェース）."""
 
-    def __init__(
-        self,
-        url: str = "http://localhost:11434",
-        model: str = "qwen3.5:3b",
-        fallback: GeminiClient | None = None,
-    ):
-        self.url = url.rstrip("/")
+    def __init__(self, api_key: str, model: str = DEFAULT_MODEL):
+        self.api_key = api_key
         self.model = model
-        self.fallback = fallback
 
     async def generate(
         self,
@@ -33,37 +24,31 @@ class OllamaClient:
         max_tokens: int = 2048,
     ) -> str:
         """テキスト生成."""
-        messages = []
-        if system:
-            messages.append({"role": "system", "content": system})
-        messages.append({"role": "user", "content": prompt})
+        url = f"{GEMINI_API_BASE}/models/{self.model}:generateContent?key={self.api_key}"
 
         body: dict = {
-            "model": self.model,
-            "messages": messages,
-            "stream": False,
-            "think": False,
-            "options": {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {
                 "temperature": temperature,
-                "num_predict": max_tokens,
+                "maxOutputTokens": max_tokens,
             },
         }
+        if system:
+            body["system_instruction"] = {"parts": [{"text": system}]}
 
-        try:
-            async with aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=120)
-            ) as session:
-                async with session.post(f"{self.url}/api/chat", json=body) as resp:
-                    if resp.status != 200:
-                        detail = await resp.text()
-                        raise RuntimeError(f"Ollama chat failed: {resp.status} {detail}")
-                    result = await resp.json()
-                    return result.get("message", {}).get("content", "")
-        except Exception as e:
-            if self.fallback:
-                logger.warning(f"Ollama failed ({e}), falling back to Gemini")
-                return await self.fallback.generate(prompt, system, temperature, max_tokens)
-            raise
+        async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=120)
+        ) as session:
+            async with session.post(url, json=body) as resp:
+                if resp.status != 200:
+                    detail = await resp.text()
+                    raise RuntimeError(f"Gemini API failed: {resp.status} {detail}")
+                result = await resp.json()
+                candidates = result.get("candidates", [])
+                if not candidates:
+                    return ""
+                parts = candidates[0].get("content", {}).get("parts", [])
+                return parts[0].get("text", "") if parts else ""
 
     async def generate_json(
         self,
@@ -74,14 +59,12 @@ class OllamaClient:
         """JSON出力を生成・パース."""
         response = await self.generate(prompt, system, temperature)
 
-        # JSON部分を抽出（コードブロック内の場合も対応）
         text = response.strip()
         if "```json" in text:
             text = text.split("```json", 1)[1].split("```", 1)[0]
         elif "```" in text:
             text = text.split("```", 1)[1].split("```", 1)[0]
 
-        # [ または { から始まる部分を探す
         for i, c in enumerate(text):
             if c in ("[", "{"):
                 text = text[i:]
@@ -90,7 +73,7 @@ class OllamaClient:
         try:
             return json.loads(text)
         except json.JSONDecodeError as e:
-            logger.warning(f"Failed to parse JSON from Ollama: {e}\nResponse: {response[:200]}")
+            logger.warning(f"Failed to parse JSON from Gemini: {e}\nResponse: {response[:200]}")
             return {}
 
     async def romanize(self, text: str) -> str:
@@ -116,15 +99,5 @@ class OllamaClient:
             return text
 
     async def is_available(self) -> bool:
-        try:
-            async with aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=5)
-            ) as session:
-                async with session.get(f"{self.url}/api/tags") as resp:
-                    if resp.status == 200:
-                        return True
-        except Exception:
-            pass
-        if self.fallback:
-            return await self.fallback.is_available()
-        return False
+        """APIキーが設定されていればTrue."""
+        return bool(self.api_key)
