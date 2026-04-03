@@ -71,6 +71,7 @@ def _create_reading_engine(config: dict, provider_override: str | None = None):
     scene_config_path = Path("config/scene_params.yaml")
     param_mapper = ParamMapper.from_config_file(scene_config_path)
 
+    batch_cfg = config.get("batch", {})
     return ReadingEngine(
         tts_manager=tts,
         splitter=TextSplitter(max_chars=max_chars),
@@ -78,6 +79,8 @@ def _create_reading_engine(config: dict, provider_override: str | None = None):
         param_mapper=param_mapper,
         auto_advance=config.get("reader", {}).get("auto_advance", True),
         lookahead_chunks=tts_cfg.get("lookahead_chunks", 5),
+        vm_mount=batch_cfg.get("voisona_vm_mount", "Z:"),
+        output_dir=batch_cfg.get("output_dir", "output"),
     )
 
 

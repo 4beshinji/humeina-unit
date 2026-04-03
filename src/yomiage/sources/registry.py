@@ -4,6 +4,7 @@ from loguru import logger
 
 from .aozora import AozoraSource
 from .base import ContentSource
+from .generic_web import GenericWebSource
 from .kakuyomu import KakuyomuSource
 from .narou import NarouSource
 
@@ -11,6 +12,7 @@ _SOURCES: list[type[ContentSource]] = [
     AozoraSource,
     NarouSource,
     KakuyomuSource,
+    GenericWebSource,  # フォールバック — 必ず最後
 ]
 
 

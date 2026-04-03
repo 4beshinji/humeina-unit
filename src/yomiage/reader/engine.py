@@ -2,6 +2,9 @@
 
 import asyncio
 import hashlib
+import subprocess
+import tempfile
+from pathlib import Path
 
 from loguru import logger
 
@@ -14,6 +17,7 @@ from ..sources import registry
 from ..sources.base import Chapter, ContentSource
 from ..tts.base import TTSParams
 from ..tts.manager import TTSManager
+from ..tts.playback import play_wav
 from .bookmark import Bookmark, BookmarkManager
 from .character_db import CharacterDB
 from .param_mapper import ParamMapper
@@ -39,6 +43,8 @@ class ReadingEngine:
         bookmark_manager: BookmarkManager | None = None,
         auto_advance: bool = True,
         lookahead_chunks: int = 5,
+        vm_mount: str = "Z:",
+        output_dir: str = "output",
     ):
         self.tts = tts_manager
         self.processor = text_processor or TextProcessor()
@@ -50,6 +56,8 @@ class ReadingEngine:
         self.bookmarks = bookmark_manager or BookmarkManager()
         self.auto_advance = auto_advance
         self.lookahead_chunks = lookahead_chunks
+        self.vm_mount = vm_mount
+        self.output_dir = Path(output_dir)
 
         self._running = False
         self._pause_event = asyncio.Event()
@@ -150,15 +158,23 @@ class ReadingEngine:
             chunks = self.splitter.split(clean_text)
             self._current_chunks = chunks
 
-            # TTS合成・再生ループ
-            await self.tts.start()
-            try:
-                await self._read_chunks(chunks, source, chapter, chapter_url, start_chunk)
-            finally:
-                if self._stop_event.is_set():
-                    await self.tts.stop()
-                else:
-                    await self.tts.drain()
+            # 低速プロバイダーはファイル出力→結合→再生
+            if self.tts._is_slow_provider():
+                await self._read_chunks_file_batch(
+                    chunks, source, chapter, chapter_url, start_chunk
+                )
+            else:
+                # TTS合成・再生ループ
+                await self.tts.start()
+                try:
+                    await self._read_chunks(
+                        chunks, source, chapter, chapter_url, start_chunk
+                    )
+                finally:
+                    if self._stop_event.is_set():
+                        await self.tts.stop()
+                    else:
+                        await self.tts.drain()
 
             if self._stop_event.is_set():
                 break
@@ -274,6 +290,124 @@ class ReadingEngine:
                 ]
 
             cache[chunk.index] = analyzed
+
+    async def _read_chunks_file_batch(
+        self,
+        chunks: list[Chunk],
+        source: ContentSource,
+        chapter: Chapter,
+        chapter_url: str,
+        start_chunk: int = 0,
+    ) -> None:
+        """低速プロバイダー用: チャンクごとにファイル合成→結合→再生."""
+        speakable = [
+            c for c in chunks[start_chunk:]
+            if c.text.strip() and not c.is_scene_break
+        ]
+        if not speakable:
+            return
+
+        # 作業ディレクトリ作成
+        work_id = hashlib.md5(chapter_url.encode()).hexdigest()[:12]
+        work_dir = self.output_dir / f"_read_{work_id}"
+        work_dir.mkdir(parents=True, exist_ok=True)
+
+        provider = self.tts._select_provider()
+        wav_files: list[Path] = []
+
+        # NLP分析
+        analyzed_cache: dict[int, list[AnalyzedSegment]] = {}
+        batch = speakable[: self.lookahead_chunks]
+        if batch:
+            await self._analyze_batch(batch, analyzed_cache)
+
+        try:
+            for i, chunk in enumerate(speakable):
+                if self._stop_event.is_set():
+                    break
+
+                self._current_chunk_idx = chunk.index
+
+                # 先読み分析
+                if chunk.index not in analyzed_cache:
+                    next_batch = speakable[i : i + self.lookahead_chunks]
+                    await self._analyze_batch(next_batch, analyzed_cache)
+
+                params = self._get_params_for_chunk(chunk.index, chunk, analyzed_cache)
+                kwargs = self.tts._build_kwargs(params)
+
+                filename = f"{chunk.index:04d}.wav"
+                host_path = work_dir / filename
+                vm_path = f"{self.vm_mount}\\{work_dir.name}\\{filename}"
+
+                logger.debug(
+                    f"File synth [{i + 1}/{len(speakable)}]: "
+                    f"{chunk.text[:30]}..."
+                )
+                try:
+                    await provider.synthesize_to_file(
+                        chunk.text, vm_path, speed=params.speed, **kwargs
+                    )
+                    if host_path.exists():
+                        wav_files.append(host_path)
+                    else:
+                        logger.warning(f"WAV not found: {host_path}")
+                except Exception as e:
+                    logger.error(f"File synthesis failed: {e}")
+
+                # ブックマーク保存
+                self.bookmarks.save(
+                    Bookmark(
+                        source_url=chapter.source_url,
+                        chapter_url=chapter_url,
+                        chapter_index=chapter.chapter_index,
+                        chunk_index=chunk.index,
+                        title=chapter.title,
+                    )
+                )
+
+            if not wav_files:
+                logger.warning("No WAV files generated")
+                return
+
+            # 結合
+            output_path = work_dir / "full.wav"
+            logger.info(f"Concatenating {len(wav_files)} WAV files...")
+            self._concat_wav_files(wav_files, output_path)
+
+            # 再生
+            if output_path.exists():
+                logger.info(f"Playing: {output_path} ({output_path.stat().st_size} bytes)")
+                audio_data = output_path.read_bytes()
+                await play_wav(audio_data)
+            else:
+                logger.error(f"Concatenated file not found: {output_path}")
+
+        finally:
+            # クリーンアップ（個別チャンクファイル削除、fullは残す）
+            for f in wav_files:
+                f.unlink(missing_ok=True)
+
+    @staticmethod
+    def _concat_wav_files(files: list[Path], output: Path) -> None:
+        """ffmpeg concat demuxer でWAVファイルを結合."""
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", delete=False
+        ) as f:
+            for wav in files:
+                f.write(f"file '{wav.resolve()}'\n")
+            concat_list = f.name
+
+        try:
+            cmd = [
+                "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+                "-i", concat_list, "-codec:a", "pcm_s16le", str(output),
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+            if result.returncode != 0:
+                raise RuntimeError(f"ffmpeg concat failed: {result.stderr}")
+        finally:
+            Path(concat_list).unlink(missing_ok=True)
 
     def _get_params_for_chunk(
         self,

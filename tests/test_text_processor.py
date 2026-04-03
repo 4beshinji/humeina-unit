@@ -25,6 +25,35 @@ def test_normalize_punctuation():
     assert "…" in result
 
 
+def test_clean_urls():
+    p = TextProcessor()
+    text = "詳細はhttps://example.com/page?q=1を参照。"
+    result = p.process(text)
+    assert "https://" not in result
+    assert "参照。" in result
+
+
+def test_clean_footnote_markers():
+    p = TextProcessor()
+    text = "機能[1]の説明[注2]です。"
+    result = p.process(text)
+    assert "[1]" not in result
+    assert "[注2]" not in result
+    assert "機能の説明です。" in result
+
+
+def test_clean_list_markers():
+    p = TextProcessor()
+    text = "1. 項目1\n2. 項目2\n- 箇条書き\n* アスタリスク"
+    result = p.process(text)
+    assert result.startswith("項目1")
+    assert "箇条書き" in result
+    assert "アスタリスク" in result
+    # マーカーが除去されている
+    assert "1. " not in result
+    assert "- 箇条" not in result
+
+
 def test_empty():
     p = TextProcessor()
     assert p.process("") == ""

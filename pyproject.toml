@@ -23,6 +23,7 @@ dependencies = [
     "apscheduler>=3.10",
     "sounddevice>=0.4",
     "python-dotenv>=1.0",
+    "trafilatura>=1.8",
 ]
 
 [project.optional-dependencies]

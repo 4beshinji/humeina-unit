@@ -2,6 +2,7 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from pathlib import Path
 
 
 @dataclass
@@ -52,6 +53,20 @@ class TTSProvider(ABC):
 
     @abstractmethod
     async def is_available(self) -> bool: ...
+
+    async def synthesize_to_file(
+        self,
+        text: str,
+        output_path: str,
+        voice: str = "neutral",
+        speed: float = 1.0,
+        **params,
+    ) -> AudioResult:
+        """ファイルに直接合成出力. デフォルトはsynthesize+書き込み."""
+        result = await self.synthesize(text, voice, speed, **params)
+        if result.audio_data:
+            Path(output_path).write_bytes(result.audio_data)
+        return result
 
     async def list_voices(self) -> list[dict]:
         """利用可能なボイス一覧を返す."""

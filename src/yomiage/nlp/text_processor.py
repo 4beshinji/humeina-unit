@@ -14,6 +14,9 @@ class TextProcessor:
         text = self._normalize(text)
         text = self._clean_aozora_markers(text)
         text = self._normalize_punctuation(text)
+        text = self._clean_urls(text)
+        text = self._clean_footnote_markers(text)
+        text = self._clean_list_markers(text)
         text = self._clean_whitespace(text)
         return text
 
@@ -57,6 +60,20 @@ class TextProcessor:
     def has_alphabet(text: str) -> bool:
         """テキストにアルファベットが含まれるか."""
         return bool(re.search(r"[A-Za-z]", text))
+
+    def _clean_urls(self, text: str) -> str:
+        # URLを除去（URL構成文字のみマッチ、日本語で停止）
+        return re.sub(r"https?://[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+", "", text)
+
+    def _clean_footnote_markers(self, text: str) -> str:
+        # 脚注マーカーを除去: [1], [注1], *1
+        text = re.sub(r"\[(?:注)?\d+\]", "", text)
+        text = re.sub(r"\*\d+", "", text)
+        return text
+
+    def _clean_list_markers(self, text: str) -> str:
+        # 行頭のリストマーカーを除去
+        return re.sub(r"^\s*(?:\d+[.)]\s+|[-*+]\s+)", "", text, flags=re.MULTILINE)
 
     def _clean_whitespace(self, text: str) -> str:
         # 行頭の全角スペース（字下げ）を除去
