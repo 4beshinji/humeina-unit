@@ -81,6 +81,7 @@ def _create_reading_engine(config: dict, provider_override: str | None = None):
         lookahead_chunks=tts_cfg.get("lookahead_chunks", 5),
         vm_mount=batch_cfg.get("voisona_vm_mount", "Z:"),
         output_dir=batch_cfg.get("output_dir", "output"),
+        synth_concurrency=batch_cfg.get("synth_concurrency", 2),
     )
 
 

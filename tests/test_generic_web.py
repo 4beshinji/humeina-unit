@@ -189,6 +189,34 @@ replaced with a placeholder text for TTS output</code></pre>
     assert "関連記事" not in text
 
 
+def test_extract_section_by_anchor():
+    """#anchor 指定でそのセクションだけ抽出できる."""
+    src = _make_source()
+    html = """
+    <html><body>
+        <h1 id="intro">はじめに</h1><p>導入テキスト。</p>
+        <h1 id="chapter1">第1章</h1><p>第1章の内容。</p>
+        <h2 id="sec1-1">1.1節</h2><p>1.1節の内容。</p>
+        <h1 id="chapter2">第2章</h1><p>第2章の内容。</p>
+    </body></html>
+    """
+    soup = BeautifulSoup(html, "lxml")
+    title, text = src._extract_section(soup, "chapter1")
+    assert title == "第1章"
+    assert "第1章の内容" in text
+    assert "1.1節の内容" in text
+    assert "第2章の内容" not in text  # 同レベル見出しで打ち切り
+
+
+def test_extract_section_not_found_fallbacks_to_full():
+    """存在しないアンカーは全文にフォールバック."""
+    src = _make_source()
+    html = "<html><body><h1>タイトル</h1><p>本文テキスト。</p></body></html>"
+    soup = BeautifulSoup(html, "lxml")
+    _, text = src._extract_section(soup, "nonexistent")
+    assert "本文テキスト" in text
+
+
 def test_extract_article_bs4():
     """BS4 フォールバックの統合テスト."""
     src = _make_source()

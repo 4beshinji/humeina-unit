@@ -1,14 +1,30 @@
 """汎用Webページ コンテンツソース（フォールバック）."""
 
 import re
+from urllib.parse import urldefrag, urljoin
 
 import aiohttp
 from bs4 import BeautifulSoup, NavigableString, Tag
 from loguru import logger
 
+from ..nlp.math_processor import MathProcessor
 from .base import Chapter, ContentSource
 
 _CODE_BLOCK_PLACEHOLDER = "コードブロック省略。"
+
+# コードらしさを示すパターン（これが多いと読み飛ばす）
+_CODE_INDICATORS_RE = re.compile(
+    r"[{};]|^\s*(if|else|for|while|return|def|class|let|where|import|#include)\b",
+    re.MULTILINE,
+)
+# 数式らしさを示すパターン（Unicode記号 or LaTeX構文）
+_MATH_INDICATORS_RE = re.compile(
+    r"[∘→←⇒⇔∀∃∈∉⊂⊃∪∩≤≥≅≃∧∨⊥⊤⊗⊕λΛμη]"
+    r"|\\(?:circ|to|leftarrow|rightarrow|forall|exists|frac|sum|prod|int"
+    r"|circ|cdot|times|otimes|oplus|leq|geq|cong|simeq|equiv|sim|in|notin"
+    r"|subset|cup|cap|bot|top|lambda|mu|eta|alpha|beta|gamma|delta|mathbf|mathcal)\b"
+    r"|\\\(|\\\)|\$\$"
+)
 _MAX_TABLE_ROWS = 5
 
 # ノイズ要素のCSSセレクタ
@@ -47,22 +63,35 @@ class GenericWebSource(ContentSource):
     マッチしなかった場合にのみ使われる。
     """
 
+    def __init__(self) -> None:
+        self._math = MathProcessor()
+
     @classmethod
     def can_handle(cls, url: str) -> bool:
         return url.startswith(("http://", "https://"))
 
     async def fetch_chapter(self, url: str) -> Chapter:
         logger.info(f"Fetching generic web page: {url}")
-        html = await self._fetch_html(url)
+
+        # URL の fragment (#anchor) を分離
+        base_url, fragment = urldefrag(url)
+        html = await self._fetch_html(base_url)
+
+        # Pandoc math span を変換してから BS4 に渡す
+        html = self._math.process_html_math(html)
+
         soup = BeautifulSoup(html, "lxml")
 
-        title = self._extract_title(soup)
-
-        # trafilatura で本文抽出を試行 → 失敗時は BS4 フォールバック
-        text = self._extract_article(html, url)
-        if not text or len(text.strip()) < 50:
-            logger.debug("trafilatura extraction insufficient, falling back to BS4")
-            text = self._extract_article_bs4(soup)
+        # fragment (#anchor) があればその要素から次の同レベル見出しまでを抽出
+        if fragment:
+            title, text = self._extract_section(soup, fragment)
+        else:
+            title = self._extract_title(soup)
+            # trafilatura で本文抽出を試行 → 失敗時は BS4 フォールバック
+            text = self._extract_article(html, base_url)
+            if not text or len(text.strip()) < 50:
+                logger.debug("trafilatura extraction insufficient, falling back to BS4")
+                text = self._extract_article_bs4(soup)
 
         if not text or not text.strip():
             raise RuntimeError(f"Could not extract article content from {url}")
@@ -74,6 +103,96 @@ class GenericWebSource(ContentSource):
             source_url=url,
             chapter_index=0,
         )
+
+    async def get_table_of_contents(self, work_url: str) -> list:
+        """ページ内の見出しアンカーから目次を生成."""
+        from .base import ChapterInfo
+
+        base_url, _ = urldefrag(work_url)
+        html = await self._fetch_html(base_url)
+        soup = BeautifulSoup(html, "lxml")
+
+        entries = []
+        idx = 0
+        for heading in soup.find_all(["h1", "h2", "h3"]):
+            anchor = heading.get("id") or (
+                heading.find("a", attrs={"name": True}) or {}
+            ).get("name", "")
+            if not anchor:
+                continue
+            title = heading.get_text(strip=True)
+            section_url = f"{base_url}#{anchor}"
+            entries.append(ChapterInfo(title=title, url=section_url, index=idx))
+            idx += 1
+
+        logger.info(f"Found {len(entries)} sections in {base_url}")
+        return entries
+
+    async def get_next_chapter_url(self, current_url: str) -> str | None:
+        """TOCから次のセクションURLを返す."""
+        toc = await self.get_table_of_contents(current_url)
+        for i, entry in enumerate(toc):
+            if entry.url == current_url and i + 1 < len(toc):
+                return toc[i + 1].url
+        return None
+
+    def _extract_section(self, soup: BeautifulSoup, fragment: str) -> tuple[str, str]:
+        """指定アンカーのセクションを抽出.
+
+        anchor id を持つ要素（または子に持つ見出し）から
+        次の同レベル以上の見出しまでのコンテンツを返す。
+        """
+        # id="fragment" の要素を探す
+        anchor_el = soup.find(id=fragment)
+        if anchor_el is None:
+            # name属性のaタグも試す
+            anchor_el = soup.find("a", attrs={"name": fragment})
+            if anchor_el:
+                anchor_el = anchor_el.parent
+
+        if anchor_el is None:
+            logger.warning(f"Anchor #{fragment} not found, falling back to full page")
+            return self._extract_title(soup), self._extract_article_bs4(soup)
+
+        # anchor_el 自体が見出しでなければ直近の見出し先祖を探す
+        heading = anchor_el if anchor_el.name in ("h1","h2","h3","h4","h5","h6") else None
+        if heading is None:
+            heading = anchor_el.find(["h1","h2","h3","h4","h5","h6"])
+        if heading is None:
+            # anchor_el の兄弟や親から見出しを探す
+            for sib in anchor_el.next_siblings:
+                if sib.name in ("h1","h2","h3","h4","h5","h6"):
+                    heading = sib
+                    break
+
+        title = heading.get_text(strip=True) if heading else fragment
+
+        # 見出しレベル判定
+        heading_level = int(heading.name[1]) if heading else 2
+
+        # 開始要素: anchor_el（見出しでなければそれを含む親コンテナ）
+        start = anchor_el if anchor_el.name in ("h1","h2","h3","h4","h5","h6") else anchor_el.parent
+
+        # 以降の兄弟を収集（次の同レベル以上の見出しまで）
+        from bs4 import Tag as _Tag
+        collected: list[_Tag] = [start]
+        for sib in start.next_siblings:
+            if not isinstance(sib, _Tag):
+                continue
+            if sib.name in ("h1","h2","h3","h4","h5","h6"):
+                sib_level = int(sib.name[1])
+                if sib_level <= heading_level:
+                    break
+            collected.append(sib)
+
+        # 仮コンテナに入れて clean_for_tts
+        from bs4 import BeautifulSoup as _BS
+        container = _BS("<div></div>", "lxml").div
+        for el in collected:
+            container.append(el.__copy__())
+
+        text = self._clean_for_tts(container)
+        return title, text
 
     async def _fetch_html(self, url: str) -> str:
         async with aiohttp.ClientSession(
@@ -191,12 +310,28 @@ class GenericWebSource(ContentSource):
 
     def _replace_code_blocks(self, soup: Tag) -> None:
         for pre in soup.find_all("pre"):
-            text_len = len(pre.get_text())
-            if text_len > 50:
-                pre.replace_with(NavigableString(f"\n{_CODE_BLOCK_PLACEHOLDER}\n"))
+            raw = pre.get_text()
+            converted = self._math.process_text(raw)
+            if self._is_math_content(raw, converted):
+                # 数式・数学記号が多い → 変換後テキストを読み上げる
+                pre.replace_with(NavigableString(f"\n{converted.strip()}\n"))
+            elif len(raw) <= 80:
+                # 短いコードはそのまま維持（識別子など）
+                pre.replace_with(NavigableString(raw))
             else:
-                # 短いコードはテキストを維持
-                pre.replace_with(NavigableString(pre.get_text()))
+                pre.replace_with(NavigableString(f"\n{_CODE_BLOCK_PLACEHOLDER}\n"))
+
+    @staticmethod
+    def _is_math_content(raw: str, converted: str) -> bool:
+        """コードブロックが数式・数学記号を含むか判定."""
+        # 数式らしいパターンが1つ以上あれば候補
+        has_math = bool(_MATH_INDICATORS_RE.search(raw))
+        if not has_math:
+            return False
+        # コードらしいパターンが多ければコードとみなす
+        code_hits = len(_CODE_INDICATORS_RE.findall(raw))
+        math_hits = len(_MATH_INDICATORS_RE.findall(raw))
+        return math_hits >= code_hits
 
     def _linearize_tables(self, soup: Tag) -> None:
         for table in soup.find_all("table"):

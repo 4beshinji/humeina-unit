@@ -117,3 +117,6 @@ batch:
   cleanup_after_concat: false
   voisona_vm_mount: ${VOISONA_VM_MOUNT:-Z:}
   voice_profile_dir: config/voice_profiles
+  # VoiSona側の同時処理ジョブ数上限（流量制御）
+  # 1=同時接続1本のみ（VoiSona推奨）、増やすと並列合成で高速になるがキューが増える
+  synth_concurrency: 1

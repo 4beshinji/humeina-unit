@@ -2,16 +2,39 @@
 
 import re
 import unicodedata
+from pathlib import Path
 
 from bs4 import BeautifulSoup
+
+from .math_processor import MathProcessor
+
+_DEFAULT_MATH_DICT = (
+    Path(__file__).parent.parent.parent.parent / "config" / "math_dict.yaml"
+)
 
 
 class TextProcessor:
     """テキスト前処理."""
 
+    def __init__(self, math_dict_path: Path | None = None) -> None:
+        self._math = MathProcessor(dict_path=math_dict_path or _DEFAULT_MATH_DICT)
+
     def process(self, text: str) -> str:
         """テキストをTTS用にクリーニング."""
         text = self._normalize(text)
+        text = self._math.process_text(text)
+        text = self._clean_aozora_markers(text)
+        text = self._normalize_punctuation(text)
+        text = self._clean_urls(text)
+        text = self._clean_footnote_markers(text)
+        text = self._clean_list_markers(text)
+        text = self._clean_whitespace(text)
+        return text
+
+    async def process_async(self, text: str) -> str:
+        """テキストをTTS用にクリーニング（LLMフォールバックあり）."""
+        text = self._normalize(text)
+        text = await self._math.process_text_async(text)
         text = self._clean_aozora_markers(text)
         text = self._normalize_punctuation(text)
         text = self._clean_urls(text)
@@ -22,6 +45,9 @@ class TextProcessor:
 
     def process_html(self, html: str) -> str:
         """HTMLからテキストを抽出して前処理."""
+        # Pandoc math span を変換してから BS4 に渡す
+        html = self._math.process_html_math(html)
+
         soup = BeautifulSoup(html, "lxml")
 
         # ルビ処理

@@ -162,15 +162,23 @@ class VoisonaProvider(TTSProvider):
         return uuid
 
     async def _poll_synthesis(self, uuid: str, wall_start: float) -> AudioResult:
-        timeout = aiohttp.ClientTimeout(total=POLL_TIMEOUT + 10)
+        """POST と同一セッションではなく専用セッションでポーリング.
+
+        1リクエストずつ新規接続を確立し、接続を同時に複数持たない。
+        """
         elapsed = 0.0
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            while elapsed < POLL_TIMEOUT:
-                async with session.get(
-                    f"{self._api_url}/speech-syntheses/{uuid}",
-                    auth=self._auth(),
-                ) as resp:
-                    if resp.status == 200:
+        while elapsed < POLL_TIMEOUT:
+            await asyncio.sleep(POLL_INTERVAL)
+            elapsed += POLL_INTERVAL
+            try:
+                timeout = aiohttp.ClientTimeout(total=15)
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    async with session.get(
+                        f"{self._api_url}/speech-syntheses/{uuid}",
+                        auth=self._auth(),
+                    ) as resp:
+                        if resp.status != 200:
+                            continue
                         status = await resp.json()
                         state = status.get("state")
                         if state == "succeeded":
@@ -186,8 +194,10 @@ class VoisonaProvider(TTSProvider):
                             )
                         if state == "failed":
                             raise RuntimeError(f"VoiSona synthesis failed: {status}")
-                await asyncio.sleep(POLL_INTERVAL)
-                elapsed += POLL_INTERVAL
+            except RuntimeError:
+                raise
+            except Exception as e:
+                logger.debug(f"Poll attempt failed ({elapsed:.0f}s): {e}")
 
         self._healthy = False
         raise RuntimeError(f"VoiSona synthesis timed out after {POLL_TIMEOUT}s")
