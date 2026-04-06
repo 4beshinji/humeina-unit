@@ -24,6 +24,7 @@ dependencies = [
     "sounddevice>=0.4",
     "python-dotenv>=1.0",
     "trafilatura>=1.8",
+    "numpy>=2.4.4",
 ]
 
 [project.optional-dependencies]

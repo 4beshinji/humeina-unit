@@ -51,7 +51,11 @@ def _create_tts_manager(config: dict, provider_override: str | None = None):
     return TTSManager(primary=primary, fallback=fallback, lookahead=lookahead)
 
 
-def _create_reading_engine(config: dict, provider_override: str | None = None):
+def _create_reading_engine(
+    config: dict,
+    provider_override: str | None = None,
+    ex_voice: bool = False,
+):
     from .nlp.ollama_client import OllamaClient
     from .nlp.scene_analyzer import SceneAnalyzer
     from .nlp.splitter import TextSplitter
@@ -71,6 +75,30 @@ def _create_reading_engine(config: dict, provider_override: str | None = None):
     scene_config_path = Path("config/scene_params.yaml")
     param_mapper = ParamMapper.from_config_file(scene_config_path)
 
+    ex_voice_manager = None
+    if ex_voice:
+        from .exvoice.catalog import load_catalog
+        from .exvoice.manager import ExVoiceManager
+        from .exvoice.selector import ExVoiceSelector
+        from .nlp.llm_backend import OllamaBackend
+
+        ev_cfg = config.get("ex_voice", {})
+        wav_dir = Path(ev_cfg.get("wav_dir", "/home/sin/code/una/VoiceWav"))
+        catalog = load_catalog(wav_dir)
+        backend = OllamaBackend(
+            url=ollama_cfg.get("url", "http://localhost:11434"),
+            model=ollama_cfg.get("model", "qwen3.5:3b"),
+        )
+        selector = ExVoiceSelector(backend, catalog)
+        ex_voice_manager = ExVoiceManager(
+            catalog=catalog,
+            selector=selector,
+            cooldown_chunks=ev_cfg.get("cooldown_chunks", 10),
+            max_per_chapter=ev_cfg.get("max_per_chapter", 8),
+            llm_max_insertions=ev_cfg.get("llm_max_insertions", 2),
+        )
+        logger.info(f"EX voice enabled: {len(catalog)} clips from {wav_dir}")
+
     batch_cfg = config.get("batch", {})
     return ReadingEngine(
         tts_manager=tts,
@@ -82,6 +110,7 @@ def _create_reading_engine(config: dict, provider_override: str | None = None):
         vm_mount=batch_cfg.get("voisona_vm_mount", "Z:"),
         output_dir=batch_cfg.get("output_dir", "output"),
         synth_concurrency=batch_cfg.get("synth_concurrency", 2),
+        ex_voice=ex_voice_manager,
     )
 
 
@@ -89,6 +118,7 @@ def _create_reading_engine(config: dict, provider_override: str | None = None):
 def read(
     url: str = typer.Argument(help="読み上げるコンテンツのURL"),
     provider: str | None = typer.Option(None, "--provider", "-p", help="TTSプロバイダー"),
+    ex_voice: bool = typer.Option(False, "--ex-voice", help="EXボイスクリップを自動挿入"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="詳細ログ"),
 ) -> None:
     """URLのコンテンツを読み上げる."""
@@ -96,7 +126,7 @@ def read(
     config = _load_config()
 
     async def _run():
-        engine = _create_reading_engine(config, provider)
+        engine = _create_reading_engine(config, provider, ex_voice=ex_voice)
         logger.info(f"Reading: {url}")
         try:
             await engine.read_url(url)

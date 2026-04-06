@@ -10,6 +10,8 @@ from pathlib import Path
 
 from loguru import logger
 
+from ..exvoice.catalog import normalize_wav
+from ..exvoice.manager import ExVoiceManager
 from ..nlp.classifier import TextClassifier
 from ..nlp.scene_analyzer import AnalyzedSegment, SceneAnalyzer
 from ..nlp.speaker import SpeakerExtractor
@@ -48,6 +50,7 @@ class ReadingEngine:
         vm_mount: str = "Z:",
         output_dir: str = "output",
         synth_concurrency: int = 2,
+        ex_voice: ExVoiceManager | None = None,
     ):
         self.tts = tts_manager
         self.processor = text_processor or TextProcessor()
@@ -62,6 +65,7 @@ class ReadingEngine:
         self.vm_mount = vm_mount
         self.output_dir = Path(output_dir)
         self.synth_concurrency = synth_concurrency
+        self.ex_voice = ex_voice
 
         self._running = False
         self._pause_event = asyncio.Event()
@@ -203,6 +207,10 @@ class ReadingEngine:
         # NLP先読みバッファ: チャンクバッチをまとめて分析
         analyzed_cache: dict[int, list[AnalyzedSegment]] = {}
         analysis_task: asyncio.Task | None = None
+        ex_task: asyncio.Task | None = None
+
+        if self.ex_voice:
+            self.ex_voice.reset_chapter()
 
         for i, chunk in enumerate(chunks):
             if i < start_chunk:
@@ -234,6 +242,21 @@ class ReadingEngine:
                 await analysis_task
                 analysis_task = None
 
+            # EXボイス: NLP分析が済んだ窓に対してクリップ選択をスケジュール
+            # （analysis_task 完了後に同じ batch を再利用するため、i not in analyzed_cache が
+            #   False になったタイミング = NLP完了後に起動する）
+            if (
+                self.ex_voice
+                and ex_task is None
+                and i in analyzed_cache
+            ):
+                batch_end = min(i + self.lookahead_chunks, len(chunks))
+                batch = [c for c in chunks[i:batch_end] if c.text.strip() and not c.is_scene_break]
+                if batch:
+                    ex_task = asyncio.create_task(
+                        self.ex_voice.analyze_window(batch, analyzed_cache)
+                    )
+
             # NLPパイプライン結果からパラメータ生成
             params = self._get_params_for_chunk(i, chunk, analyzed_cache)
 
@@ -241,6 +264,17 @@ class ReadingEngine:
             if not speak_text:
                 continue
             await self.tts.enqueue(speak_text, params)
+
+            # EXボイス: このチャンク直後に挿入するクリップをキューに積む
+            # pipelined（低速）プロバイダーはスキップ
+            if self.ex_voice and not self.tts._is_slow_provider():
+                # ex_task が完了していれば結果が _decisions に入っている
+                if ex_task is not None and ex_task.done():
+                    ex_task = None
+                clips = self.ex_voice.pop_clips_for(chunk.index)
+                for clip in clips:
+                    audio = normalize_wav(clip.path.read_bytes())
+                    await self.tts.enqueue_raw_audio(audio)
 
             # ブックマーク保存
             self.bookmarks.save(
@@ -255,6 +289,8 @@ class ReadingEngine:
 
         if analysis_task:
             analysis_task.cancel()
+        if ex_task:
+            ex_task.cancel()
 
     async def _analyze_batch(
         self,

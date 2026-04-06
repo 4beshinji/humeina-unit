@@ -1,12 +1,21 @@
 """TTS Manager — provider selection, fallback, and synthesis queue."""
 
 import asyncio
+import io
 import time
+import wave
+from dataclasses import dataclass
 
 from loguru import logger
 
 from .base import AudioResult, TTSParams, TTSProvider
 from .playback import play_wav
+
+
+@dataclass
+class RawAudioItem:
+    """事前収録WAVをそのまま再生キューに流すためのセンチネル."""
+    audio_data: bytes
 
 
 class TTSManager:
@@ -21,7 +30,7 @@ class TTSManager:
         self.primary = primary
         self.fallback = fallback
         self.lookahead = lookahead
-        self._queue: asyncio.Queue[tuple[str, TTSParams] | None] = asyncio.Queue()
+        self._queue: asyncio.Queue[tuple[str, TTSParams] | RawAudioItem | None] = asyncio.Queue()
         self._audio_queue: asyncio.Queue[AudioResult | None] = asyncio.Queue()
         self._pause_event = asyncio.Event()
         self._pause_event.set()  # Not paused
@@ -75,6 +84,15 @@ class TTSManager:
     async def enqueue(self, text: str, params: TTSParams | None = None) -> None:
         """Add a text segment to the synthesis queue."""
         await self._queue.put((text, params or TTSParams()))
+
+    async def enqueue_raw_audio(self, audio_data: bytes) -> None:
+        """事前収録WAVをそのまま再生キューに挿入する.
+
+        合成ループをバイパスし、enqueue() の呼び出し順序で
+        _synth_loop_default の pending キューに積まれるため順序が保証される。
+        低速プロバイダー（pipelined）では効果なし（呼び出し側でガードすること）。
+        """
+        await self._queue.put(RawAudioItem(audio_data=audio_data))
 
     async def synthesize_immediate(
         self, text: str, params: TTSParams | None = None
@@ -139,6 +157,7 @@ class TTSManager:
 
         VOICEVOX is fast (local Docker), so we prefetch up to `lookahead`
         items concurrently to keep the audio_queue populated.
+        RawAudioItem はパススルータスクとして pending に積まれ順序が保証される。
         """
         pending: list[asyncio.Task] = []
 
@@ -156,8 +175,11 @@ class TTSManager:
                         await self._audio_queue.put(result)
                     await self._audio_queue.put(None)
                     return
-                text, params = item
-                pending.append(asyncio.create_task(self._safe_synthesize(text, params)))
+                if isinstance(item, RawAudioItem):
+                    pending.append(asyncio.create_task(self._passthrough(item)))
+                else:
+                    text, params = item
+                    pending.append(asyncio.create_task(self._safe_synthesize(text, params)))
 
             if not pending:
                 # Nothing in queue yet, wait for next item
@@ -165,12 +187,25 @@ class TTSManager:
                 if item is None:
                     await self._audio_queue.put(None)
                     return
-                text, params = item
-                pending.append(asyncio.create_task(self._safe_synthesize(text, params)))
+                if isinstance(item, RawAudioItem):
+                    pending.append(asyncio.create_task(self._passthrough(item)))
+                else:
+                    text, params = item
+                    pending.append(asyncio.create_task(self._safe_synthesize(text, params)))
 
             # Wait for the first (oldest) task to complete — preserves order
             result = await pending.pop(0)
             await self._audio_queue.put(result)
+
+    @staticmethod
+    async def _passthrough(item: RawAudioItem) -> AudioResult:
+        """RawAudioItemをAudioResultに変換（合成不要）."""
+        try:
+            with wave.open(io.BytesIO(item.audio_data), "rb") as wf:
+                duration = wf.getnframes() / wf.getframerate()
+        except Exception:
+            duration = 0.0
+        return AudioResult(audio_data=item.audio_data, duration=duration)
 
     async def _safe_synthesize(self, text: str, params: TTSParams) -> AudioResult:
         try:

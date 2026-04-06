@@ -16,14 +16,14 @@ voicevox:
   default_speaker: 47
 
 voicepeak:
-  path: voicepeak
-  default_narrator: ""
+  path: /home/sin/code/una/Voicepeak-linux64/Voicepeak/voicepeak
+  default_narrator: "Otomachi Una"
   max_chars: 140
   pitch_scale: 300
 
 ollama:
   url: ${OLLAMA_URL:-http://localhost:11434}
-  model: ${OLLAMA_MODEL:-qwen3.5:3b}
+  model: ${OLLAMA_MODEL:-qwen3:8b}
   summary_model: ${OLLAMA_SUMMARY_MODEL}
 
 news:
@@ -98,6 +98,13 @@ video:
     font_size: 72
     subtitle_font_size: 36
   assets_dir: assets
+
+ex_voice:
+  enabled: false
+  wav_dir: ${EX_VOICE_WAV_DIR:-/home/sin/code/una/VoiceWav}
+  cooldown_chunks: 10
+  max_per_chapter: 8
+  llm_max_insertions: 2
 
 studio:
   default_format: ymm4

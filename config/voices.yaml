@@ -1,4 +1,12 @@
 providers:
+  voicepeak:
+    voices:
+      - id: "Otomachi Una"
+        label: "音街ウナ"
+        gender: female
+        age_group: young_adult
+        favorite: true
+        emotions: [joy, sad, angry, sasayaki, genki]
   voisona:
     voices:
       - id: "nurse-robot-type-t_ja_JP"

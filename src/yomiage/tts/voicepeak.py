@@ -10,9 +10,14 @@ import struct
 import tempfile
 from pathlib import Path
 
+from loguru import logger
+
 from .base import AudioResult, TTSProvider
 
 MAX_CHARS_DEFAULT = 140
+
+# VoicePeak は同時に1プロセスしか実行できないため、プロセスレベルで排他制御する
+_VOICEPEAK_LOCK = asyncio.Lock()
 
 
 class VoicepeakProvider(TTSProvider):
@@ -22,6 +27,7 @@ class VoicepeakProvider(TTSProvider):
         self.default_narrator = config.get("default_narrator", "")
         self.max_chars = config.get("max_chars", MAX_CHARS_DEFAULT)
         self.pitch_scale = config.get("pitch_scale", 300)
+        self.max_retries = config.get("max_retries", 2)
         self._tmpdir: str | None = None
 
     @property
@@ -72,39 +78,66 @@ class VoicepeakProvider(TTSProvider):
         pitch: int = 0,
         emotions: dict[str, int] | None = None,
     ) -> bytes:
-        """Run voicepeak CLI, handling text splitting and WAV concatenation."""
+        """Run voicepeak CLI, handling text splitting and WAV concatenation.
+
+        VoicePeak は同時に1プロセスしか実行できないため _VOICEPEAK_LOCK で排他制御する。
+        失敗時は max_retries 回リトライする。
+        """
         chunks = self._split_text(text, self.max_chars)
         wav_parts: list[bytes] = []
 
         for chunk in chunks:
-            tmpdir = self._get_tmpdir()
-            tmpfile = Path(tmpdir) / f"chunk_{id(chunk) & 0xFFFF:04x}.wav"
-
-            args = self._build_cli_args(narrator, speed, pitch, emotions)
-            cmd = [self.voicepeak_path, "-s", chunk, "-o", str(tmpfile)] + args
-
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await proc.communicate()
-
-            if proc.returncode != 0:
-                err_msg = stderr.decode(errors="replace").strip()
-                raise RuntimeError(
-                    f"VOICEPEAK failed (rc={proc.returncode}): {err_msg}"
-                )
-
-            if not tmpfile.exists():
-                raise RuntimeError(f"VOICEPEAK did not produce output: {tmpfile}")
-
-            wav_parts.append(tmpfile.read_bytes())
-            tmpfile.unlink(missing_ok=True)
+            wav_parts.append(await self._synthesize_chunk(
+                chunk, narrator, speed, pitch, emotions
+            ))
 
         if len(wav_parts) == 1:
             return wav_parts[0]
         return self._concat_wav(wav_parts)
+
+    async def _synthesize_chunk(
+        self,
+        chunk: str,
+        narrator: str,
+        speed: int,
+        pitch: int,
+        emotions: dict[str, int] | None,
+    ) -> bytes:
+        """単一チャンクを合成。ロック取得 + リトライ付き。"""
+        args = self._build_cli_args(narrator, speed, pitch, emotions)
+        last_err: Exception | None = None
+
+        for attempt in range(1, self.max_retries + 2):  # max_retries+1 回試行
+            async with _VOICEPEAK_LOCK:
+                tmpdir = self._get_tmpdir()
+                tmpfile = Path(tmpdir) / f"chunk_{id(chunk) & 0xFFFFFF:06x}.wav"
+                tmpfile.unlink(missing_ok=True)
+
+                cmd = [self.voicepeak_path, "-s", chunk, "-o", str(tmpfile)] + args
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                _, stderr = await proc.communicate()
+
+                if proc.returncode == 0 and tmpfile.exists():
+                    data = tmpfile.read_bytes()
+                    tmpfile.unlink(missing_ok=True)
+                    return data
+
+                err_msg = stderr.decode(errors="replace").strip()
+                last_err = RuntimeError(
+                    f"VOICEPEAK failed (rc={proc.returncode}): {err_msg}"
+                )
+
+            if attempt <= self.max_retries:
+                logger.warning(
+                    f"VoicePeak attempt {attempt} failed, retrying: {chunk[:30]!r}"
+                )
+                await asyncio.sleep(0.5 * attempt)
+
+        raise last_err or RuntimeError("VoicePeak synthesis failed")
 
     def _build_cli_args(
         self,
