@@ -43,6 +43,8 @@ TTSParams
 
 `TextProcessor.has_alphabet(text)` でアルファベット有無を判定。含まれる場合は `OllamaClient.romanize()` でカタカナに変換する（バッチモードでは合成直前に1文単位で実行）。
 
+数式記号や演算子は `MathProcessor`（`config/math_dict.yaml` ベースの辞書）で読み下しに置換される。
+
 ## Stage 1: セグメント分類 (`classifier.py`)
 
 `TextClassifier.classify()` がテキストを行ごとに解析し、`TextSegment` リストを返す。
@@ -84,7 +86,7 @@ TTSParams
 | `emotion` | neutral/happy/angry/sad/surprised/scared/gentle | 感情 |
 | `intensity` | 0.0〜1.0 | 感情の強度 |
 
-SLMが利用不可の場合はデフォルト値（daily/neutral/0.5）で返す。
+SLMが利用不可の場合はデフォルト値（daily/neutral/0.5）で返す。Ollama がレートリミット等で失敗した際は、`OllamaClient` に渡された `fallback`（例: `GeminiClient`）に切り替えて再試行できる。
 
 ### プロンプト構造
 

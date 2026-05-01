@@ -4,11 +4,12 @@
 
 ```
 TTSProvider (ABC)
-├── VoisonaProvider    VoiSona Talk REST API（Windows VM）
-└── VoicevoxProvider   VOICEVOX Engine REST API（Docker）
+├── VoisonaProvider     VoiSona Talk REST API（Windows VM）
+├── VoicevoxProvider    VOICEVOX Engine REST API（Docker）
+└── VoicepeakProvider   VOICEPEAK CLI（ローカルバイナリ）
         │
         ▼
-TTSManager             フォールバック + 合成キュー管理
+TTSManager              フォールバック + 合成キュー管理
 ```
 
 ## VoiSona Talk (`voisona.py`)
@@ -113,6 +114,33 @@ POST /synthesis?speaker=47 (body: query) → WAV bytes
 | alert | 46 | ナースロボ＿タイプT（楽々） |
 | happy | 47 | ナースロボ＿タイプT（ノーマル） |
 
+## VOICEPEAK (`voicepeak.py`)
+
+ローカルにインストールされた VOICEPEAK CLI バイナリを呼び出すプロバイダー。
+
+### 設定
+
+```yaml
+voicepeak:
+  path: /path/to/voicepeak       # CLIバイナリのフルパス
+  default_narrator: "Otomachi Una"
+  max_chars: 140                 # 1呼び出しあたり最大文字数
+  pitch_scale: 300               # ピッチスケール基準
+```
+
+### 合成フロー
+
+```
+voicepeak --narrator "<name>" --text "<text>" --out <wav> [--emotion ...] [--pitch ...] ...
+  → 出力WAVを読み込んで AudioResult を返す
+```
+
+長文は `max_chars` で自動分割し、結合した結果を返す。
+
+### プロファイル
+
+`config/voicepeak_profiles/<narrator>.yaml` でナレーターごとのプリセット・感情パラメータを管理。`yomiage vp-tune` 系コマンドで生成・更新する。
+
 ## TTSManager (`manager.py`)
 
 プロバイダー選択とフォールバック、合成キューを管理する。
@@ -120,7 +148,7 @@ POST /synthesis?speaker=47 (body: query) → WAV bytes
 ### フォールバック
 
 ```
-primary (VoiSona) が unhealthy → fallback (VOICEVOX) に切替
+primary（例: VoiSona）が unhealthy → fallback（例: VOICEVOX）に切替
 primary の合成が失敗 → fallback で再試行
 ```
 
@@ -132,6 +160,7 @@ enqueue(text, params) → _queue → _synth_loop → _audio_queue → _play_loop
 
 - VoiSona: パイプライン合成（前チャンク再生と次チャンク合成の並行）
 - VOICEVOX: 逐次合成
+- VOICEPEAK: 逐次合成（CLI呼び出し）
 
 ## バッチ合成モード
 
@@ -142,11 +171,18 @@ enqueue(text, params) → _queue → _synth_loop → _audio_queue → _play_loop
 - `destination: "file"` で直接WAV出力
 - virtiofs のパスマッピング: `Z:\{work_id}\NNNN.wav` → `output/{work_id}/NNNN.wav`
 - キャラ別パラメータ + シーン + 感情の組み合わせでパラメータ構築
+- `batch.synth_concurrency` で同時合成ジョブ数を制御
 
 ### VoicevoxBatchSynthesizer
 
 - `synthesize()` → WAVバイト → ファイル書き出し
 - キャラごとに異なるスピーカーID
+
+### VoicepeakBatchSynthesizer
+
+- VOICEPEAK CLI を逐次呼び出し
+- ナレーター + 感情 + プロファイルからCLI引数を構築
+- `max_chars` で文を分割してから1ファイルに結合
 
 ### 無音生成
 

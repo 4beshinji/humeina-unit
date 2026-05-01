@@ -2,6 +2,8 @@
 
 エントリポイント: `yomiage` (`src/yomiage/cli.py`)
 
+実行例は `uv run yomiage ...`（venv 有効化後は `yomiage ...`）。
+
 ## リアルタイム読み上げ
 
 ### `yomiage read <URL>`
@@ -12,11 +14,13 @@ URLのコンテンツを読み上げる。チャプター自動遷移対応。
 yomiage read "https://www.aozora.gr.jp/cards/000879/files/127_15260.html"
 yomiage read "https://ncode.syosetu.com/n1234ab/" --provider voicevox
 yomiage read "https://kakuyomu.jp/works/..." -v
+yomiage read "https://example.com/article" --ex-voice
 ```
 
 | オプション | 短縮 | 説明 |
 |-----------|------|------|
-| `--provider` | `-p` | TTSプロバイダー指定（`voisona`/`voicevox`） |
+| `--provider` | `-p` | TTSプロバイダー指定（`voisona`/`voicevox`/`voicepeak`） |
+| `--ex-voice` | | EXボイスクリップを文脈に応じて自動挿入 |
 | `--verbose` | `-v` | 詳細ログ |
 
 ### `yomiage resume`
@@ -41,7 +45,7 @@ yomiage batch analyze "https://..." --mode voicevox --chapters 1-5
 
 | オプション | 短縮 | 説明 |
 |-----------|------|------|
-| `--mode` | `-m` | `voisona` / `voicevox`（デフォルト: `voisona`） |
+| `--mode` | `-m` | `voisona` / `voicevox` / `voicepeak`（デフォルト: `voisona`） |
 | `--chapters` | | チャプター範囲（例: `1-5`, `3`） |
 | `--output` | `-o` | 出力ディレクトリ（デフォルト: `output`） |
 | `--verbose` | `-v` | 詳細ログ |
@@ -61,7 +65,7 @@ yomiage batch synthesize c8113c64b0dc --mode voisona
 
 | オプション | 短縮 | 説明 |
 |-----------|------|------|
-| `--mode` | `-m` | TTSモード |
+| `--mode` | `-m` | TTSモード（`voisona`/`voicevox`/`voicepeak`） |
 | `--output` | `-o` | 出力ディレクトリ |
 | `--verbose` | `-v` | 詳細ログ |
 
@@ -96,14 +100,52 @@ output/{work_id}/full.wav
 
 ### `yomiage batch run <URL>`
 
-Phase A + B + C をフルパイプラインで実行する。
+Phase A + B + C（必要に応じて + D）をフルパイプラインで実行する。
 
 ```bash
 yomiage batch run "https://www.aozora.gr.jp/cards/..." --mode voisona
 yomiage batch run "https://ncode.syosetu.com/..." --mode voicevox --chapters 1-3 --format mp3
+yomiage batch run "https://..." --mode voicepeak --video --style portrait
 ```
 
-全オプションは `analyze` + `synthesize` + `concat` の組み合わせ。
+| オプション | 短縮 | 説明 |
+|-----------|------|------|
+| `--mode` | `-m` | `voisona` / `voicevox` / `voicepeak` |
+| `--chapters` | | チャプター範囲 |
+| `--output` | `-o` | 出力ディレクトリ |
+| `--format` | `-f` | 結合出力フォーマット（`wav`/`mp3`/`flac`） |
+| `--cleanup` | | 結合後に個別WAVを削除 |
+| `--video` | | 動画も生成（Phase D） |
+| `--style` | `-s` | 動画スタイル: `subtitle` / `portrait` |
+| `--verbose` | `-v` | 詳細ログ |
+
+### `yomiage batch subtitle <work_id>`
+
+字幕ファイルを生成する。
+
+```bash
+yomiage batch subtitle c8113c64b0dc --format ass
+yomiage batch subtitle c8113c64b0dc --format srt
+```
+
+| オプション | 短縮 | 説明 |
+|-----------|------|------|
+| `--format` | `-f` | `ass` / `srt`（デフォルト: `ass`） |
+| `--output` | `-o` | 出力ディレクトリ |
+
+### `yomiage batch video <work_id>`
+
+Phase D: 動画ファイルを生成する。
+
+```bash
+yomiage batch video c8113c64b0dc --style subtitle
+yomiage batch video c8113c64b0dc --style portrait
+```
+
+| オプション | 短縮 | 説明 |
+|-----------|------|------|
+| `--style` | `-s` | `subtitle`（字幕のみ） / `portrait`（立ち絵差し替え） |
+| `--output` | `-o` | 出力ディレクトリ |
 
 ### `yomiage batch status <work_id>`
 
@@ -164,6 +206,77 @@ yomiage characters assign "太郎" 47
 yomiage characters assign "花子" 48 --work-id c8113c64b0dc
 ```
 
+## ボイスプロファイル チューニング
+
+### VoiSona / VOICEVOX 向け: `yomiage tune ...`
+
+`tune` グループは VoiSona ボイス（および設定により VOICEVOX）のプロファイルを段階的に作る。
+
+```bash
+yomiage tune range nurse-robot-type-t_ja_JP        # Phase 1: パラメータ実用範囲探索
+yomiage tune preset nurse-robot-type-t_ja_JP       # Phase 2: アーキタイププリセット作成
+yomiage tune emotion nurse-robot-type-t_ja_JP --base female_young
+yomiage tune noise nurse-robot-type-t_ja_JP --base female_young
+yomiage tune demo nurse-robot-type-t_ja_JP         # Phase 5: 全プリセット×全感情デモ
+yomiage tune test nurse-robot-type-t_ja_JP male_young --emotion happy --intensity 0.7
+```
+
+プロファイルは `config/voice_profiles/<voice>.yaml` に保存される。
+
+### VOICEPEAK 向け: `yomiage vp-tune ...`
+
+VOICEPEAK ナレーター用の同等コマンド群。
+
+```bash
+yomiage vp-tune range "Otomachi Una"
+yomiage vp-tune preset "Otomachi Una"
+yomiage vp-tune emotion "Otomachi Una" --base female_young
+yomiage vp-tune noise "Otomachi Una" --base female_young
+yomiage vp-tune demo "Otomachi Una"
+yomiage vp-tune test "Otomachi Una" female_young --emotion happy --intensity 0.7
+```
+
+プロファイルは `config/voicepeak_profiles/<narrator>.yaml` に保存される。
+
+## Studio（動画素材生成）
+
+台本ファイルから音声素材を一括合成するコマンド群。
+
+### `yomiage studio synth <script>`
+
+```bash
+yomiage studio synth script.txt --format ymm4
+yomiage studio synth script.csv --speaker-map speakers.yaml --pause 0.4
+yomiage studio synth script.json --provider voicevox --project demo01 --no-cache
+```
+
+| オプション | 短縮 | 説明 |
+|-----------|------|------|
+| `--provider` | `-p` | TTSプロバイダー |
+| `--output` | `-o` | 出力ディレクトリ |
+| `--format` | `-f` | `ymm4` / `plain`（デフォルト: `ymm4`） |
+| `--pause` | | セリフ間ポーズ秒（デフォルト: 0.3） |
+| `--speaker-map` | | 話者→ボイスのマッピングYAML/JSON |
+| `--project` | `-n` | プロジェクト名 |
+| `--no-cache` | | キャッシュ無効化 |
+
+### `yomiage studio preview <script>`
+
+台本の指定行をプレビュー再生する。
+
+```bash
+yomiage studio preview script.txt --line 3
+```
+
+### `yomiage studio voices`
+
+各プロバイダーで利用可能なボイス一覧を表示する。
+
+```bash
+yomiage studio voices
+yomiage studio voices --provider voicepeak
+```
+
 ## ニュース
 
 ### `yomiage news daily`
@@ -172,7 +285,16 @@ yomiage characters assign "花子" 48 --work-id c8113c64b0dc
 
 ```bash
 yomiage news daily
+yomiage news daily --output news.wav
+yomiage news daily --gemini-key "$GEMINI_API_KEY"
 ```
+
+| オプション | 短縮 | 説明 |
+|-----------|------|------|
+| `--provider` | `-p` | TTSプロバイダー |
+| `--output` | `-o` | 音声ファイル出力先（指定時は再生せずファイル化） |
+| `--gemini-key` | | Gemini APIキー（Ollamaフォールバック）。`GEMINI_API_KEY` 環境変数からも取得 |
+| `--verbose` | `-v` | 詳細ログ |
 
 ### `yomiage news check`
 

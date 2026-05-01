@@ -54,7 +54,7 @@ URLの読み上げを開始する。
 | フィールド | 型 | 必須 | 説明 |
 |-----------|-----|------|------|
 | `url` | string | はい | 読み上げ対象URL |
-| `provider` | string | いいえ | TTSプロバイダー（voisona/voicevox） |
+| `provider` | string | いいえ | TTSプロバイダー（`voisona` / `voicevox` / `voicepeak`） |
 
 エラー:
 - `409`: 既に読み上げ中
