@@ -9,8 +9,8 @@
 ## 基本インストール
 
 ```bash
-git clone https://github.com/4beshinji/voisona-yomiage.git
-cd voisona-yomiage
+git clone https://github.com/4beshinji/humeina-unit.git
+cd humeina-unit
 
 # uv を利用する場合（推奨）
 uv sync --extra dev

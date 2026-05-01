@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "voisona-yomiage"
+name = "humeina-unit"
 version = "0.1.0"
 description = "高品質な音声読み上げシステム — NLPパイプラインによる話者識別・シーン判別・感情分析"
 readme = "README.md"

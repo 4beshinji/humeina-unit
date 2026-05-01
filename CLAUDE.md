@@ -1,4 +1,4 @@
-# voisona_yomiage
+# humeina-unit
 
 VoiSona Talk + VOICEVOX を利用した高品質音声読み上げシステム。
 NLPパイプラインで話者識別・シーン判別・感情分析を行い、小説の登場人物ごとに声やパラメータを自動で変える。

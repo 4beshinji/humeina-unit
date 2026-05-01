@@ -1,4 +1,4 @@
-# voisona_yomiage
+# humeina-unit
 
 VoiSona Talk + VOICEVOX + VOICEPEAK を利用した高品質音声読み上げシステム。
 

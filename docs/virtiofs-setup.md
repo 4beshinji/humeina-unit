@@ -28,7 +28,7 @@ VoiSona Talk（Windows VM）からホスト（Linux）の `output/` ディレク
 ### 1. 出力ディレクトリ作成
 
 ```bash
-mkdir -p /home/sin/code/claude/voisona_yomiage/output
+mkdir -p /home/sin/code/claude/humeina-unit/output
 ```
 
 ### 2. libvirt VM XML 編集
@@ -54,7 +54,7 @@ virsh edit win11-voisona
 ```xml
 <filesystem type='mount' accessmode='passthrough'>
   <driver type='virtiofs'/>
-  <source dir='/home/sin/code/claude/voisona_yomiage/output'/>
+  <source dir='/home/sin/code/claude/humeina-unit/output'/>
   <target dir='voisona_output'/>
 </filesystem>
 ```
