@@ -10,6 +10,11 @@ import time
 import aiohttp
 from loguru import logger
 
+from ..api.exceptions import (
+    TTSError,
+    map_aiohttp_error,
+    map_client_error,
+)
 from .base import AudioResult, TTSProvider
 
 API_BASE = "/api/talk/v1"
@@ -19,6 +24,7 @@ POLL_TIMEOUT = 120.0
 
 class VoisonaProvider(TTSProvider):
     def __init__(self, config: dict | None = None):
+        super().__init__()
         config = config or {}
         self.base_url = config.get("url", "http://192.168.1.173:32766")
         self.username = config.get("username", "")
@@ -144,63 +150,78 @@ class VoisonaProvider(TTSProvider):
         return await self._poll_synthesis(uuid, wall_start)
 
     async def _post_synthesis(self, body: dict) -> str:
-        timeout = aiohttp.ClientTimeout(total=30)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post(
+        try:
+            timeout = aiohttp.ClientTimeout(total=30)
+            async with self.session.post(
                 f"{self._api_url}/speech-syntheses",
                 json=body,
                 auth=self._auth(),
+                timeout=timeout,
             ) as resp:
                 if resp.status != 201:
                     detail = await resp.text()
-                    raise RuntimeError(
-                        f"VoiSona speech-syntheses POST failed: {resp.status} {detail}"
+                    raise map_aiohttp_error(
+                        "voisona",
+                        resp.status,
+                        f"speech-syntheses POST failed: {resp.status} {detail}",
                     )
                 result = await resp.json()
-        uuid = result["uuid"]
-        logger.debug(f"VoiSona synthesis queued: {uuid}")
-        return uuid
+            uuid = result["uuid"]
+            logger.debug(f"VoiSona synthesis queued: {uuid}")
+            return uuid
+        except TTSError:
+            raise
+        except Exception as exc:
+            raise map_client_error("voisona", exc)
 
     async def _poll_synthesis(self, uuid: str, wall_start: float) -> AudioResult:
-        """POST と同一セッションではなく専用セッションでポーリング.
+        """共有セッションでポーリング.
 
-        1リクエストずつ新規接続を確立し、接続を同時に複数持たない。
+        コネクションプールの limit_per_host で同時接続数を制御する。
         """
+        from ..api.exceptions import SynthesisError, TimeoutError
+
         elapsed = 0.0
         while elapsed < POLL_TIMEOUT:
             await asyncio.sleep(POLL_INTERVAL)
             elapsed += POLL_INTERVAL
             try:
                 timeout = aiohttp.ClientTimeout(total=15)
-                async with aiohttp.ClientSession(timeout=timeout) as session:
-                    async with session.get(
-                        f"{self._api_url}/speech-syntheses/{uuid}",
-                        auth=self._auth(),
-                    ) as resp:
-                        if resp.status != 200:
-                            continue
-                        status = await resp.json()
-                        state = status.get("state")
-                        if state == "succeeded":
-                            duration = status.get("duration", 0.0)
-                            wall_elapsed = time.monotonic() - wall_start
-                            self._healthy = True
-                            logger.info(
-                                f"VoiSona done: {duration:.2f}s "
-                                f"(wall {wall_elapsed:.1f}s)"
-                            )
-                            return AudioResult(
-                                audio_data=b"", format="wav", duration=duration
-                            )
-                        if state == "failed":
-                            raise RuntimeError(f"VoiSona synthesis failed: {status}")
-            except RuntimeError:
+                async with self.session.get(
+                    f"{self._api_url}/speech-syntheses/{uuid}",
+                    auth=self._auth(),
+                    timeout=timeout,
+                ) as resp:
+                    if resp.status != 200:
+                        continue
+                    status = await resp.json()
+                    state = status.get("state")
+                    if state == "succeeded":
+                        duration = status.get("duration", 0.0)
+                        wall_elapsed = time.monotonic() - wall_start
+                        self._healthy = True
+                        logger.info(
+                            f"VoiSona done: {duration:.2f}s "
+                            f"(wall {wall_elapsed:.1f}s)"
+                        )
+                        return AudioResult(
+                            audio_data=b"", format="wav", duration=duration
+                        )
+                    if state == "failed":
+                        raise SynthesisError(
+                            f"VoiSona synthesis failed: {status}",
+                            details={"engine": "voisona", "uuid": uuid},
+                        )
+            except TTSError:
                 raise
             except Exception as e:
                 logger.debug(f"Poll attempt failed ({elapsed:.0f}s): {e}")
 
         self._healthy = False
-        raise RuntimeError(f"VoiSona synthesis timed out after {POLL_TIMEOUT}s")
+        raise TimeoutError(
+            f"VoiSona synthesis timed out after {POLL_TIMEOUT}s",
+            details={"engine": "voisona", "uuid": uuid},
+        )
 
     async def synthesize_to_file(
         self,
@@ -228,23 +249,35 @@ class VoisonaProvider(TTSProvider):
     async def is_available(self) -> bool:
         try:
             timeout = aiohttp.ClientTimeout(total=5)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.get(
-                    f"{self._api_url}/voices", auth=self._auth()
-                ) as resp:
-                    return resp.status == 200
+            async with self.session.get(
+                f"{self._api_url}/voices", auth=self._auth(), timeout=timeout
+            ) as resp:
+                return resp.status == 200
         except Exception:
             return False
 
     async def list_voices(self) -> list[dict]:
         try:
             timeout = aiohttp.ClientTimeout(total=5)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.get(
-                    f"{self._api_url}/voices", auth=self._auth()
-                ) as resp:
-                    if resp.status == 200:
-                        return await resp.json()
+            async with self.session.get(
+                f"{self._api_url}/voices", auth=self._auth(), timeout=timeout
+            ) as resp:
+                if resp.status != 200:
                     return []
+                data = await resp.json()
+                items = data.get("items", []) if isinstance(data, dict) else data
+                voices = []
+                for item in items:
+                    voice_id = item.get("voice_name", "")
+                    display_names = item.get("display_names", [])
+                    name = voice_id
+                    for dn in display_names:
+                        if dn.get("language") == self.language:
+                            name = dn.get("name", voice_id)
+                            break
+                    if not name and display_names:
+                        name = display_names[0].get("name", voice_id)
+                    voices.append({"id": voice_id, "name": name})
+                return voices
         except Exception:
             return []

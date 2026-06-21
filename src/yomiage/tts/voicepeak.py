@@ -11,6 +11,7 @@ from pathlib import Path
 
 from loguru import logger
 
+from ..api.exceptions import SynthesisError
 from .audio_utils import concat_wav_bytes
 from .base import AudioResult, TTSProvider
 
@@ -22,6 +23,7 @@ _VOICEPEAK_LOCK = asyncio.Lock()
 
 class VoicepeakProvider(TTSProvider):
     def __init__(self, config: dict | None = None):
+        super().__init__()
         config = config or {}
         self.voicepeak_path = config.get("path", "voicepeak")
         self.default_narrator = config.get("default_narrator", "")
@@ -127,8 +129,9 @@ class VoicepeakProvider(TTSProvider):
                     return data
 
                 err_msg = stderr.decode(errors="replace").strip()
-                last_err = RuntimeError(
-                    f"VOICEPEAK failed (rc={proc.returncode}): {err_msg}"
+                last_err = SynthesisError(
+                    f"VOICEPEAK failed (rc={proc.returncode}): {err_msg}",
+                    details={"engine": "voicepeak", "returncode": proc.returncode},
                 )
 
             if attempt <= self.max_retries:
@@ -137,7 +140,7 @@ class VoicepeakProvider(TTSProvider):
                 )
                 await asyncio.sleep(0.5 * attempt)
 
-        raise last_err or RuntimeError("VoicePeak synthesis failed")
+        raise last_err or SynthesisError("VoicePeak synthesis failed")
 
     def _build_cli_args(
         self,

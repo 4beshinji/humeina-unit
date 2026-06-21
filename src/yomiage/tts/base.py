@@ -4,6 +4,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import aiohttp
+
 
 @dataclass
 class AudioResult:
@@ -33,6 +35,10 @@ class TTSParams:
 class TTSProvider(ABC):
     """TTSプロバイダー抽象基底クラス."""
 
+    def __init__(self) -> None:
+        self._session: aiohttp.ClientSession | None = None
+        self._session_external: bool = False
+
     @property
     @abstractmethod
     def name(self) -> str: ...
@@ -45,6 +51,37 @@ class TTSProvider(ABC):
     def is_slow(self) -> bool:
         """低速プロバイダーはパイプライン合成戦略を使用."""
         return False
+
+    def set_session(self, session: aiohttp.ClientSession | None) -> None:
+        """外部から aiohttp.ClientSession を注入."""
+        self._session = session
+        self._session_external = session is not None
+
+    @property
+    def session(self) -> aiohttp.ClientSession:
+        """共有セッションを返す. 未設定ならデフォルトマネージャーから取得."""
+        if self._session is not None and not self._session.closed:
+            return self._session
+        from .session import get_default_session_manager
+
+        self._session = get_default_session_manager().acquire()
+        self._session_external = False
+        return self._session
+
+    async def close(self) -> None:
+        """プロバイダーが保持する外部リソースを解放."""
+        if self._session is None or self._session.closed:
+            self._session = None
+            return
+        if self._session_external:
+            # 外部注入セッションは閉じずに参照を外すだけ
+            self._session = None
+            self._session_external = False
+        else:
+            from .session import get_default_session_manager
+
+            await get_default_session_manager().release()
+            self._session = None
 
     @abstractmethod
     async def synthesize(

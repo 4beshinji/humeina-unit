@@ -11,6 +11,7 @@ from loguru import logger
 
 from ..tts.base import AudioResult, TTSParams, TTSProvider
 from ..tts.factory import create_provider
+from ..tts.retry import RetryConfig, with_retry
 from .models import SynthesisResult, VoiceInfo
 
 if TYPE_CHECKING:
@@ -31,43 +32,56 @@ class TTSBridge:
         self,
         provider: TTSProvider,
         fallback: TTSProvider | None = None,
+        retry_config: RetryConfig | None = None,
     ):
         self._provider = provider
         self._fallback = fallback
+        self._retry_config = retry_config
 
     @classmethod
-    def create(cls, engine: str, **kwargs: object) -> TTSBridge:
+    def create(
+        cls,
+        engine: str,
+        *,
+        retry_config: RetryConfig | None = None,
+        **kwargs: object,
+    ) -> TTSBridge:
         """ファクトリ: エンジン名+パラメータで作成.
 
         Args:
             engine: "voicevox", "voisona", or "voicepeak"
+            retry_config: リトライ設定
             **kwargs: url, username, password, default_voice etc.
         """
         from .config import TTSEngineConfig
 
         config = TTSEngineConfig(engine=engine, **kwargs)  # type: ignore[arg-type]
         provider = create_provider(config)
-        return cls(provider)
+        return cls(provider, retry_config=retry_config)
 
     @classmethod
     def from_config(
         cls,
         config: TTSEngineConfig,
         fallback: TTSEngineConfig | None = None,
+        *,
+        retry_config: RetryConfig | None = None,
     ) -> TTSBridge:
         """TTSEngineConfigから作成."""
         provider = create_provider(config)
         fb = create_provider(fallback) if fallback else None
-        return cls(provider, fb)
+        return cls(provider, fb, retry_config=retry_config)
 
     @classmethod
     def from_provider(
         cls,
         provider: TTSProvider,
         fallback: TTSProvider | None = None,
+        *,
+        retry_config: RetryConfig | None = None,
     ) -> TTSBridge:
         """既存のTTSProviderインスタンスから作成."""
-        return cls(provider, fallback)
+        return cls(provider, fallback, retry_config=retry_config)
 
     @property
     def engine_name(self) -> str:
@@ -189,16 +203,37 @@ class TTSBridge:
     async def _synthesize_with_fallback(
         self, text: str, synth_kwargs: dict
     ) -> AudioResult:
-        """primary で合成を試み、失敗時に fallback へ."""
-        try:
+        """primary で合成を試み、失敗時に fallback へ.
+
+        リトライ設定があれば primary/fallback それぞれでリトライする。
+        """
+        async def _try_primary() -> AudioResult:
             return await self._provider.synthesize(text, **synth_kwargs)
+
+        try:
+            if self._retry_config:
+                return await with_retry(
+                    _try_primary,
+                    self._retry_config,
+                    operation_name=f"TTS ({self._provider.name})",
+                )
+            return await _try_primary()
         except Exception as e:
             if self._fallback:
                 logger.warning(
                     f"Primary TTS ({self._provider.name}) failed: {e}, "
                     f"trying fallback ({self._fallback.name})"
                 )
-                return await self._fallback.synthesize(text, **synth_kwargs)
+                async def _try_fallback() -> AudioResult:
+                    return await self._fallback.synthesize(text, **synth_kwargs)
+
+                if self._retry_config:
+                    return await with_retry(
+                        _try_fallback,
+                        self._retry_config,
+                        operation_name=f"TTS fallback ({self._fallback.name})",
+                    )
+                return await _try_fallback()
             raise
 
     async def _synthesize_via_file(

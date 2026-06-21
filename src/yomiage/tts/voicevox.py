@@ -5,6 +5,7 @@ from pathlib import Path
 import aiohttp
 from loguru import logger
 
+from ..api.exceptions import TTSError, map_aiohttp_error, map_client_error
 from .base import AudioResult, TTSProvider
 
 DEFAULT_SPEAKERS = {
@@ -18,6 +19,7 @@ DEFAULT_SPEAKERS = {
 
 class VoicevoxProvider(TTSProvider):
     def __init__(self, config: dict | None = None):
+        super().__init__()
         config = config or {}
         self.base_url = config.get("url", "http://localhost:50021")
         self.speakers = DEFAULT_SPEAKERS.copy()
@@ -51,15 +53,16 @@ class VoicevoxProvider(TTSProvider):
         pitch = self.pitch_scale + params.get("pitch", 0.0)
         intonation = self.intonation_scale + params.get("intonation", 0.0)
 
-        async with aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=30)
-        ) as session:
+        try:
+            session = self.session
             async with session.post(
                 f"{self.base_url}/audio_query",
                 params={"text": text, "speaker": speaker_id},
             ) as resp:
                 if resp.status != 200:
-                    raise RuntimeError(f"VOICEVOX audio_query failed: {resp.status}")
+                    raise map_aiohttp_error(
+                        "voicevox", resp.status, f"audio_query failed: {resp.status}"
+                    )
                 query = await resp.json()
 
             query["speedScale"] = effective_speed
@@ -74,8 +77,14 @@ class VoicevoxProvider(TTSProvider):
                 json=query,
             ) as resp:
                 if resp.status != 200:
-                    raise RuntimeError(f"VOICEVOX synthesis failed: {resp.status}")
+                    raise map_aiohttp_error(
+                        "voicevox", resp.status, f"synthesis failed: {resp.status}"
+                    )
                 audio_data = await resp.read()
+        except TTSError:
+            raise
+        except Exception as exc:
+            raise map_client_error("voicevox", exc)
 
         logger.debug(f"VOICEVOX synthesized: speaker={speaker_id}, speed={effective_speed}")
         return AudioResult(audio_data=audio_data, format="wav", sample_rate=24000)
@@ -95,11 +104,11 @@ class VoicevoxProvider(TTSProvider):
 
     async def is_available(self) -> bool:
         try:
-            async with aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=5)
-            ) as session:
-                async with session.get(f"{self.base_url}/speakers") as resp:
-                    return resp.status == 200
+            timeout = aiohttp.ClientTimeout(total=5)
+            async with self.session.get(
+                f"{self.base_url}/speakers", timeout=timeout
+            ) as resp:
+                return resp.status == 200
         except Exception:
             return False
 
@@ -107,23 +116,23 @@ class VoicevoxProvider(TTSProvider):
         if use_cache and self._voices_cache is not None:
             return self._voices_cache
         try:
-            async with aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=5)
-            ) as session:
-                async with session.get(f"{self.base_url}/speakers") as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        voices = []
-                        for speaker in data:
-                            for style in speaker.get("styles", []):
-                                voices.append(
-                                    {
-                                        "id": style["id"],
-                                        "name": f"{speaker['name']}（{style['name']}）",
-                                    }
-                                )
-                        self._voices_cache = voices
-                        return voices
-                    return []
+            timeout = aiohttp.ClientTimeout(total=5)
+            async with self.session.get(
+                f"{self.base_url}/speakers", timeout=timeout
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    voices = []
+                    for speaker in data:
+                        for style in speaker.get("styles", []):
+                            voices.append(
+                                {
+                                    "id": style["id"],
+                                    "name": f"{speaker['name']}（{style['name']}）",
+                                }
+                            )
+                    self._voices_cache = voices
+                    return voices
+                return []
         except Exception:
             return []
