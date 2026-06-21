@@ -3,8 +3,6 @@
 import asyncio
 import hashlib
 import re
-import subprocess
-import tempfile
 import time
 from pathlib import Path
 
@@ -13,12 +11,14 @@ from loguru import logger
 from ..exvoice.catalog import normalize_wav
 from ..exvoice.manager import ExVoiceManager
 from ..nlp.classifier import TextClassifier
+from ..nlp.pipeline import NLPAnalyzer
 from ..nlp.scene_analyzer import AnalyzedSegment, SceneAnalyzer
 from ..nlp.speaker import SpeakerExtractor
 from ..nlp.splitter import Chunk, TextSplitter
 from ..nlp.text_processor import TextProcessor
 from ..sources import registry
 from ..sources.base import Chapter, ContentSource
+from ..tts.audio_utils import concat_wav_files
 from ..tts.base import TTSParams
 from ..tts.manager import TTSManager
 from ..tts.playback import play_wav
@@ -66,6 +66,15 @@ class ReadingEngine:
         self.output_dir = Path(output_dir)
         self.synth_concurrency = synth_concurrency
         self.ex_voice = ex_voice
+
+        self._nlp_analyzer = NLPAnalyzer(
+            max_chunk_chars=self.splitter.max_chars,
+            text_processor=self.processor,
+            splitter=self.splitter,
+            classifier=self.classifier,
+            speaker_extractor=self.speaker_extractor,
+            scene_analyzer=self.scene_analyzer,
+        )
 
         self._running = False
         self._pause_event = asyncio.Event()
@@ -299,35 +308,13 @@ class ReadingEngine:
     ) -> None:
         """チャンクバッチをNLPパイプラインで分析."""
         for chunk in chunks:
-            # Stage 1: ルールベース分類
-            segments = self.classifier.classify(chunk.text)
-            # Stage 1.5: 話者候補抽出
-            segments = self.speaker_extractor.extract(segments)
-
-            # Stage 2: SLM分析（利用可能な場合）
-            if self.scene_analyzer:
-                analyzed = await self.scene_analyzer.analyze_batch(
-                    segments,
-                    known_characters=self._character_db.known_names if self._character_db else None,
-                )
-                # 新キャラクター検出
-                for seg in analyzed:
-                    if seg.new_character and self._character_db:
-                        self._character_db.get_or_create(
-                            seg.new_character.get("name", ""),
-                            profile_hint=seg.new_character,
-                        )
-                    if seg.speaker and self._character_db:
-                        self._character_db.get_or_create(seg.speaker)
-            else:
-                analyzed = [
-                    AnalyzedSegment.from_segment(
-                        seg,
-                        speaker=seg.speaker_candidates[0] if seg.speaker_candidates else None,
-                    )
-                    for seg in segments
-                ]
-
+            analyzed = await self._nlp_analyzer.analyze_chunk(
+                chunk,
+                known_characters=(
+                    self._character_db.known_names if self._character_db else None
+                ),
+                character_db=self._character_db,
+            )
             cache[chunk.index] = analyzed
 
     async def _read_chunks_file_batch(
@@ -473,7 +460,7 @@ class ReadingEngine:
         logger.info(
             f"Concatenating {len(wav_files)}/{len(speakable)} WAV files..."
         )
-        self._concat_wav_files(wav_files, output_path)
+        concat_wav_files(wav_files, output_path)
 
         # 再生
         if output_path.exists():
@@ -488,27 +475,6 @@ class ReadingEngine:
         # クリーンアップ（個別チャンクファイル削除、fullは残す）
         for f in wav_files:
             f.unlink(missing_ok=True)
-
-    @staticmethod
-    def _concat_wav_files(files: list[Path], output: Path) -> None:
-        """ffmpeg concat demuxer でWAVファイルを結合."""
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".txt", delete=False
-        ) as f:
-            for wav in files:
-                f.write(f"file '{wav.resolve()}'\n")
-            concat_list = f.name
-
-        try:
-            cmd = [
-                "ffmpeg", "-y", "-f", "concat", "-safe", "0",
-                "-i", concat_list, "-codec:a", "pcm_s16le", str(output),
-            ]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-            if result.returncode != 0:
-                raise RuntimeError(f"ffmpeg concat failed: {result.stderr}")
-        finally:
-            Path(concat_list).unlink(missing_ok=True)
 
     async def _prepare_chunk_text(self, text: str) -> str:
         """チャンクテキストをTTS合成直前に最終クリーニング.

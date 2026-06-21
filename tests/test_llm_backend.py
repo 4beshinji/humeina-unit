@@ -7,35 +7,35 @@ from yomiage.nlp.llm_backend import (
     LLMBackend,
     OllamaBackend,
     OpenAIBackend,
-    _extract_json,
     create_llm_backend,
 )
+from yomiage.nlp.llm_utils import extract_json
 
 
 class TestExtractJson:
     def test_plain_json_array(self):
-        assert _extract_json('[{"a": 1}]') == [{"a": 1}]
+        assert extract_json('[{"a": 1}]') == [{"a": 1}]
 
     def test_plain_json_object(self):
-        assert _extract_json('{"key": "value"}') == {"key": "value"}
+        assert extract_json('{"key": "value"}') == {"key": "value"}
 
     def test_json_in_code_block(self):
         text = '```json\n[{"x": 1}]\n```'
-        assert _extract_json(text) == [{"x": 1}]
+        assert extract_json(text) == [{"x": 1}]
 
     def test_json_in_generic_code_block(self):
         text = '```\n{"y": 2}\n```'
-        assert _extract_json(text) == {"y": 2}
+        assert extract_json(text) == {"y": 2}
 
     def test_text_before_json(self):
         text = 'Here is the result:\n[{"z": 3}]'
-        assert _extract_json(text) == [{"z": 3}]
+        assert extract_json(text) == [{"z": 3}]
 
     def test_invalid_json_returns_empty_dict(self):
-        assert _extract_json("not json at all") == {}
+        assert extract_json("not json at all") == {}
 
     def test_empty_string_returns_empty_dict(self):
-        assert _extract_json("") == {}
+        assert extract_json("") == {}
 
 
 class TestCreateLlmBackend:

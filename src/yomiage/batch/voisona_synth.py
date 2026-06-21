@@ -1,7 +1,6 @@
 """VoiSona batch synthesizer — destination:file mode via virtiofs."""
 
 import asyncio
-import struct
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +9,7 @@ from loguru import logger
 
 from ..reader.character_db import CharacterDB
 from ..reader.param_mapper import ParamMapper
+from ..tts.audio_utils import write_silence_wav
 from ..tts.voisona import POLL_INTERVAL, POLL_TIMEOUT, VoisonaProvider
 from .manifest import SentenceEntry
 from .synthesizer import BatchSynthesizer
@@ -167,60 +167,17 @@ class VoisonaBatchSynthesizer(BatchSynthesizer):
                                 params[k] = bp[k] * 0.3
 
         # Always apply scene modifiers
-        self._apply_scene_mods(params, entry.scene)
+        self.param_mapper.apply_scene_mods(params, entry.scene)
 
         # Apply emotion style only when VoiceProfile didn't handle it
         if not voice_profile_handled_emotion:
-            self._apply_emotion_style(params, entry.emotion, entry.intensity)
+            self.param_mapper.apply_emotion_style(
+                params, entry.emotion, entry.intensity
+            )
 
         if entry.tts_params:
             params.update(entry.tts_params)
 
         return params
 
-    def _apply_scene_mods(self, params: dict, scene: str) -> None:
-        """シーン修飾子をパラメータに適用."""
-        scene_mods = self.param_mapper.scenes.get(scene, {})
-        if scene_mods:
-            params["speed"] = params.get("speed", 1.0) * scene_mods.get("speed", 1.0)
-            params["volume"] = params.get("volume", 0.0) + scene_mods.get("volume", 0.0)
 
-    def _apply_emotion_style(self, params: dict, emotion: str, intensity: float) -> None:
-        """感情スタイルウェイトをパラメータに適用."""
-        if "style_weights" in params:
-            return
-        emotion_style = self.param_mapper.emotion_styles.get(emotion)
-        if emotion_style:
-            if intensity < 1.0:
-                neutral = self.param_mapper.emotion_styles.get(
-                    "neutral", [1.0, 0.0, 0.0, 0.0, 0.0]
-                )
-                emotion_style = [
-                    n * (1 - intensity) + s * intensity
-                    for n, s in zip(neutral, emotion_style)
-                ]
-            params["style_weights"] = emotion_style
-
-
-def write_silence_wav(
-    path: Path, duration: float, sample_rate: int = 24000
-) -> None:
-    """無音WAVファイルを書き出し."""
-    num_samples = int(sample_rate * duration)
-    data_size = num_samples * 2  # 16-bit mono
-
-    with open(path, "wb") as f:
-        f.write(b"RIFF")
-        f.write(struct.pack("<I", 36 + data_size))
-        f.write(b"WAVE")
-        f.write(b"fmt ")
-        f.write(struct.pack("<I", 16))
-        f.write(struct.pack("<H", 1))  # PCM
-        f.write(struct.pack("<H", 1))  # mono
-        f.write(struct.pack("<I", sample_rate))
-        f.write(struct.pack("<I", sample_rate * 2))
-        f.write(struct.pack("<H", 2))
-        f.write(struct.pack("<H", 16))
-        f.write(b"data")
-        f.write(struct.pack("<I", data_size))
-        f.write(b"\x00" * data_size)

@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import json
 from typing import TYPE_CHECKING
 
 import aiohttp
 from loguru import logger
+
+from .llm_utils import ROMANIZE_SYSTEM_PROMPT, extract_json
 
 if TYPE_CHECKING:
     from .gemini_client import GeminiClient
@@ -73,25 +74,7 @@ class OllamaClient:
     ) -> list | dict:
         """JSON出力を生成・パース."""
         response = await self.generate(prompt, system, temperature)
-
-        # JSON部分を抽出（コードブロック内の場合も対応）
-        text = response.strip()
-        if "```json" in text:
-            text = text.split("```json", 1)[1].split("```", 1)[0]
-        elif "```" in text:
-            text = text.split("```", 1)[1].split("```", 1)[0]
-
-        # [ または { から始まる部分を探す
-        for i, c in enumerate(text):
-            if c in ("[", "{"):
-                text = text[i:]
-                break
-
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError as e:
-            logger.warning(f"Failed to parse JSON from Ollama: {e}\nResponse: {response[:200]}")
-            return {}
+        return extract_json(response)
 
     async def romanize(self, text: str) -> str:
         """テキスト中のアルファベットを日本語の読み仮名に変換."""
@@ -100,15 +83,7 @@ class OllamaClient:
         try:
             return await self.generate(
                 text,
-                system=(
-                    "あなたはテキスト変換ツールです。"
-                    "テキスト中のアルファベット（英単語・略語・固有名詞）を"
-                    "すべて正しい日本語の読み（カタカナ）に書き換えてください。"
-                    "略語も必ずカタカナにしてください"
-                    "（例: BBC→ビービーシー, AI→エーアイ, UK→ユーケー）。"
-                    "アルファベットが一文字も残らないようにしてください。"
-                    "それ以外の部分は一切変更しないでください。変換後のテキストのみ出力してください。"
-                ),
+                system=ROMANIZE_SYSTEM_PROMPT,
                 temperature=0.1,
             )
         except Exception as e:

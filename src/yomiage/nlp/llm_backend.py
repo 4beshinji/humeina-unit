@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import json
 from abc import ABC, abstractmethod
 
 import aiohttp
 from loguru import logger
 
+from .llm_utils import ROMANIZE_SYSTEM_PROMPT, extract_json
 from .ollama_client import OllamaClient
 
 
@@ -52,15 +52,7 @@ class LLMBackend(ABC):
         try:
             return await self.generate(
                 text,
-                system=(
-                    "あなたはテキスト変換ツールです。"
-                    "テキスト中のアルファベット（英単語・略語・固有名詞）を"
-                    "すべて正しい日本語の読み（カタカナ）に書き換えてください。"
-                    "略語も必ずカタカナにしてください"
-                    "（例: BBC→ビービーシー, AI→エーアイ, UK→ユーケー）。"
-                    "アルファベットが一文字も残らないようにしてください。"
-                    "それ以外の部分は一切変更しないでください。変換後のテキストのみ出力してください。"
-                ),
+                system=ROMANIZE_SYSTEM_PROMPT,
                 temperature=0.1,
             )
         except Exception as e:
@@ -172,7 +164,7 @@ class OpenAIBackend(LLMBackend):
         response = await self.generate(
             prompt, system=system, temperature=temperature
         )
-        return _extract_json(response)
+        return extract_json(response)
 
     async def is_available(self) -> bool:
         try:
@@ -244,7 +236,7 @@ class AnthropicBackend(LLMBackend):
         response = await self.generate(
             prompt, system=system, temperature=temperature
         )
-        return _extract_json(response)
+        return extract_json(response)
 
     async def is_available(self) -> bool:
         try:
@@ -302,23 +294,3 @@ def create_llm_backend(
         )
     else:
         raise ValueError(f"Unknown LLM backend: {backend}")
-
-
-def _extract_json(response: str) -> list | dict:
-    """LLMレスポンスからJSONを抽出."""
-    text = response.strip()
-    if "```json" in text:
-        text = text.split("```json", 1)[1].split("```", 1)[0]
-    elif "```" in text:
-        text = text.split("```", 1)[1].split("```", 1)[0]
-
-    for i, c in enumerate(text):
-        if c in ("[", "{"):
-            text = text[i:]
-            break
-
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError as e:
-        logger.warning(f"Failed to parse JSON from LLM: {e}\nResponse: {response[:200]}")
-        return {}

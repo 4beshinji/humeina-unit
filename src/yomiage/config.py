@@ -39,13 +39,15 @@ def load_config(config_dir: Path | None = None) -> dict:
     config_dir = config_dir or _CONFIG_DIR
 
     config = {}
-    for name in ("default", "voices", "scene_params"):
+    for name in ("default", "voices", "scene_params", "math_dict"):
         path = config_dir / f"{name}.yaml"
         if path.exists():
             with open(path) as f:
                 data = yaml.safe_load(f) or {}
             if name == "default":
                 config.update(data)
+            elif name == "math_dict":
+                config["math_dict"] = data
             else:
                 config[name] = data
         else:

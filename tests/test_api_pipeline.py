@@ -42,18 +42,11 @@ def _make_pipeline_with_mock_tts() -> Pipeline:
     mock_provider = MockTTSProvider()
     pipeline._bridge = TTSBridge(mock_provider)
 
-    # NLP components (real, rule-based)
-    from yomiage.nlp.classifier import TextClassifier
-    from yomiage.nlp.speaker import SpeakerExtractor
-    from yomiage.nlp.splitter import TextSplitter
-    from yomiage.nlp.text_processor import TextProcessor
+    # NLP pipeline (real, rule-based)
+    from yomiage.nlp.pipeline import NLPAnalyzer
     from yomiage.reader.param_mapper import ParamMapper
 
-    pipeline._processor = TextProcessor()
-    pipeline._splitter = TextSplitter(max_chars=200)
-    pipeline._classifier = TextClassifier()
-    pipeline._speaker_extractor = SpeakerExtractor()
-    pipeline._scene_analyzer = None  # ルールベースのみ
+    pipeline._analyzer = NLPAnalyzer.rule_based(max_chunk_chars=200)
     pipeline._param_mapper = ParamMapper()
     pipeline._character_db = None
 

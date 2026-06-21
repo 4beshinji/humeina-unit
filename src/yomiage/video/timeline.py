@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import wave
 from dataclasses import dataclass
 from pathlib import Path
 
 from loguru import logger
 
 from ..batch.manifest import BatchManifest, SentenceEntry
+from ..tts.audio_utils import get_wav_duration
 
 
 @dataclass
@@ -25,26 +25,6 @@ class TimelineEvent:
     intensity: float
     segment_type: str
     audio_file: str | None
-
-
-def _get_wav_duration(wav_path: Path) -> float:
-    """WAVファイルの長さを秒数で返す."""
-    try:
-        with wave.open(str(wav_path), "rb") as wf:
-            frames = wf.getnframes()
-            rate = wf.getframerate()
-            if rate == 0:
-                return 0.0
-            return frames / rate
-    except Exception:
-        # WAVヘッダーが不正な場合、ファイルサイズから推定
-        try:
-            size = wav_path.stat().st_size
-            # 44-byte header, 16-bit mono 24kHz as fallback
-            return max(0.0, (size - 44) / (24000 * 2))
-        except Exception:
-            logger.warning(f"Cannot determine duration: {wav_path}")
-            return 0.0
 
 
 class TimelineBuilder:
@@ -109,7 +89,7 @@ class TimelineBuilder:
         if entry.audio_file:
             wav_path = self.work_dir / entry.audio_file
             if wav_path.exists():
-                duration = _get_wav_duration(wav_path)
+                duration = get_wav_duration(wav_path)
                 entry.duration = duration
                 return duration
 

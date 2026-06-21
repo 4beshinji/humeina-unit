@@ -5,12 +5,9 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
-from ..nlp.classifier import TextClassifier
 from ..nlp.llm_backend import LLMBackend, create_llm_backend
+from ..nlp.pipeline import NLPAnalyzer
 from ..nlp.scene_analyzer import AnalyzedSegment, SceneAnalyzer
-from ..nlp.speaker import SpeakerExtractor
-from ..nlp.splitter import TextSplitter
-from ..nlp.text_processor import TextProcessor
 from .models import AnalysisResult
 
 if TYPE_CHECKING:
@@ -31,11 +28,15 @@ class TextAnalyzer:
         llm: LLMBackend | None = None,
         max_chunk_chars: int = 200,
     ):
-        self._processor = TextProcessor()
-        self._classifier = TextClassifier()
-        self._speaker_extractor = SpeakerExtractor()
-        self._splitter = TextSplitter(max_chars=max_chunk_chars)
-        self._scene_analyzer = SceneAnalyzer(llm) if llm else None
+        self._analyzer = NLPAnalyzer(
+            llm=llm,
+            max_chunk_chars=max_chunk_chars,
+        )
+
+    @property
+    def _scene_analyzer(self) -> SceneAnalyzer | None:
+        """互換性: 内部 SceneAnalyzer へのアクセス."""
+        return self._analyzer.scene_analyzer
 
     @classmethod
     def create(cls, llm_backend: str = "ollama", **kwargs: object) -> TextAnalyzer:
@@ -66,20 +67,13 @@ class TextAnalyzer:
 
     def preprocess(self, text: str) -> str:
         """テキスト前処理（正規化、HTMLクリーンアップ）."""
-        return self._processor.process(text)
+        return self._analyzer.preprocess(text)
 
     def classify(self, text: str) -> list[AnalysisResult]:
         """ルールベース分類のみ（同期、LLM不要）."""
-        clean = self._processor.process(text)
-        segments = self._classifier.classify(clean)
-        segments = self._speaker_extractor.extract(segments)
         return [
-            AnalysisResult(
-                text=seg.text,
-                segment_type=seg.type.value,
-                speaker=seg.speaker_candidates[0] if seg.speaker_candidates else None,
-            )
-            for seg in segments
+            _to_analysis_result(seg)
+            for seg in self._analyzer.classify(text)
         ]
 
     async def analyze(
@@ -89,42 +83,23 @@ class TextAnalyzer:
         known_characters: list[str] | None = None,
     ) -> list[AnalysisResult]:
         """完全分析: 分類 + 話者識別 + SLM感情/シーン分析."""
-        clean = self._processor.process(text)
-        chunks = self._splitter.split(clean)
+        clean = self._analyzer.preprocess(text)
+        chunks = self._analyzer.split(clean)
 
         results: list[AnalysisResult] = []
         for chunk in chunks:
             if chunk.is_scene_break:
-                results.append(
-                    AnalysisResult(text="", segment_type="scene_break")
-                )
+                results.append(AnalysisResult(text="", segment_type="scene_break"))
                 continue
             if not chunk.text.strip():
                 continue
 
-            segments = self._classifier.classify(chunk.text)
-            segments = self._speaker_extractor.extract(segments)
-
-            if self._scene_analyzer:
-                analyzed = await self._scene_analyzer.analyze_batch(
-                    segments, known_characters=known_characters
-                )
-            else:
-                analyzed = [
-                    AnalyzedSegment.from_segment(
-                        seg,
-                        speaker=(
-                            seg.speaker_candidates[0]
-                            if seg.speaker_candidates
-                            else None
-                        ),
-                    )
-                    for seg in segments
-                ]
-
+            analyzed = await self._analyzer.analyze_chunk(
+                chunk,
+                known_characters=known_characters,
+            )
             for seg in analyzed:
                 results.append(_to_analysis_result(seg))
-
         return results
 
     # --- sync ラッパー ---

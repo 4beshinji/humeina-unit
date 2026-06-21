@@ -7,10 +7,10 @@ from loguru import logger
 
 from ..reader.character_db import CharacterDB
 from ..reader.param_mapper import ParamMapper
+from ..tts.audio_utils import write_silence_wav
 from ..tts.voicevox import VoicevoxProvider
 from .manifest import SentenceEntry
 from .synthesizer import BatchSynthesizer
-from .voisona_synth import write_silence_wav
 
 
 class VoicevoxBatchSynthesizer(BatchSynthesizer):

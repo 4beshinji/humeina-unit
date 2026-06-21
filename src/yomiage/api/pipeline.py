@@ -8,12 +8,8 @@ from typing import TYPE_CHECKING
 
 from loguru import logger
 
-from ..nlp.classifier import TextClassifier
 from ..nlp.llm_backend import create_llm_backend
-from ..nlp.scene_analyzer import AnalyzedSegment, SceneAnalyzer
-from ..nlp.speaker import SpeakerExtractor
-from ..nlp.splitter import TextSplitter
-from ..nlp.text_processor import TextProcessor
+from ..nlp.pipeline import NLPAnalyzer
 from ..reader.character_db import CharacterDB
 from ..reader.param_mapper import ParamMapper
 from ..tts.base import TTSParams
@@ -42,27 +38,24 @@ class Pipeline:
         # TTS Bridge
         self._bridge = TTSBridge.from_config(config.tts, config.tts_fallback)
 
-        # NLP components
-        self._processor = TextProcessor()
-        self._splitter = TextSplitter(
-            max_chars=config.analyzer.max_chunk_chars
-        )
-        self._classifier = TextClassifier()
-        self._speaker_extractor = SpeakerExtractor()
-
         # LLM-based scene analyzer (optional)
         llm_cfg = config.analyzer.llm
         try:
-            backend = create_llm_backend(
+            llm = create_llm_backend(
                 llm_cfg.backend,
                 url=llm_cfg.url,
                 api_key=llm_cfg.api_key,
                 model=llm_cfg.model,
             )
-            self._scene_analyzer: SceneAnalyzer | None = SceneAnalyzer(backend)
         except Exception as e:
             logger.warning(f"LLM backend init failed, using rule-based only: {e}")
-            self._scene_analyzer = None
+            llm = None
+
+        # Unified NLP pipeline
+        self._analyzer = NLPAnalyzer(
+            llm=llm,
+            max_chunk_chars=config.analyzer.max_chunk_chars,
+        )
 
         # Parameter mapper
         self._param_mapper = ParamMapper(config.scene_params)
@@ -115,57 +108,18 @@ class Pipeline:
                 profile_with_name = {"name": name, **profile}
                 self._character_db.get_or_create(name, profile_hint=profile_with_name)
 
-        # テキスト前処理
-        clean = self._processor.process(text)
-        if not clean:
-            return
+        # Analyze text through unified NLP pipeline
+        chunk_analyses = await self._analyzer.analyze_text(
+            text,
+            character_db=self._character_db,
+        )
 
-        # チャンク分割
-        chunks = self._splitter.split(clean)
-
-        for chunk in chunks:
-            if chunk.is_scene_break or not chunk.text.strip():
-                continue
-
-            # NLP分析
-            segments = self._classifier.classify(chunk.text)
-            segments = self._speaker_extractor.extract(segments)
-
-            if self._scene_analyzer:
-                analyzed = await self._scene_analyzer.analyze_batch(
-                    segments,
-                    known_characters=(
-                        self._character_db.known_names
-                        if self._character_db
-                        else None
-                    ),
-                )
-                # 新キャラクター検出
-                for seg in analyzed:
-                    if seg.new_character and self._character_db:
-                        self._character_db.get_or_create(
-                            seg.new_character.get("name", ""),
-                            profile_hint=seg.new_character,
-                        )
-                    if seg.speaker and self._character_db:
-                        self._character_db.get_or_create(seg.speaker)
-            else:
-                analyzed = [
-                    AnalyzedSegment.from_segment(
-                        seg,
-                        speaker=(
-                            seg.speaker_candidates[0]
-                            if seg.speaker_candidates
-                            else None
-                        ),
-                    )
-                    for seg in segments
-                ]
+        for chunk_analysis in chunk_analyses:
+            chunk = chunk_analysis.chunk
+            analyzed = chunk_analysis.segments
 
             # 支配的セグメントを選択
-            dominant = (
-                max(analyzed, key=lambda s: len(s.text)) if analyzed else None
-            )
+            dominant = max(analyzed, key=lambda s: len(s.text)) if analyzed else None
             if not dominant:
                 continue
 

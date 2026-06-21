@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from yomiage.batch.manifest import BatchManifest, ChapterMeta, SentenceEntry
+from yomiage.tts.audio_utils import get_wav_duration
 from yomiage.video.asset_manager import AssetManager
 from yomiage.video.config import BackgroundConfig, SubtitleConfig, VideoConfig
 from yomiage.video.subtitle import (
@@ -26,7 +27,6 @@ from yomiage.video.subtitle import (
 from yomiage.video.timeline import (
     TimelineBuilder,
     TimelineEvent,
-    _get_wav_duration,
 )
 
 # ============================================================
@@ -323,25 +323,25 @@ class TestWavDuration:
         wav_path = tmp_path / "test.wav"
         wav_data = _make_wav_bytes(duration=2.5, sample_rate=24000)
         wav_path.write_bytes(wav_data)
-        dur = _get_wav_duration(wav_path)
+        dur = get_wav_duration(wav_path)
         assert abs(dur - 2.5) < 0.01
 
     def test_short_wav(self, tmp_path: Path):
         wav_path = tmp_path / "short.wav"
         wav_data = _make_wav_bytes(duration=0.1, sample_rate=24000)
         wav_path.write_bytes(wav_data)
-        dur = _get_wav_duration(wav_path)
+        dur = get_wav_duration(wav_path)
         assert abs(dur - 0.1) < 0.01
 
     def test_missing_wav(self, tmp_path: Path):
         wav_path = tmp_path / "missing.wav"
-        dur = _get_wav_duration(wav_path)
+        dur = get_wav_duration(wav_path)
         assert dur == 0.0
 
     def test_corrupt_wav(self, tmp_path: Path):
         wav_path = tmp_path / "corrupt.wav"
         wav_path.write_bytes(b"not a wav file at all")
-        dur = _get_wav_duration(wav_path)
+        dur = get_wav_duration(wav_path)
         assert isinstance(dur, float)
 
 

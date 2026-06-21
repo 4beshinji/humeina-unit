@@ -107,6 +107,40 @@ class ParamMapper:
 
         return params
 
+    def apply_scene_mods(
+        self, params: dict, scene: str, speed_default: float = 1.0
+    ) -> None:
+        """dict 形式のパラメータにシーン修飾子を適用.
+
+        batch synthesizer 等、TTSParams ではなく dict を使う箇所向け.
+        """
+        scene_mods = self.scenes.get(scene, {})
+        if scene_mods:
+            params["speed"] = params.get("speed", speed_default) * scene_mods.get(
+                "speed", 1.0
+            )
+            params["volume"] = params.get("volume", 0.0) + scene_mods.get(
+                "volume", 0.0
+            )
+
+    def apply_emotion_style(
+        self, params: dict, emotion: str, intensity: float
+    ) -> None:
+        """dict 形式のパラメータに感情スタイルウェイトを適用."""
+        if "style_weights" in params:
+            return
+        emotion_style = self.emotion_styles.get(emotion)
+        if emotion_style:
+            if intensity < 1.0:
+                neutral = self.emotion_styles.get(
+                    "neutral", [1.0, 0.0, 0.0, 0.0, 0.0]
+                )
+                emotion_style = [
+                    n * (1 - intensity) + s * intensity
+                    for n, s in zip(neutral, emotion_style)
+                ]
+            params["style_weights"] = emotion_style
+
     def _apply_character(self, params: TTSParams, char: CharacterProfile) -> None:
         bp = char.base_params
         if not bp:

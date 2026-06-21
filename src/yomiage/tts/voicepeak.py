@@ -6,12 +6,12 @@ It has no native REST API; synthesis is done via the `voicepeak` CLI command.
 
 import asyncio
 import shutil
-import struct
 import tempfile
 from pathlib import Path
 
 from loguru import logger
 
+from .audio_utils import concat_wav_bytes
 from .base import AudioResult, TTSProvider
 
 MAX_CHARS_DEFAULT = 140
@@ -93,7 +93,7 @@ class VoicepeakProvider(TTSProvider):
 
         if len(wav_parts) == 1:
             return wav_parts[0]
-        return self._concat_wav(wav_parts)
+        return concat_wav_bytes(wav_parts)
 
     async def _synthesize_chunk(
         self,
@@ -190,76 +190,6 @@ class VoicepeakProvider(TTSProvider):
 
         return [c for c in chunks if c.strip()]
 
-    @staticmethod
-    def _concat_wav(wav_parts: list[bytes]) -> bytes:
-        """Concatenate multiple WAV files (assumes same format: 16bit PCM)."""
-        if not wav_parts:
-            return b""
-
-        # Parse first WAV header to get format info
-        first = wav_parts[0]
-        if len(first) < 44 or first[:4] != b"RIFF" or first[8:12] != b"WAVE":
-            raise ValueError("Invalid WAV data")
-
-        # Find data chunk in first file
-        fmt_data = first[12:]
-        header_end = 12
-        channels = 1
-        sample_rate = 44100
-        bits_per_sample = 16
-
-        pos = 0
-        data_offset = 0
-        while pos < len(fmt_data) - 8:
-            chunk_id = fmt_data[pos : pos + 4]
-            chunk_size = struct.unpack_from("<I", fmt_data, pos + 4)[0]
-            if chunk_id == b"fmt ":
-                channels = struct.unpack_from("<H", fmt_data, pos + 10)[0]
-                sample_rate = struct.unpack_from("<I", fmt_data, pos + 12)[0]
-                bits_per_sample = struct.unpack_from("<H", fmt_data, pos + 22)[0]
-            elif chunk_id == b"data":
-                data_offset = header_end + pos + 8
-                break
-            pos += 8 + chunk_size
-            # Align to even boundary
-            if chunk_size % 2:
-                pos += 1
-
-        if data_offset == 0:
-            raise ValueError("No data chunk found in WAV")
-
-        # Extract PCM data from all parts
-        pcm_parts: list[bytes] = []
-        for wav in wav_parts:
-            offset = _find_data_offset(wav)
-            data_size = struct.unpack_from("<I", wav, offset - 4)[0]
-            pcm_parts.append(wav[offset : offset + data_size])
-
-        total_pcm = b"".join(pcm_parts)
-        total_data_size = len(total_pcm)
-
-        # Build output WAV
-        byte_rate = sample_rate * channels * bits_per_sample // 8
-        block_align = channels * bits_per_sample // 8
-
-        out = bytearray()
-        out.extend(b"RIFF")
-        out.extend(struct.pack("<I", 36 + total_data_size))
-        out.extend(b"WAVE")
-        out.extend(b"fmt ")
-        out.extend(struct.pack("<I", 16))
-        out.extend(struct.pack("<H", 1))  # PCM
-        out.extend(struct.pack("<H", channels))
-        out.extend(struct.pack("<I", sample_rate))
-        out.extend(struct.pack("<I", byte_rate))
-        out.extend(struct.pack("<H", block_align))
-        out.extend(struct.pack("<H", bits_per_sample))
-        out.extend(b"data")
-        out.extend(struct.pack("<I", total_data_size))
-        out.extend(total_pcm)
-
-        return bytes(out)
-
     async def is_available(self) -> bool:
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -299,15 +229,3 @@ class VoicepeakProvider(TTSProvider):
             self._tmpdir = None
 
 
-def _find_data_offset(wav: bytes) -> int:
-    """Find the offset where PCM data begins in a WAV file."""
-    pos = 12  # skip RIFF header
-    while pos < len(wav) - 8:
-        chunk_id = wav[pos : pos + 4]
-        chunk_size = struct.unpack_from("<I", wav, pos + 4)[0]
-        if chunk_id == b"data":
-            return pos + 8
-        pos += 8 + chunk_size
-        if chunk_size % 2:
-            pos += 1
-    raise ValueError("No data chunk found in WAV")

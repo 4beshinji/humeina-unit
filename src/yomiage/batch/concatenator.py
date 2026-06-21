@@ -1,11 +1,10 @@
 """Phase C: ffmpeg-based WAV concatenation."""
 
-import subprocess
-import tempfile
 from pathlib import Path
 
 from loguru import logger
 
+from ..tts.audio_utils import concat_wav_files
 from .manifest import BatchManifest
 
 
@@ -48,7 +47,7 @@ class Concatenator:
 
         output_name = f"chapter_{chapter_index + 1:03d}.{self.output_format}"
         output_path = work_dir / output_name
-        self._concat_files(wav_files, output_path)
+        concat_wav_files(wav_files, output_path, self.output_format)
 
         if self.cleanup:
             for f in wav_files:
@@ -76,7 +75,7 @@ class Concatenator:
 
         output_name = f"full.{self.output_format}"
         output_path = work_dir / output_name
-        self._concat_files(wav_files, output_path)
+        concat_wav_files(wav_files, output_path, self.output_format)
 
         if self.cleanup:
             for f in wav_files:
@@ -108,7 +107,7 @@ class Concatenator:
 
             shutil.copy2(chapter_files[0], output_path)
         else:
-            self._concat_files(chapter_files, output_path)
+            concat_wav_files(chapter_files, output_path, self.output_format)
 
         if self.cleanup:
             # 個別WAVを削除（チャプターファイルは残す）
@@ -119,33 +118,3 @@ class Concatenator:
 
         logger.info(f"Full output: {output_path}")
         return output_path
-
-    def _concat_files(self, files: list[Path], output: Path) -> None:
-        """ffmpeg concat demuxerで結合."""
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".txt", delete=False
-        ) as f:
-            for wav in files:
-                # ffmpeg concat list format
-                f.write(f"file '{wav.resolve()}'\n")
-            concat_list = f.name
-
-        try:
-            cmd = ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat_list]
-
-            if self.output_format == "mp3":
-                cmd += ["-codec:a", "libmp3lame", "-q:a", "2"]
-            elif self.output_format == "flac":
-                cmd += ["-codec:a", "flac"]
-            else:
-                cmd += ["-codec:a", "pcm_s16le"]
-
-            cmd.append(str(output))
-
-            result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=600
-            )
-            if result.returncode != 0:
-                raise RuntimeError(f"ffmpeg failed: {result.stderr}")
-        finally:
-            Path(concat_list).unlink(missing_ok=True)
