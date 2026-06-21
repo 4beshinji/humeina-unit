@@ -169,8 +169,14 @@ class BatchEngine:
         self,
         work_id: str,
         retry_failed: bool = False,
+        progress_callback=None,
     ) -> BatchManifest:
-        """Phase B: マニフェストからバッチ合成."""
+        """Phase B: マニフェストからバッチ合成.
+
+        Args:
+            progress_callback: 進捗通知用コールバック.
+                Callable[[status: str, percent: float, message: str], None]
+        """
         manifest = BatchManifest.load(self.output_dir, work_id)
 
         if not manifest.analysis_complete:
@@ -203,6 +209,7 @@ class BatchEngine:
             targets = manifest.pending_sentences
             logger.info(f"Synthesizing {len(targets)} pending sentences")
 
+        total = len(targets) or 1
         count = 0
         for entry in targets:
             # シーンブレーク
@@ -228,6 +235,16 @@ class BatchEngine:
             else:
                 entry.status = "synthesized"
                 count += 1
+
+            # 進捗通知
+            percent = round((count / total) * 100, 1)
+            if progress_callback and count % self.save_interval == 0:
+                await _maybe_callback(
+                    progress_callback,
+                    "synthesizing",
+                    percent,
+                    f"{count}/{total} 文を合成しました",
+                )
 
             # 進捗表示 & マニフェスト定期保存
             if count % self.save_interval == 0:
@@ -378,3 +395,15 @@ _SPEAKABLE_RE = re.compile(r"[\w\u3040-\u9fff]")
 
 def _has_speakable_text(text: str) -> bool:
     return bool(text and _SPEAKABLE_RE.search(text))
+
+
+async def _maybe_callback(callback, status: str, percent: float, message: str) -> None:
+    """コールバックがあれば非同期/同期どちらにも対応して呼び出す."""
+    if callback is None:
+        return
+    import inspect
+
+    if inspect.iscoroutinefunction(callback):
+        await callback(status, percent, message)
+    else:
+        callback(status, percent, message)

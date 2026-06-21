@@ -29,6 +29,9 @@ class TTSParams:
     huskiness: float = 0.0
     alp: float = 0.0
     style_weights: list[float] | None = None
+    preset: str | None = None
+    emotion: str = "neutral"
+    intensity: float = 0.5
     extra: dict = field(default_factory=dict)
 
 

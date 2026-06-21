@@ -1,15 +1,21 @@
 """TTS Manager — provider selection, fallback, and synthesis queue."""
 
+from __future__ import annotations
+
 import asyncio
 import io
 import time
 import wave
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from loguru import logger
 
 from .base import AudioResult, TTSParams, TTSProvider
 from .playback import play_wav
+
+if TYPE_CHECKING:
+    from ..tools.voice_profile import VoiceProfile
 
 
 @dataclass
@@ -26,10 +32,12 @@ class TTSManager:
         primary: TTSProvider,
         fallback: TTSProvider | None = None,
         lookahead: int = 3,
+        voice_profile: "VoiceProfile | None" = None,
     ):
         self.primary = primary
         self.fallback = fallback
         self.lookahead = lookahead
+        self.voice_profile = voice_profile
         self._queue: asyncio.Queue[tuple[str, TTSParams] | RawAudioItem | None] = asyncio.Queue()
         self._audio_queue: asyncio.Queue[AudioResult | None] = asyncio.Queue()
         self._pause_event = asyncio.Event()
@@ -102,21 +110,33 @@ class TTSManager:
         return await self._do_synthesize(text, p)
 
     def _build_kwargs(self, params: TTSParams) -> dict:
-        kwargs = {}
-        if params.pitch:
+        kwargs: dict = {}
+
+        # VoiceProfile からベースパラメータを計算
+        if self.voice_profile and params.preset:
+            profile_params = self.voice_profile.compute_params(
+                preset=params.preset,
+                emotion=params.emotion,
+                intensity=params.intensity,
+            )
+            kwargs.update(profile_params)
+
+        # TTSParams で上書き
+        kwargs["speed"] = params.speed
+        if params.voice_id:
+            kwargs["voice_id"] = params.voice_id
+        if params.pitch != 0.0:
             kwargs["pitch"] = params.pitch
-        if params.volume:
+        if params.volume != 0.0:
             kwargs["volume"] = params.volume
         if params.intonation != 1.0:
             kwargs["intonation"] = params.intonation
-        if params.huskiness:
+        if params.huskiness != 0.0:
             kwargs["huskiness"] = params.huskiness
-        if params.alp:
+        if params.alp != 0.0:
             kwargs["alp"] = params.alp
         if params.style_weights:
             kwargs["style_weights"] = params.style_weights
-        if params.voice_id:
-            kwargs["voice_id"] = params.voice_id
         return kwargs
 
     async def _do_synthesize(self, text: str, params: TTSParams) -> AudioResult:
@@ -124,15 +144,13 @@ class TTSManager:
         kwargs = self._build_kwargs(params)
 
         try:
-            return await provider.synthesize(text, speed=params.speed, **kwargs)
+            return await provider.synthesize(text, **kwargs)
         except Exception as e:
             if self.fallback and provider is not self.fallback:
                 logger.warning(
                     f"{provider.name} failed ({e}), using {self.fallback.name}"
                 )
-                return await self.fallback.synthesize(
-                    text, speed=params.speed, **kwargs
-                )
+                return await self.fallback.synthesize(text, **kwargs)
             raise
 
     def _select_provider(self) -> TTSProvider:
@@ -237,9 +255,7 @@ class TTSManager:
                 continue
 
             kwargs = self._build_kwargs(params)
-            synth_coro = self._select_provider().synthesize(
-                text, speed=params.speed, **kwargs
-            )
+            synth_coro = self._select_provider().synthesize(text, **kwargs)
 
             try:
                 if prev_play_duration > 0:

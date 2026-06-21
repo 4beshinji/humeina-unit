@@ -1,12 +1,17 @@
 """FastAPI server — HEMS Bridge + REST API."""
 
 import asyncio
+import io
+import json
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from loguru import logger
 from pydantic import BaseModel
 
+from .api.profile_resolver import resolve_voice_profile
+from .batch.job_manager import BatchJobManager
 from .config import get_tts_config, load_config
 from .nlp.ollama_client import OllamaClient
 from .nlp.scene_analyzer import SceneAnalyzer
@@ -19,6 +24,7 @@ from .tts.voicevox import VoicevoxProvider
 from .tts.voisona import VoisonaProvider
 
 _engine: ReadingEngine | None = None
+_job_manager: BatchJobManager | None = None
 _config: dict = {}
 
 
@@ -38,10 +44,17 @@ def _create_engine(config: dict) -> ReadingEngine:
     if fallback_name and fallback_name != primary_name and fallback_name in providers:
         fallback = providers[fallback_name]()
 
+    # Load VoiceProfile if available
+    voice_name = config.get("voisona", {}).get("default_voice")
+    voice_profile = None
+    if voice_name:
+        voice_profile = resolve_voice_profile(voice_name)
+
     tts_manager = TTSManager(
         primary=primary,
         fallback=fallback,
         lookahead=tts_cfg.get("lookahead_chunks", 3),
+        voice_profile=voice_profile,
     )
 
     ollama_cfg = config.get("ollama", {})
@@ -67,12 +80,16 @@ def _create_engine(config: dict) -> ReadingEngine:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _engine, _config
+    global _engine, _job_manager, _config
     from dotenv import load_dotenv
 
     load_dotenv()
     _config = load_config()
     _engine = _create_engine(_config)
+    _job_manager = BatchJobManager(
+        _config,
+        output_dir=_config.get("batch", {}).get("output_dir", "output"),
+    )
     logger.info("Yomiage server started")
     yield
     if _engine and _engine.is_running:
@@ -90,8 +107,23 @@ class ReadRequest(BaseModel):
 
 class SynthesizeRequest(BaseModel):
     text: str
-    voice: str = "neutral"
+    voice_id: str | None = None
     speed: float = 1.0
+    pitch: float = 0.0
+    volume: float = 0.0
+    intonation: float = 1.0
+    preset: str | None = None
+    emotion: str = "neutral"
+    intensity: float = 0.5
+    output_format: str = "wav"
+
+
+class BatchSynthesizeRequest(BaseModel):
+    url: str
+    mode: str = "voicevox"
+    output_format: str = "wav"
+    video: bool = False
+    style: str | None = None
 
 
 @app.get("/health")
@@ -149,14 +181,113 @@ async def synthesize(req: SynthesizeRequest):
         raise HTTPException(503, "Engine not initialized")
     from .tts.base import TTSParams
 
-    result = await _engine.tts.synthesize_immediate(
-        req.text, TTSParams(speed=req.speed)
+    tts_params = TTSParams(
+        voice_id=req.voice_id,
+        speed=req.speed,
+        pitch=req.pitch,
+        volume=req.volume,
+        intonation=req.intonation,
+        preset=req.preset,
+        emotion=req.emotion,
+        intensity=req.intensity,
     )
+    result = await _engine.tts.synthesize_immediate(req.text, tts_params)
+
+    if req.output_format != "wav":
+        result = result.convert(req.output_format)
+
+    return StreamingResponse(
+        io.BytesIO(result.audio_data),
+        media_type=f"audio/{req.output_format}",
+        headers={
+            "X-Audio-Duration": str(result.duration or 0.0),
+            "X-Audio-Format": result.format,
+        },
+    )
+
+
+@app.get("/api/yomiage/voices")
+async def list_voices(provider: str | None = Query(None)):
+    """利用可能なボイス一覧を返す."""
+    if not _engine:
+        raise HTTPException(503, "Engine not initialized")
+
+    tts = _engine.tts
+    if provider and tts.fallback and provider == tts.fallback.name:
+        target = tts.fallback
+    else:
+        target = tts.primary
+
+    voices = await target.list_voices()
     return {
-        "duration": result.duration,
-        "format": result.format,
-        "has_audio": len(result.audio_data) > 0,
+        "engine": target.name,
+        "voices": [
+            {
+                "id": str(v.get("id", "")),
+                "name": v.get("name", v.get("label", "")),
+            }
+            for v in voices
+        ],
     }
+
+
+@app.post("/api/yomiage/synthesize/batch")
+async def synthesize_batch(req: BatchSynthesizeRequest):
+    """URL からバッチ合成ジョブを開始する."""
+    if not _job_manager:
+        raise HTTPException(503, "Job manager not initialized")
+
+    job = _job_manager.create_job(
+        url=req.url,
+        mode=req.mode,
+        output_format=req.output_format,
+        video=req.video,
+        style=req.style,
+    )
+    asyncio.create_task(
+        _job_manager.run_job(
+            job.id,
+            output_format=req.output_format,
+            video=req.video,
+            style=req.style,
+        )
+    )
+    return {"job_id": job.id, "status": job.status}
+
+
+@app.get("/api/yomiage/synthesize/batch/{job_id}")
+async def get_batch_job(job_id: str):
+    """ジョブ状態を取得する."""
+    if not _job_manager:
+        raise HTTPException(503, "Job manager not initialized")
+    job = _job_manager.get_job(job_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+    return job.to_dict()
+
+
+@app.get("/api/yomiage/synthesize/batch/{job_id}/progress")
+async def batch_job_progress(job_id: str):
+    """SSE でジョブ進捗を配信する."""
+    if not _job_manager:
+        raise HTTPException(503, "Job manager not initialized")
+
+    async def event_stream():
+        queue = _job_manager.subscribe(job_id)
+        try:
+            while True:
+                event = await queue.get()
+                yield f"event: progress\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+                if event["status"] in ("completed", "failed"):
+                    break
+        finally:
+            _job_manager.unsubscribe(job_id, queue)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )
 
 
 @app.post("/api/yomiage/news")
