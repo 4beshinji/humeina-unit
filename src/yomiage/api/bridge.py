@@ -1,7 +1,5 @@
 """TTSBridge — unified interface to multiple TTS engines."""
 
-from __future__ import annotations
-
 import asyncio
 import tempfile
 from pathlib import Path
@@ -10,9 +8,14 @@ from typing import TYPE_CHECKING
 from loguru import logger
 
 from ..tts.base import AudioResult, TTSParams, TTSProvider
+from ..tts.cache import TTSCache
 from ..tts.factory import create_provider
 from ..tts.retry import RetryConfig, with_retry
+from .long_text import LongTextOptions, synthesize_long_text
 from .models import SynthesisResult, VoiceInfo
+
+if TYPE_CHECKING:
+    from ..tools.voice_profile import VoiceProfile
 
 if TYPE_CHECKING:
     from .config import TTSEngineConfig
@@ -33,10 +36,14 @@ class TTSBridge:
         provider: TTSProvider,
         fallback: TTSProvider | None = None,
         retry_config: RetryConfig | None = None,
+        cache: TTSCache | None = None,
+        voice_profile: "VoiceProfile | None" = None,
     ):
         self._provider = provider
         self._fallback = fallback
         self._retry_config = retry_config
+        self._cache = cache
+        self._voice_profile = voice_profile
 
     @classmethod
     def create(
@@ -44,8 +51,10 @@ class TTSBridge:
         engine: str,
         *,
         retry_config: RetryConfig | None = None,
+        cache: TTSCache | None = None,
+        voice_profile: "VoiceProfile | None" = None,
         **kwargs: object,
-    ) -> TTSBridge:
+    ) -> "TTSBridge":
         """ファクトリ: エンジン名+パラメータで作成.
 
         Args:
@@ -57,20 +66,33 @@ class TTSBridge:
 
         config = TTSEngineConfig(engine=engine, **kwargs)  # type: ignore[arg-type]
         provider = create_provider(config)
-        return cls(provider, retry_config=retry_config)
+        return cls(
+            provider,
+            retry_config=retry_config,
+            cache=cache,
+            voice_profile=voice_profile,
+        )
 
     @classmethod
     def from_config(
         cls,
-        config: TTSEngineConfig,
-        fallback: TTSEngineConfig | None = None,
+        config: "TTSEngineConfig",
+        fallback: "TTSEngineConfig | None" = None,
         *,
         retry_config: RetryConfig | None = None,
-    ) -> TTSBridge:
+        cache: TTSCache | None = None,
+        voice_profile: "VoiceProfile | None" = None,
+    ) -> "TTSBridge":
         """TTSEngineConfigから作成."""
         provider = create_provider(config)
         fb = create_provider(fallback) if fallback else None
-        return cls(provider, fb, retry_config=retry_config)
+        return cls(
+            provider,
+            fb,
+            retry_config=retry_config,
+            cache=cache,
+            voice_profile=voice_profile,
+        )
 
     @classmethod
     def from_provider(
@@ -79,9 +101,17 @@ class TTSBridge:
         fallback: TTSProvider | None = None,
         *,
         retry_config: RetryConfig | None = None,
-    ) -> TTSBridge:
+        cache: TTSCache | None = None,
+        voice_profile: "VoiceProfile | None" = None,
+    ) -> "TTSBridge":
         """既存のTTSProviderインスタンスから作成."""
-        return cls(provider, fallback, retry_config=retry_config)
+        return cls(
+            provider,
+            fallback,
+            retry_config=retry_config,
+            cache=cache,
+            voice_profile=voice_profile,
+        )
 
     @property
     def engine_name(self) -> str:
@@ -97,6 +127,9 @@ class TTSBridge:
         pitch: float = 0.0,
         volume: float = 0.0,
         intonation: float = 1.0,
+        preset: str | None = None,
+        emotion: str = "neutral",
+        intensity: float = 0.5,
         params: TTSParams | None = None,
         **kwargs: object,
     ) -> SynthesisResult:
@@ -104,6 +137,8 @@ class TTSBridge:
 
         VoiSonaなど audio_data が空のプロバイダーは
         synthesize_to_file 経由で一時ファイルからバイト列を取得する。
+        preset/emotion/intensity を指定すると VoiceProfile 経由で
+        パラメータを計算する。
         """
         synth_kwargs = _build_synth_kwargs(
             voice_id=voice_id,
@@ -112,14 +147,35 @@ class TTSBridge:
             volume=volume,
             intonation=intonation,
             params=params,
+            voice_profile=self._voice_profile,
+            preset=preset,
+            emotion=emotion,
+            intensity=intensity,
             **kwargs,
         )
+
+        # キャッシュヒット確認
+        if self._cache:
+            cached = self._cache.get(self._provider.name, text, **synth_kwargs)
+            if cached:
+                return SynthesisResult(
+                    audio_data=cached,
+                    format="wav",
+                    sample_rate=None,
+                    duration=None,
+                )
 
         result = await self._synthesize_with_fallback(text, synth_kwargs)
 
         # audio_data が空の場合（VoiSona等）はファイル経由で取得
         if not result.audio_data:
             result = await self._synthesize_via_file(text, synth_kwargs)
+
+        # キャッシュ保存
+        if self._cache and result.audio_data:
+            self._cache.put(
+                result.audio_data, self._provider.name, text, **synth_kwargs
+            )
 
         return _to_synthesis_result(result)
 
@@ -131,12 +187,23 @@ class TTSBridge:
         voice_id: str | None = None,
         speed: float = 1.0,
         pitch: float = 0.0,
+        preset: str | None = None,
+        emotion: str = "neutral",
+        intensity: float = 0.5,
         params: TTSParams | None = None,
         **kwargs: object,
     ) -> SynthesisResult:
         """テキストを音声合成しファイルに保存."""
         synth_kwargs = _build_synth_kwargs(
-            voice_id=voice_id, speed=speed, pitch=pitch, params=params, **kwargs
+            voice_id=voice_id,
+            speed=speed,
+            pitch=pitch,
+            params=params,
+            voice_profile=self._voice_profile,
+            preset=preset,
+            emotion=emotion,
+            intensity=intensity,
+            **kwargs,
         )
         provider = self._provider
         if hasattr(provider, "synthesize_to_file"):
@@ -159,6 +226,30 @@ class TTSBridge:
             format=result.format,
             sample_rate=result.sample_rate,
             duration=result.duration,
+        )
+
+    async def synthesize_long(
+        self,
+        text: str,
+        *,
+        max_chars: int = 200,
+        pause_between_chunks: float = 0.0,
+        **kwargs: object,
+    ) -> SynthesisResult:
+        """長文を自動分割して合成.
+
+        Args:
+            text: 合成する長文
+            max_chars: 1チャンクあたりの最大文字数
+            pause_between_chunks: チャンク間の無音秒数
+            **kwargs: bridge.synthesize() に渡すパラメータ
+        """
+        options = LongTextOptions(
+            max_chars=max_chars,
+            pause_between_chunks=pause_between_chunks,
+        )
+        return await synthesize_long_text(
+            self, text, options=options, **kwargs
         )
 
     async def list_voices(self) -> list[VoiceInfo]:
@@ -270,10 +361,26 @@ def _build_synth_kwargs(
     volume: float = 0.0,
     intonation: float = 1.0,
     params: TTSParams | None = None,
+    voice_profile: "VoiceProfile | None" = None,
+    preset: str | None = None,
+    emotion: str = "neutral",
+    intensity: float = 0.5,
     **extra: object,
 ) -> dict:
     """synthesize()呼び出し用のkwargsを構築."""
-    kwargs: dict = {"speed": speed}
+    kwargs: dict = {}
+
+    # VoiceProfile からベースパラメータを取得
+    if voice_profile and preset:
+        profile_params = voice_profile.compute_params(
+            preset=preset,
+            emotion=emotion,
+            intensity=intensity,
+        )
+        kwargs.update(profile_params)
+
+    # 明示的な引数で上書き（デフォルト値以外の場合）
+    kwargs["speed"] = speed
     if voice_id:
         kwargs["voice_id"] = voice_id
     if pitch != 0.0:
@@ -283,6 +390,7 @@ def _build_synth_kwargs(
     if intonation != 1.0:
         kwargs["intonation"] = intonation
 
+    # TTSParams で上書き
     if params:
         if params.voice_id:
             kwargs["voice_id"] = params.voice_id

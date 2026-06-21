@@ -10,6 +10,21 @@ from yomiage.api.models import SynthesisResult, VoiceInfo
 from yomiage.tts.base import AudioResult, TTSParams, TTSProvider
 
 
+def _make_wav_bytes(duration: float = 0.1, sample_rate: int = 24000) -> bytes:
+    """有効な無音 WAV バイト列を生成."""
+    import io
+    import wave
+
+    num_frames = int(sample_rate * duration)
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sample_rate)
+        wf.writeframes(b"\x00" * (num_frames * 2))
+    return buf.getvalue()
+
+
 class MockProvider(TTSProvider):
     """テスト用モックプロバイダー."""
 
@@ -162,6 +177,33 @@ class TestTTSBridgeListVoices:
         assert await bridge.is_available() is True
 
 
+class TestTTSBridgeLongText:
+    @pytest.mark.asyncio
+    async def test_synthesize_long_short_text(self):
+        provider = MockProvider(audio_data=_make_wav_bytes())
+        bridge = TTSBridge(provider)
+        result = await bridge.synthesize_long("テスト文章です。", max_chars=200)
+        assert isinstance(result, SynthesisResult)
+        assert len(result.audio_data) > 0
+
+    @pytest.mark.asyncio
+    async def test_synthesize_long_splits_text(self):
+        provider = MockProvider(audio_data=_make_wav_bytes())
+        bridge = TTSBridge(provider)
+        text = "これはテストです。" * 20
+        result = await bridge.synthesize_long(text, max_chars=20)
+        assert isinstance(result, SynthesisResult)
+        # concat_wav_bytes で結合されたため、複数回合成されたはず
+        assert len(provider.synthesize_calls) > 1
+
+    @pytest.mark.asyncio
+    async def test_synthesize_long_empty(self):
+        provider = MockProvider(audio_data=_make_wav_bytes())
+        bridge = TTSBridge(provider)
+        result = await bridge.synthesize_long("")
+        assert result.audio_data == b""
+
+
 class TestTTSBridgeSync:
     def test_synthesize_sync(self):
         provider = MockProvider()
@@ -188,6 +230,100 @@ class TestSynthesisResult:
         path = result.save(tmp_path / "subdir" / "test.wav")
         assert path.exists()
         assert path.read_bytes() == b"wav_data"
+
+
+def _has_ffmpeg() -> bool:
+    import shutil
+
+    return shutil.which("ffmpeg") is not None
+
+
+class TestTTSBridgeVoiceProfile:
+    @pytest.mark.asyncio
+    async def test_synthesize_with_voice_profile(self):
+        from yomiage.tools.voice_profile import VoiceProfile
+
+        profile = VoiceProfile.create_default(
+            "mock_voice", "Mock Voice", style_names=[]
+        )
+        provider = MockProvider(audio_data=_make_wav_bytes())
+        bridge = TTSBridge(provider, voice_profile=profile)
+
+        await bridge.synthesize("テスト", preset="female_young", emotion="happy")
+        call = provider.synthesize_calls[-1]
+        # VoiceProfile の計算結果が反映されている
+        assert "pitch" in call or "speed" in call
+
+    @pytest.mark.asyncio
+    async def test_explicit_args_override_profile(self):
+        from yomiage.tools.voice_profile import VoiceProfile
+
+        profile = VoiceProfile.create_default(
+            "mock_voice", "Mock Voice", style_names=[]
+        )
+        provider = MockProvider(audio_data=_make_wav_bytes())
+        bridge = TTSBridge(provider, voice_profile=profile)
+
+        await bridge.synthesize(
+            "テスト", preset="female_young", speed=1.5, pitch=100.0
+        )
+        call = provider.synthesize_calls[-1]
+        assert call["speed"] == 1.5
+        assert call["pitch"] == 100.0
+
+
+class TestTTSBridgeCache:
+    @pytest.mark.asyncio
+    async def test_cache_returns_cached_result(self, tmp_path):
+        from yomiage.tts.cache import TTSCache
+
+        cache = TTSCache(cache_dir=tmp_path / "cache")
+        provider = MockProvider(audio_data=_make_wav_bytes())
+        bridge = TTSBridge(provider, cache=cache)
+
+        result1 = await bridge.synthesize("キャッシュテスト")
+        assert len(result1.audio_data) > 0
+
+        provider.synthesize_calls.clear()
+        result2 = await bridge.synthesize("キャッシュテスト")
+        assert result2.audio_data == result1.audio_data
+        assert len(provider.synthesize_calls) == 0
+
+    @pytest.mark.asyncio
+    async def test_cache_disabled(self, tmp_path):
+        from yomiage.tts.cache import TTSCache
+
+        cache = TTSCache(cache_dir=tmp_path / "cache", enabled=False)
+        provider = MockProvider(audio_data=_make_wav_bytes())
+        bridge = TTSBridge(provider, cache=cache)
+
+        await bridge.synthesize("キャッシュテスト")
+        provider.synthesize_calls.clear()
+        await bridge.synthesize("キャッシュテスト")
+        assert len(provider.synthesize_calls) == 1
+
+
+class TestSynthesisResultConvert:
+    def test_convert_wav_returns_same(self):
+        result = SynthesisResult(audio_data=b"wav_data", format="wav")
+        converted = result.convert("wav")
+        assert converted.audio_data == b"wav_data"
+        assert converted.format == "wav"
+
+    @pytest.mark.skipif(not _has_ffmpeg(), reason="ffmpeg not installed")
+    def test_convert_to_mp3(self):
+        wav = _make_wav_bytes()
+        result = SynthesisResult(audio_data=wav, format="wav", sample_rate=24000)
+        converted = result.convert("mp3")
+        assert converted.format == "mp3"
+        assert len(converted.audio_data) > 0
+
+    def test_convert_unsupported_format(self):
+        result = SynthesisResult(audio_data=b"wav_data", format="wav")
+        from yomiage.api.exceptions import ValidationError
+
+        with pytest.raises(ValidationError):
+            result.convert("unknown")
 
 
 class TestBuildSynthKwargs:

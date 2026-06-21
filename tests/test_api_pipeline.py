@@ -49,6 +49,7 @@ def _make_pipeline_with_mock_tts() -> Pipeline:
     pipeline._analyzer = NLPAnalyzer.rule_based(max_chunk_chars=200)
     pipeline._param_mapper = ParamMapper()
     pipeline._character_db = None
+    pipeline._voice_profile = None
 
     return pipeline
 

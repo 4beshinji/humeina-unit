@@ -15,8 +15,10 @@ from ..reader.param_mapper import ParamMapper
 from ..tts.base import TTSParams
 from .bridge import TTSBridge
 from .models import AnalysisResult, PipelineChunk
+from .profile_resolver import resolve_voice_profile
 
 if TYPE_CHECKING:
+    from ..tools.voice_profile import VoiceProfile
     from .config import PipelineConfig
 
 
@@ -59,6 +61,20 @@ class Pipeline:
 
         # Parameter mapper
         self._param_mapper = ParamMapper(config.scene_params)
+
+        # VoiceProfile (optional)
+        self._voice_profile: "VoiceProfile | None" = None
+        if config.voice_profile_name:
+            self._voice_profile = resolve_voice_profile(
+                config.voice_profile_name,
+                search_dirs=[config.voice_profile_dir]
+                if config.voice_profile_dir
+                else None,
+            )
+            if self._voice_profile:
+                logger.info(
+                    f"Loaded voice profile: {self._voice_profile.display_name}"
+                )
 
         # Character DB (in-memory, no file persistence)
         self._character_db: CharacterDB | None = None
@@ -126,6 +142,12 @@ class Pipeline:
             # パラメータマッピング
             tts_params = self._param_mapper.map(dominant, self._character_db)
 
+            # VoiceProfile があればキャラクターアーキタイプからパラメータを計算
+            if self._voice_profile and self._character_db:
+                tts_params = self._apply_voice_profile(
+                    tts_params, dominant, self._character_db
+                )
+
             # TTS合成
             synth_result = await self._bridge.synthesize(
                 chunk.text, params=tts_params
@@ -147,6 +169,36 @@ class Pipeline:
                 audio=synth_result,
                 tts_params=_params_to_dict(tts_params),
             )
+
+    def _apply_voice_profile(
+        self,
+        params: TTSParams,
+        segment,
+        character_db: CharacterDB,
+    ) -> TTSParams:
+        """VoiceProfile を使って TTSParams を上書き."""
+        if not self._voice_profile or not segment.speaker:
+            return params
+
+        char = character_db.characters.get(segment.speaker)
+        if not char or not char.base_params:
+            return params
+
+        archetype = char.base_params.get("_archetype")
+        if not archetype or archetype not in self._voice_profile.presets:
+            return params
+
+        profile_params = self._voice_profile.compute_params(
+            preset=archetype,
+            emotion=segment.emotion,
+            intensity=segment.intensity,
+        )
+        for key, value in profile_params.items():
+            if key == "style_weights":
+                params.style_weights = value
+            elif hasattr(params, key):
+                setattr(params, key, value)
+        return params
 
     # --- sync ラッパー ---
 

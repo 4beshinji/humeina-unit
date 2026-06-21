@@ -63,6 +63,8 @@ class PipelineConfig(BaseModel):
     analyzer: AnalyzerConfig = AnalyzerConfig()
     scene_params: dict | None = None
     lookahead: int = 3
+    voice_profile_dir: Path | None = None
+    voice_profile_name: str | None = None
 
     @classmethod
     def from_yaml(cls, config_dir: str | Path | None = None) -> PipelineConfig:
@@ -116,10 +118,15 @@ class PipelineConfig(BaseModel):
             max_chunk_chars=tts_cfg.get("max_chunk_chars", 200),
         )
 
+        batch_cfg = data.get("batch", {})
         return cls(
             tts=tts,
             tts_fallback=tts_fallback,
             analyzer=analyzer,
             scene_params=data.get("scene_params"),
             lookahead=tts_cfg.get("lookahead_chunks", 3),
+            voice_profile_dir=Path(batch_cfg["voice_profile_dir"])
+            if batch_cfg.get("voice_profile_dir")
+            else None,
+            voice_profile_name=batch_cfg.get("default_voice_profile"),
         )
