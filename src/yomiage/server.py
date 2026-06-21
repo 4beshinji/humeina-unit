@@ -10,6 +10,8 @@ from fastapi.responses import StreamingResponse
 from loguru import logger
 from pydantic import BaseModel
 
+from .api.hooks import EventHooks
+from .api.metrics import MetricsCollector
 from .api.profile_resolver import resolve_voice_profile
 from .batch.job_manager import BatchJobManager
 from .config import get_tts_config, load_config
@@ -25,6 +27,8 @@ from .tts.voisona import VoisonaProvider
 
 _engine: ReadingEngine | None = None
 _job_manager: BatchJobManager | None = None
+_hooks: EventHooks | None = None
+_metrics: MetricsCollector | None = None
 _config: dict = {}
 
 
@@ -55,6 +59,8 @@ def _create_engine(config: dict) -> ReadingEngine:
         fallback=fallback,
         lookahead=tts_cfg.get("lookahead_chunks", 3),
         voice_profile=voice_profile,
+        hooks=_hooks,
+        metrics=_metrics,
     )
 
     ollama_cfg = config.get("ollama", {})
@@ -80,15 +86,19 @@ def _create_engine(config: dict) -> ReadingEngine:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _engine, _job_manager, _config
+    global _engine, _job_manager, _hooks, _metrics, _config
     from dotenv import load_dotenv
 
     load_dotenv()
     _config = load_config()
+    _hooks = EventHooks()
+    _metrics = MetricsCollector()
     _engine = _create_engine(_config)
     _job_manager = BatchJobManager(
         _config,
         output_dir=_config.get("batch", {}).get("output_dir", "output"),
+        hooks=_hooks,
+        metrics=_metrics,
     )
     logger.info("Yomiage server started")
     yield
@@ -288,6 +298,14 @@ async def batch_job_progress(job_id: str):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
     )
+
+
+@app.get("/api/yomiage/metrics")
+async def get_metrics():
+    """収集済みメトリクスを返す."""
+    if not _metrics:
+        raise HTTPException(503, "Metrics not initialized")
+    return _metrics.to_dict()
 
 
 @app.post("/api/yomiage/news")

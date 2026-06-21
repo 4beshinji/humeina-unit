@@ -11,7 +11,9 @@ from ..tts.base import AudioResult, TTSParams, TTSProvider
 from ..tts.cache import TTSCache
 from ..tts.factory import create_provider
 from ..tts.retry import RetryConfig, with_retry
+from .hooks import EventHooks
 from .long_text import LongTextOptions, synthesize_long_text
+from .metrics import MetricsCollector
 from .models import SynthesisResult, VoiceInfo
 
 if TYPE_CHECKING:
@@ -38,12 +40,16 @@ class TTSBridge:
         retry_config: RetryConfig | None = None,
         cache: TTSCache | None = None,
         voice_profile: "VoiceProfile | None" = None,
+        hooks: EventHooks | None = None,
+        metrics: MetricsCollector | None = None,
     ):
         self._provider = provider
         self._fallback = fallback
         self._retry_config = retry_config
         self._cache = cache
         self._voice_profile = voice_profile
+        self._hooks = hooks
+        self._metrics = metrics
 
     @classmethod
     def create(
@@ -53,6 +59,8 @@ class TTSBridge:
         retry_config: RetryConfig | None = None,
         cache: TTSCache | None = None,
         voice_profile: "VoiceProfile | None" = None,
+        hooks: EventHooks | None = None,
+        metrics: MetricsCollector | None = None,
         **kwargs: object,
     ) -> "TTSBridge":
         """ファクトリ: エンジン名+パラメータで作成.
@@ -71,6 +79,8 @@ class TTSBridge:
             retry_config=retry_config,
             cache=cache,
             voice_profile=voice_profile,
+            hooks=hooks,
+            metrics=metrics,
         )
 
     @classmethod
@@ -82,6 +92,8 @@ class TTSBridge:
         retry_config: RetryConfig | None = None,
         cache: TTSCache | None = None,
         voice_profile: "VoiceProfile | None" = None,
+        hooks: EventHooks | None = None,
+        metrics: MetricsCollector | None = None,
     ) -> "TTSBridge":
         """TTSEngineConfigから作成."""
         provider = create_provider(config)
@@ -92,6 +104,8 @@ class TTSBridge:
             retry_config=retry_config,
             cache=cache,
             voice_profile=voice_profile,
+            hooks=hooks,
+            metrics=metrics,
         )
 
     @classmethod
@@ -103,6 +117,8 @@ class TTSBridge:
         retry_config: RetryConfig | None = None,
         cache: TTSCache | None = None,
         voice_profile: "VoiceProfile | None" = None,
+        hooks: EventHooks | None = None,
+        metrics: MetricsCollector | None = None,
     ) -> "TTSBridge":
         """既存のTTSProviderインスタンスから作成."""
         return cls(
@@ -111,6 +127,8 @@ class TTSBridge:
             retry_config=retry_config,
             cache=cache,
             voice_profile=voice_profile,
+            hooks=hooks,
+            metrics=metrics,
         )
 
     @property
@@ -154,30 +172,71 @@ class TTSBridge:
             **kwargs,
         )
 
-        # キャッシュヒット確認
-        if self._cache:
-            cached = self._cache.get(self._provider.name, text, **synth_kwargs)
-            if cached:
-                return SynthesisResult(
-                    audio_data=cached,
-                    format="wav",
-                    sample_rate=None,
-                    duration=None,
+        engine_name = self._provider.name
+        if self._hooks:
+            self._hooks.emit_synthesis_start(text, engine_name, synth_kwargs)
+
+        start = asyncio.get_event_loop().time()
+        try:
+            # キャッシュヒット確認
+            if self._cache:
+                cached = self._cache.get(engine_name, text, **synth_kwargs)
+                if cached:
+                    if self._hooks:
+                        self._hooks.emit_cache_hit(text, engine_name, synth_kwargs)
+                    if self._metrics:
+                        duration_ms = (
+                            asyncio.get_event_loop().time() - start
+                        ) * 1000
+                        self._metrics.record_synthesis(
+                            duration_ms=duration_ms,
+                            cache_hit=True,
+                            text=text,
+                        )
+                    return SynthesisResult(
+                        audio_data=cached,
+                        format="wav",
+                        sample_rate=None,
+                        duration=None,
+                    )
+
+            result = await self._synthesize_with_fallback(text, synth_kwargs)
+
+            # audio_data が空の場合（VoiSona等）はファイル経由で取得
+            if not result.audio_data:
+                result = await self._synthesize_via_file(text, synth_kwargs)
+
+            # キャッシュ保存
+            if self._cache and result.audio_data:
+                self._cache.put(result.audio_data, engine_name, text, **synth_kwargs)
+
+            duration_ms = (asyncio.get_event_loop().time() - start) * 1000
+            if self._hooks:
+                self._hooks.emit_synthesis_end(
+                    text, engine_name, synth_kwargs, duration_ms, cache_hit=False
+                )
+            if self._metrics:
+                self._metrics.record_synthesis(
+                    duration_ms=duration_ms,
+                    cache_hit=False,
+                    text=text,
                 )
 
-        result = await self._synthesize_with_fallback(text, synth_kwargs)
-
-        # audio_data が空の場合（VoiSona等）はファイル経由で取得
-        if not result.audio_data:
-            result = await self._synthesize_via_file(text, synth_kwargs)
-
-        # キャッシュ保存
-        if self._cache and result.audio_data:
-            self._cache.put(
-                result.audio_data, self._provider.name, text, **synth_kwargs
-            )
-
-        return _to_synthesis_result(result)
+            return _to_synthesis_result(result)
+        except Exception as exc:
+            duration_ms = (asyncio.get_event_loop().time() - start) * 1000
+            if self._hooks:
+                self._hooks.emit_synthesis_error(
+                    text, engine_name, synth_kwargs, str(exc)
+                )
+            if self._metrics:
+                self._metrics.record_synthesis(
+                    duration_ms=duration_ms,
+                    error=True,
+                    cache_hit=False,
+                    text=text,
+                )
+            raise
 
     async def synthesize_to_file(
         self,

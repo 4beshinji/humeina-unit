@@ -15,6 +15,8 @@ from .base import AudioResult, TTSParams, TTSProvider
 from .playback import play_wav
 
 if TYPE_CHECKING:
+    from ..api.hooks import EventHooks
+    from ..api.metrics import MetricsCollector
     from ..tools.voice_profile import VoiceProfile
 
 
@@ -33,11 +35,15 @@ class TTSManager:
         fallback: TTSProvider | None = None,
         lookahead: int = 3,
         voice_profile: "VoiceProfile | None" = None,
+        hooks: "EventHooks | None" = None,
+        metrics: "MetricsCollector | None" = None,
     ):
         self.primary = primary
         self.fallback = fallback
         self.lookahead = lookahead
         self.voice_profile = voice_profile
+        self._hooks = hooks
+        self._metrics = metrics
         self._queue: asyncio.Queue[tuple[str, TTSParams] | RawAudioItem | None] = asyncio.Queue()
         self._audio_queue: asyncio.Queue[AudioResult | None] = asyncio.Queue()
         self._pause_event = asyncio.Event()
@@ -142,15 +148,44 @@ class TTSManager:
     async def _do_synthesize(self, text: str, params: TTSParams) -> AudioResult:
         provider = self._select_provider()
         kwargs = self._build_kwargs(params)
+        engine_name = provider.name
 
+        if self._hooks:
+            self._hooks.emit_synthesis_start(text, engine_name, kwargs)
+
+        start = asyncio.get_event_loop().time()
         try:
-            return await provider.synthesize(text, **kwargs)
+            result = await provider.synthesize(text, **kwargs)
+            duration_ms = (asyncio.get_event_loop().time() - start) * 1000
+            if self._hooks:
+                self._hooks.emit_synthesis_end(
+                    text, engine_name, kwargs, duration_ms, cache_hit=False
+                )
+            if self._metrics:
+                self._metrics.record_synthesis(
+                    duration_ms=duration_ms,
+                    cache_hit=False,
+                    text=text,
+                )
+            return result
         except Exception as e:
             if self.fallback and provider is not self.fallback:
                 logger.warning(
                     f"{provider.name} failed ({e}), using {self.fallback.name}"
                 )
                 return await self.fallback.synthesize(text, **kwargs)
+            duration_ms = (asyncio.get_event_loop().time() - start) * 1000
+            if self._hooks:
+                self._hooks.emit_synthesis_error(
+                    text, engine_name, kwargs, str(e)
+                )
+            if self._metrics:
+                self._metrics.record_synthesis(
+                    duration_ms=duration_ms,
+                    error=True,
+                    cache_hit=False,
+                    text=text,
+                )
             raise
 
     def _select_provider(self) -> TTSProvider:

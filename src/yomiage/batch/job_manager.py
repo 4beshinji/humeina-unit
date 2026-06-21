@@ -9,6 +9,8 @@ from typing import Any
 
 from loguru import logger
 
+from ..api.hooks import EventHooks
+from ..api.metrics import MetricsCollector
 from .engine import BatchEngine
 
 
@@ -50,10 +52,18 @@ class BatchJob:
 class BatchJobManager:
     """バッチ合成ジョブを管理し、SSE で進捗を配信する."""
 
-    def __init__(self, config: dict, output_dir: str = "output"):
+    def __init__(
+        self,
+        config: dict,
+        output_dir: str = "output",
+        hooks: EventHooks | None = None,
+        metrics: MetricsCollector | None = None,
+    ):
         self.config = config
         self.output_dir = output_dir
         self._jobs: dict[str, BatchJob] = {}
+        self._hooks = hooks
+        self._metrics = metrics
 
     def create_job(
         self,
@@ -170,6 +180,18 @@ class BatchJobManager:
                 dead.add(queue)
         for queue in dead:
             job._queues.discard(queue)
+
+        if self._hooks:
+            self._hooks.emit_batch_job_status(
+                job.id,
+                status=status,
+                percent=percent,
+                message=message,
+                output_path=job.output_path,
+                error=job.error,
+            )
+        if self._metrics and status in ("completed", "failed"):
+            self._metrics.record_batch_job(status)
 
     def _event(self, job: BatchJob, status: str, percent: float, message: str) -> dict:
         return {
