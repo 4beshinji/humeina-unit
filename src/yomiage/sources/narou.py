@@ -46,7 +46,7 @@ class NarouSource(ContentSource):
         async with _semaphore:
             async with aiohttp.ClientSession(
                 timeout=aiohttp.ClientTimeout(total=30),
-                headers={"User-Agent": "voisona_yomiage/0.1"},
+                headers={"User-Agent": "humeina-unit/0.1"},
             ) as session:
                 async with session.get(url) as resp:
                     if resp.status != 200:
@@ -166,7 +166,7 @@ class NarouSource(ContentSource):
             async with _semaphore:
                 async with aiohttp.ClientSession(
                     timeout=aiohttp.ClientTimeout(total=10),
-                    headers={"User-Agent": "voisona_yomiage/0.1"},
+                    headers={"User-Agent": "humeina-unit/0.1"},
                 ) as session:
                     async with session.head(
                         next_url, allow_redirects=False

@@ -247,7 +247,12 @@ def news(
     action: str = typer.Argument("daily", help="daily / check"),
     provider: str | None = typer.Option(None, "--provider", "-p", help="TTSプロバイダー"),
     output: str | None = typer.Option(None, "--output", "-o", help="音声ファイル出力先"),
-    gemini_key: str | None = typer.Option(None, "--gemini-key", envvar="GEMINI_API_KEY", help="Gemini APIキー（Ollamaフォールバック用）"),
+    gemini_key: str | None = typer.Option(
+        None,
+        "--gemini-key",
+        envvar="GEMINI_API_KEY",
+        help="Gemini APIキー（Ollamaフォールバック用）",
+    ),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
     """ニュース読み上げ."""

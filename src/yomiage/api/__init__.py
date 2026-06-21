@@ -1,4 +1,4 @@
-"""voisona_yomiage public API."""
+"""humeina-unit public API."""
 
 from .analyzer import TextAnalyzer
 from .bridge import TTSBridge

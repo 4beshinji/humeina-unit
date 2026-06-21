@@ -1,4 +1,4 @@
-"""Phase 2-4 機能テスト: 立ち絵・BGM/SE・トランジション.
+"""動画生成統合テスト: 立ち絵・BGM/SE・トランジション.
 
 Office_as_AI_ToyBox の広報素材（SOMS LTスクリプト）を使い、
 Phase 2（立ち絵オーバーレイ）、Phase 3（BGM/SEミキシング）、
@@ -32,7 +32,7 @@ from yomiage.video.frame_builder import PortraitOverlay, TitleCardGenerator
 from yomiage.video.timeline import TimelineBuilder, TimelineEvent
 
 # ============================================================
-# SOMS 広報 テストデータ (test_video_soms.py と同じ素材)
+# SOMS 広報 テストデータ
 # ============================================================
 
 _SOMS_LINES: list[tuple[str, str, str | None, str, str]] = [

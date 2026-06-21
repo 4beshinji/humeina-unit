@@ -63,6 +63,7 @@ Phase A: 全文分析       Phase B: バッチ合成      Phase C: 結合       
       "scene": "daily",
       "emotion": "neutral",
       "intensity": 0.5,
+      "duration": null,
       "status": "pending"
     },
     ...

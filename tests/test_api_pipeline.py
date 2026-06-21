@@ -1,6 +1,5 @@
 """Tests for Pipeline."""
 
-from unittest.mock import AsyncMock, patch
 
 import pytest
 

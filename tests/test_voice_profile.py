@@ -5,16 +5,15 @@ from pathlib import Path
 
 import pytest
 
+from yomiage.tools.tuner import VoiceTuner, _format_params
 from yomiage.tools.voice_profile import (
     API_LIMITS,
-    BASE_VALUES,
     ARCHETYPE_NAMES,
+    BASE_VALUES,
     EmotionConfig,
     PresetConfig,
     VoiceProfile,
 )
-from yomiage.tools.tuner import _format_params, VoiceTuner
-
 
 # ---------------------------------------------------------------------------
 # Fixture: minimal but complete VoiceProfile

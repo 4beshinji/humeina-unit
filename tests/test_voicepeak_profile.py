@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from yomiage.tools.voice_profile import PresetConfig
 from yomiage.tools.voicepeak_profile import (
     VOICEPEAK_API_LIMITS,
     VOICEPEAK_ARCHETYPE_NAMES,
@@ -12,9 +13,7 @@ from yomiage.tools.voicepeak_profile import (
     VoicepeakEmotionConfig,
     VoicepeakVoiceProfile,
 )
-from yomiage.tools.voice_profile import PresetConfig
-from yomiage.tools.voicepeak_tuner import _format_params, VoicepeakTuner
-
+from yomiage.tools.voicepeak_tuner import VoicepeakTuner, _format_params
 
 # ---------------------------------------------------------------------------
 # Fixture: minimal but complete VoicepeakVoiceProfile

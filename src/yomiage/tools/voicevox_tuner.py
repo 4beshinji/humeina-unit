@@ -6,6 +6,10 @@ Phases:
   3. tune_emotion   — adjust emotion configs (style_id + param_offsets)
   4. calibrate_noise — dial in per-parameter noise magnitudes
   5. demo           — play all preset × emotion combinations
+
+TODO: CLI から `yomiage tune` または `yomiage voicevox-tune` として公開する
+      か、VoiSona/VOICEPEAK チューナーと統合した共通チューニングフローに
+      組み込む。現状は `tests/test_voicevox_profile.py` でのみ利用されている。
 """
 
 from __future__ import annotations

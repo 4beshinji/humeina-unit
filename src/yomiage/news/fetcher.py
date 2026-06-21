@@ -52,7 +52,7 @@ class NewsFetcher:
     async def _fetch_feed(self, source_name: str, feed_url: str) -> list[Article]:
         async with aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=15),
-            headers={"User-Agent": "voisona_yomiage/0.1"},
+            headers={"User-Agent": "humeina-unit/0.1"},
         ) as session:
             async with session.get(feed_url) as resp:
                 if resp.status != 200:

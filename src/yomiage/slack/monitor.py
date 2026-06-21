@@ -85,7 +85,7 @@ class SlackMonitor:
                 await asyncio.sleep(1)
 
         except ImportError:
-            logger.error("slack-sdk not installed. Run: pip install 'voisona-yomiage[slack]'")
+            logger.error("slack-sdk not installed. Run: pip install 'humeina-unit[slack]'")
         except Exception as e:
             logger.error(f"Slack monitor error: {e}")
 

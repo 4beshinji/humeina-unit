@@ -191,7 +191,7 @@ yomiage voices list --provider voicevox
 
 ### `yomiage characters list`
 
-全作品のキャラクター一覧を表示する。
+`data/characters/` 以下の全作品のキャラクター一覧を表示する。
 
 ```bash
 yomiage characters list

@@ -89,7 +89,7 @@ Docker上で動作するVOICEVOX Engine APIクライアント。
 
 | パラメータ | 説明 |
 |-----------|------|
-| `speaker` (int) | スピーカーID |
+| `voice_id` (string) | スピーカーID。VOICEVOXでは数値のスピーカーIDを文字列で指定 |
 | `speedScale` | 話速 |
 | `pitchScale` | ピッチ |
 | `intonationScale` | 抑揚 |

@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from yomiage.tools.voice_profile import PresetConfig
 from yomiage.tools.voicevox_profile import (
     VOICEVOX_API_LIMITS,
     VOICEVOX_ARCHETYPE_NAMES,
@@ -12,9 +13,7 @@ from yomiage.tools.voicevox_profile import (
     VoicevoxEmotionConfig,
     VoicevoxVoiceProfile,
 )
-from yomiage.tools.voice_profile import PresetConfig
-from yomiage.tools.voicevox_tuner import _format_params, VoicevoxTuner
-
+from yomiage.tools.voicevox_tuner import VoicevoxTuner, _format_params
 
 # ---------------------------------------------------------------------------
 # Fixture: minimal but complete VoicevoxVoiceProfile

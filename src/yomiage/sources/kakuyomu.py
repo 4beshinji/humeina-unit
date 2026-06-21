@@ -42,7 +42,7 @@ class KakuyomuSource(ContentSource):
         async with _semaphore:
             async with aiohttp.ClientSession(
                 timeout=aiohttp.ClientTimeout(total=30),
-                headers={"User-Agent": "voisona_yomiage/0.1"},
+                headers={"User-Agent": "humeina-unit/0.1"},
             ) as session:
                 async with session.get(url) as resp:
                     if resp.status != 200:

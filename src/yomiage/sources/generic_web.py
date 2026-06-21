@@ -1,7 +1,7 @@
 """汎用Webページ コンテンツソース（フォールバック）."""
 
 import re
-from urllib.parse import urldefrag, urljoin
+from urllib.parse import urldefrag
 
 import aiohttp
 from bs4 import BeautifulSoup, NavigableString, Tag
@@ -197,7 +197,7 @@ class GenericWebSource(ContentSource):
     async def _fetch_html(self, url: str) -> str:
         async with aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=30),
-            headers={"User-Agent": "voisona_yomiage/0.1"},
+            headers={"User-Agent": "humeina-unit/0.1"},
         ) as session:
             async with session.get(url) as resp:
                 if resp.status != 200:
