@@ -47,10 +47,6 @@ class ImportViolation:
 # これらは既存の外側/旧経路に残る依存であり、対応する移行タスクを必ず明記する。
 # 新規内側レイヤーの例外を追加する場合も、所有タスクなしでは受け入れない。
 LEGACY_IMPORT_ALLOWLIST = (
-    LegacyImportRule("src/yomiage/cli.py", "typer", "CLN-002"),
-    LegacyImportRule("src/yomiage/cli.py", "yomiage.tts.voicepeak", "CLN-002"),
-    LegacyImportRule("src/yomiage/cli.py", "yomiage.tts.voicevox", "CLN-002"),
-    LegacyImportRule("src/yomiage/cli.py", "yomiage.tts.voisona", "CLN-002"),
     LegacyImportRule("src/yomiage/server.py", "fastapi", "API-001"),
     LegacyImportRule("src/yomiage/studio/engine.py", "typer", "SYN-002"),
     LegacyImportRule("src/yomiage/studio/engine.py", "yomiage.tts.voicepeak", "SYN-002"),
@@ -167,6 +163,16 @@ def _legacy_rule_for(violation: ImportViolation) -> LegacyImportRule | None:
     return None
 
 
+def _is_intended_outer_dependency(violation: ImportViolation) -> bool:
+    """Framework imports belong in explicit outer interface packages."""
+
+    relative = violation.path.relative_to(REPOSITORY_ROOT).as_posix()
+    return violation.module == "typer" and (
+        relative == "src/yomiage/cli.py"
+        or relative.startswith("src/yomiage/interfaces/cli/")
+    )
+
+
 def test_inner_layers_do_not_import_frameworks_or_concrete_providers():
     """core/application/portsは外側のframework/providerを参照しない."""
 
@@ -196,7 +202,12 @@ def test_existing_forbidden_imports_are_explicitly_owned():
     """既存経路の例外は所有タスクIDなしで許容しない."""
 
     violations = find_forbidden_imports(SOURCE_ROOT, layers=None)
-    unowned = [violation for violation in violations if _legacy_rule_for(violation) is None]
+    unowned = [
+        violation
+        for violation in violations
+        if not _is_intended_outer_dependency(violation)
+        and _legacy_rule_for(violation) is None
+    ]
     assert not unowned, "\n".join(v.format(REPOSITORY_ROOT) for v in unowned)
 
 

@@ -91,8 +91,8 @@ WIP上限1の場合の推奨順:
 | API-002 | R4 | P0 | M | done | API-001, SEC-001, SEC-002, JOB-002 | C | worker | worker | 2026-07-30 | 2026-07-30 |
 | OBS-001 | R4 | P1 | M | done | API-001, JOB-001, SYN-001 | D | worker | worker | 2026-07-30 | 2026-07-30 |
 | CLN-001 | R5 | P2 | L | done | TST-002, API-002 | A | worker | worker | 2026-07-30 | 2026-07-30 |
-| CLN-002 | R5 | P2 | M | ready | API-001, CLN-001 | C | worker | — | — | — |
-| DOC-001 | R5 | P1 | M | backlog | CLN-001, CLN-002, OBS-001 | D | worker | — | — | — |
+| CLN-002 | R5 | P2 | M | done | API-001, CLN-001 | C | worker | worker | 2026-07-30 | 2026-07-30 |
+| DOC-001 | R5 | P1 | M | ready | CLN-001, CLN-002, OBS-001 | D | worker | — | — | — |
 | OPS-001 | R5 | P1 | M | backlog | DOC-001, TST-002, OBS-001 | D | worker | — | — | — |
 
 ## 4. タスクカード
@@ -886,6 +886,20 @@ WIP上限1の場合の推奨順:
 - Result: Provider構築をbootstrap/factoryへ集約し、Bridge、TTSManager、旧BatchSynthesizerを共有SynthesisServiceへの薄いfacadeにした。fallback/retry/cache/metrics/lifecycleをcanonical serviceへ一本化し、architecture allowlistを縮小した。
 - Manual verification: facade側二重metrics、空設定Batch互換、同期tuner初期化、Reader/Manager二重service、Provider二重closeを独立レビューで検出・修正した。
 - Remaining risks: 公開互換のためBridge/Manager/Batch facade自体は残す。CLIファイル分割はCLN-002で扱う。
+
+### CLN-002 検証証跡
+
+- Commit/PR: 本waveのローカルコミット
+- 実行日: 2026-07-30
+- 担当: worker（実装）、explorer/root（レビュー・統合）
+- Commands:
+  - CLI help/serve/entrypoint focused — worker 47 passed
+  - CLI matrix/entrypoint/architecture回帰 — root 56 passed
+  - 非E2E全pytest — 630 passed, 2 skipped, 6 deselected
+  - `.venv/bin/python -m ruff check src/ tests/` / `git diff --check` — pass
+- Result: 1000行超のCLIをreader、batch、studio、tuning、news、slack、serverとcomposition/commonへ分割し、`yomiage.cli:app`を215行の互換facadeにした。全root/subcommandのhelp matrixを追加した。
+- Manual verification: 既存command名・option、具象Provider非構築、Typer外層依存、private helper monkeypatch、missing-profile stdout表示を確認した。
+- Remaining risks: private helperは互換のため遅延参照として残す。CLI名称再設計は非対象。
 
 タスク完了時に以下の形式で追記する。
 
