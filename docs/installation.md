@@ -31,7 +31,8 @@ cp .env.example .env
 
 ### Ollama（必須）
 
-NLP分析のSLMバックエンド。`config/default.yaml` のデフォルトは `qwen3:8b`。軽量運用なら `qwen3.5:3b` 程度でも動作する。要約用に別モデルを指定することも可能。
+NLP分析のSLMバックエンド。標準設定のデフォルトは `qwen3:8b`。軽量運用なら `qwen3.5:3b`
+程度でも動作する。要約用に別モデルを指定することも可能。
 
 ```bash
 # インストール
@@ -83,14 +84,16 @@ QEMU/KVM上のWindows VMにVoiSona Talkをインストール。
 VOISONA_URL=http://<VM_IP>:32766
 VOISONA_USERNAME=your-email@example.com
 VOISONA_PASSWORD=your-password
-VOISONA_VOICE_NAME=nurse-robot-type-t_ja_JP
 ```
 
 バッチ合成でファイル直接出力を使う場合は [virtiofs セットアップ](virtiofs-setup.md) を参照。
+VoiSona を使わない場合は VOICEVOX または VOICEPEAK だけを設定できます。
 
 ### VOICEPEAK（ローカルCLI）
 
-VOICEPEAK のバイナリをローカルにインストールし、`config/default.yaml` の `voicepeak.path` にパスを設定する。
+VOICEPEAK のバイナリをローカルにインストールし、ユーザー YAML の `voicepeak.path` にパスを設定する。
+checkout の `config/default.yaml` を使う場合は `load_config(config_dir=Path("config"))` などで
+設定ディレクトリを明示する。
 
 ```yaml
 voicepeak:
@@ -115,17 +118,17 @@ sudo apt install ffmpeg
 | `VOISONA_URL` | VoiSona使用時 | VoiSona Talk APIのURL |
 | `VOISONA_USERNAME` | VoiSona使用時 | VoiSona Talk のユーザー名 |
 | `VOISONA_PASSWORD` | VoiSona使用時 | VoiSona Talk のパスワード |
-| `VOISONA_VOICE_NAME` | いいえ | 既定ボイス名（省略時は `nurse-robot-type-t_ja_JP`） |
 | `VOICEVOX_URL` | VOICEVOX使用時 | VOICEVOX Engine のURL |
-| `OLLAMA_URL` | はい | Ollama のURL |
-| `OLLAMA_MODEL` | はい | NLP分析に使うモデル名 |
+| `OLLAMA_URL` | Ollama使用時 | Ollama のURL |
+| `OLLAMA_MODEL` | Ollama使用時 | NLP分析に使うモデル名 |
 | `OLLAMA_SUMMARY_MODEL` | いいえ | ニュース要約用モデル（省略時は `OLLAMA_MODEL`） |
 | `GEMINI_API_KEY` | いいえ | Gemini フォールバック有効化 |
 | `VOISONA_VM_MOUNT` | バッチVoiSona時 | VM内のvirtiofsマウントポイント（デフォルト: `Z:`） |
 | `EX_VOICE_WAV_DIR` | EXボイス使用時 | EXボイス用WAVクリップ格納ディレクトリ |
-| `SLACK_BOT_TOKEN` | Slack連携時 | Slack Bot Token |
-| `SLACK_APP_TOKEN` | Slack連携時 | Slack App Token |
-| `MQTT_BROKER` / `MQTT_PORT` / `MQTT_USER` / `MQTT_PASS` | HEMS連携時 | MQTT接続情報 |
+| `SLACK_BOT_TOKEN` | Slack連携時 | Slack Bot Token（`slack-sdk` extra） |
+| `SLACK_APP_TOKEN` | Slack連携時 | Slack App Token（`slack-sdk` extra） |
+
+HEMS/MQTT 連携用の設定やサービスは実装していません。
 
 ## 動作確認
 
@@ -144,14 +147,14 @@ curl -u "$VOISONA_USERNAME:$VOISONA_PASSWORD" \
 uv run yomiage read "https://www.aozora.gr.jp/cards/000879/files/127_15260.html" -p voicevox
 
 # テスト実行
-uv run pytest
+uv run python -m pytest -q
 ```
 
 ## 開発環境
 
 ```bash
 # lint
-uv run ruff check src/
+uv run python -m ruff check src/ tests/
 
 # テスト
 uv run pytest -v

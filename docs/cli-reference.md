@@ -1,231 +1,155 @@
-# CLI コマンドリファレンス
+# CLI リファレンス
 
-エントリポイント: `yomiage` (`src/yomiage/cli.py`)
-
-実行例は `uv run yomiage ...`（venv 有効化後は `yomiage ...`）。
-
-## リアルタイム読み上げ
-
-### `yomiage read <URL>`
-
-URLのコンテンツを読み上げる。チャプター自動遷移対応。
+エントリポイントは `yomiage`（`src/yomiage/cli.py`）です。オプションの完全な表示は実装の
+help を正とします。
 
 ```bash
-yomiage read "https://www.aozora.gr.jp/cards/000879/files/127_15260.html"
-yomiage read "https://ncode.syosetu.com/n1234ab/" --provider voicevox
-yomiage read "https://kakuyomu.jp/works/..." -v
-yomiage read "https://example.com/article" --ex-voice
+uv run yomiage --help
+uv run yomiage <command> --help
 ```
 
-| オプション | 短縮 | 説明 |
-|-----------|------|------|
-| `--provider` | `-p` | TTSプロバイダー指定（`voisona`/`voicevox`/`voicepeak`） |
-| `--ex-voice` | | EXボイスクリップを文脈に応じて自動挿入 |
-| `--verbose` | `-v` | 詳細ログ |
+## Reader
+
+### `yomiage read URL`
+
+URL を取得し、リアルタイム読み上げを開始します。
+
+```bash
+yomiage read "https://www.aozora.gr.jp/cards/000879/files/127_15260.html" --provider voicevox
+yomiage read "https://example.com/article" --ex-voice --verbose
+```
+
+`--provider/-p` は `voisona|voicevox|voicepeak`、`--ex-voice` は設定済み WAV クリップを有効化、
+`--verbose/-v` は詳細ログです。
 
 ### `yomiage resume`
 
-最後のブックマークから読み上げを再開する。
+保存済み bookmark から再開します。
 
 ```bash
-yomiage resume
 yomiage resume --provider voisona
 ```
 
-## バッチ合成
+## Batch
 
-### `yomiage batch analyze <URL>`
+Batch は `work_id` とは別に immutable な `plan_id` と実行ごとの `run_id` を記録します。新規
+成果物は `output/works/{work_id}/plans/` と `runs/{run_id}/` に保存されます。
 
-Phase A: 全文NLP分析を行い、マニフェスト（`manifest.json`）を生成する。
+### `yomiage batch analyze URL`
 
-```bash
-yomiage batch analyze "https://ncode.syosetu.com/n1234ab/"
-yomiage batch analyze "https://..." --mode voicevox --chapters 1-5
-```
-
-| オプション | 短縮 | 説明 |
-|-----------|------|------|
-| `--mode` | `-m` | `voisona` / `voicevox` / `voicepeak`（デフォルト: `voisona`） |
-| `--chapters` | | チャプター範囲（例: `1-5`, `3`） |
-| `--output` | `-o` | 出力ディレクトリ（デフォルト: `output`） |
-| `--verbose` | `-v` | 詳細ログ |
-
-出力:
-```
-output/{work_id}/manifest.json
-```
-
-### `yomiage batch synthesize <work_id>`
-
-Phase B: マニフェストに基づいて音声合成を実行する。
+Phase A（全文分析）を実行します。
 
 ```bash
-yomiage batch synthesize c8113c64b0dc --mode voisona
+yomiage batch analyze "https://ncode.syosetu.com/n1234ab/" --mode voicevox --chapters 1-5
 ```
 
-| オプション | 短縮 | 説明 |
-|-----------|------|------|
-| `--mode` | `-m` | TTSモード（`voisona`/`voicevox`/`voicepeak`） |
-| `--output` | `-o` | 出力ディレクトリ |
-| `--verbose` | `-v` | 詳細ログ |
+| option | default | 説明 |
+| --- | --- | --- |
+| `--mode/-m` | `voisona` | `voisona|voicevox|voicepeak` |
+| `--chapters` | なし | `1-5` または `3` |
+| `--output/-o` | `output` | output base directory |
+| `--verbose/-v` | false | 詳細ログ |
 
-出力:
-```
-output/{work_id}/0000.wav
-output/{work_id}/0001.wav
-...
-```
+### `yomiage batch synthesize WORK_ID`
 
-### `yomiage batch concat <work_id>`
-
-Phase C: 連番WAVファイルをffmpegで結合する。
+既存 manifest/plan を使い Phase B の合成を行います。
 
 ```bash
-yomiage batch concat c8113c64b0dc
+yomiage batch synthesize c8113c64b0dc --mode voicevox --output output
+```
+
+`--mode/-m`、`--output/-o`、`--verbose/-v` を指定できます。
+
+### `yomiage batch concat WORK_ID`
+
+検証済み WAV を Phase C で結合します。
+
+```bash
 yomiage batch concat c8113c64b0dc --format mp3 --cleanup
 ```
 
-| オプション | 短縮 | 説明 |
-|-----------|------|------|
-| `--format` | `-f` | 出力フォーマット: `wav`/`mp3`/`flac` |
-| `--cleanup` | | 結合後に個別WAVを削除 |
-| `--output` | `-o` | 出力ディレクトリ |
-| `--verbose` | `-v` | 詳細ログ |
+`--format/-f` は `wav|mp3|flac`、`--cleanup` は個別 WAV の削除、`--output/-o` は output base
+directory です。未解決文や欠損 artifact があると通常 concat は拒否されます。
 
-出力:
-```
-output/{work_id}/chapter_001.wav
-output/{work_id}/full.wav
-```
+### `yomiage batch run URL`
 
-### `yomiage batch run <URL>`
-
-Phase A + B + C（必要に応じて + D）をフルパイプラインで実行する。
+Analyze→synthesize→concat（`--video` 時は Phase D）を実行します。
 
 ```bash
-yomiage batch run "https://www.aozora.gr.jp/cards/..." --mode voisona
-yomiage batch run "https://ncode.syosetu.com/..." --mode voicevox --chapters 1-3 --format mp3
-yomiage batch run "https://..." --mode voicepeak --video --style portrait
+yomiage batch run "https://www.aozora.gr.jp/cards/000879/files/127_15260.html" \
+  --mode voicevox --format wav
+yomiage batch run "https://example.com/story" --mode voicepeak --video --style portrait
 ```
 
-| オプション | 短縮 | 説明 |
-|-----------|------|------|
-| `--mode` | `-m` | `voisona` / `voicevox` / `voicepeak` |
-| `--chapters` | | チャプター範囲 |
-| `--output` | `-o` | 出力ディレクトリ |
-| `--format` | `-f` | 結合出力フォーマット（`wav`/`mp3`/`flac`） |
-| `--cleanup` | | 結合後に個別WAVを削除 |
-| `--video` | | 動画も生成（Phase D） |
-| `--style` | `-s` | 動画スタイル: `subtitle` / `portrait` |
-| `--verbose` | `-v` | 詳細ログ |
+`--mode/-m`、`--chapters`、`--output/-o`、`--format/-f (wav|mp3|flac)`、`--cleanup`、
+`--video`、`--style/-s (subtitle|portrait)`、`--verbose/-v` を指定できます。
 
-### `yomiage batch subtitle <work_id>`
-
-字幕ファイルを生成する。
+### `yomiage batch subtitle WORK_ID`
 
 ```bash
 yomiage batch subtitle c8113c64b0dc --format ass
-yomiage batch subtitle c8113c64b0dc --format srt
 ```
 
-| オプション | 短縮 | 説明 |
-|-----------|------|------|
-| `--format` | `-f` | `ass` / `srt`（デフォルト: `ass`） |
-| `--output` | `-o` | 出力ディレクトリ |
+`--format/-f` は `ass|srt`（既定 `ass`）、`--output/-o`、`--verbose/-v` を指定できます。
 
-### `yomiage batch video <work_id>`
-
-Phase D: 動画ファイルを生成する。
+### `yomiage batch video WORK_ID`
 
 ```bash
 yomiage batch video c8113c64b0dc --style subtitle
-yomiage batch video c8113c64b0dc --style portrait
 ```
 
-| オプション | 短縮 | 説明 |
-|-----------|------|------|
-| `--style` | `-s` | `subtitle`（字幕のみ） / `portrait`（立ち絵差し替え） |
-| `--output` | `-o` | 出力ディレクトリ |
+`--style/-s` は `subtitle|portrait`、`--output/-o`、`--verbose/-v` を指定できます。partial
+run から動画は生成されません。
 
-### `yomiage batch status <work_id>`
-
-バッチ処理の進捗状況を表示する。
+### `yomiage batch status WORK_ID`
 
 ```bash
-yomiage batch status c8113c64b0dc
+yomiage batch status c8113c64b0dc --output output
 ```
 
-出力例:
-```
-Work: c8113c64b0dc
-  Title: 羅生門
-  Mode: voisona
-  Chapters: 1
-  Progress: 162/162
-  Pending: 0
-  Failed: 0
-  Analysis: done
-  Synthesis: done
-```
+`--output/-o` と `--verbose/-v` を指定できます。status には analysis/synthesis と
+`completion_status`（`complete|complete_with_warnings|partial|failed`）が反映されます。
 
-### `yomiage batch retry <work_id>`
-
-失敗した文を再合成する。
+### `yomiage batch retry WORK_ID`
 
 ```bash
-yomiage batch retry c8113c64b0dc --mode voisona
+yomiage batch retry c8113c64b0dc --mode voicevox
 ```
 
-## ボイス管理
+失敗文のみを再合成します。`--mode/-m`、`--output/-o`、`--verbose/-v` を指定できます。
 
-### `yomiage voices list`
+`allow_partial` は REST API で明示する契約です。CLI の通常 concat/run は partial を自動で成功扱い
+にしません。旧 `output/{work_id}/manifest.json` の移行は [migration.md](migration.md) を参照してください。
 
-利用可能なボイス一覧を表示する。
+## Voice / Character
 
 ```bash
-yomiage voices list
 yomiage voices list --provider voicevox
-```
-
-## キャラクター管理
-
-### `yomiage characters list`
-
-`data/characters/` 以下の全作品のキャラクター一覧を表示する。
-
-```bash
 yomiage characters list
+yomiage characters assign "太郎" 47 --work-id c8113c64b0dc
 ```
 
-### `yomiage characters assign <name> <voice_id>`
+`voices list` は `--provider/-p` と `--verbose/-v`、`characters list` は `--verbose/-v`、
+`characters assign` は必須 `NAME VOICE_ID` と任意 `--work-id`/`--verbose/-v` です。
 
-キャラクターにボイスを手動割当する（ロック）。
+## Profile tuning
 
-```bash
-yomiage characters assign "太郎" 47
-yomiage characters assign "花子" 48 --work-id c8113c64b0dc
-```
-
-## ボイスプロファイル チューニング
-
-### VoiSona / VOICEVOX 向け: `yomiage tune ...`
-
-`tune` グループは VoiSona ボイス（および設定により VOICEVOX）のプロファイルを段階的に作る。
+VoiSona/VOICEVOX 系:
 
 ```bash
-yomiage tune range nurse-robot-type-t_ja_JP        # Phase 1: パラメータ実用範囲探索
-yomiage tune preset nurse-robot-type-t_ja_JP       # Phase 2: アーキタイププリセット作成
+yomiage tune range nurse-robot-type-t_ja_JP
+yomiage tune preset nurse-robot-type-t_ja_JP
 yomiage tune emotion nurse-robot-type-t_ja_JP --base female_young
 yomiage tune noise nurse-robot-type-t_ja_JP --base female_young
-yomiage tune demo nurse-robot-type-t_ja_JP         # Phase 5: 全プリセット×全感情デモ
+yomiage tune demo nurse-robot-type-t_ja_JP
 yomiage tune test nurse-robot-type-t_ja_JP male_young --emotion happy --intensity 0.7
 ```
 
-プロファイルは `config/voice_profiles/<voice>.yaml` に保存される。
+`range/preset/demo` は `--text/-t`（demo はテスト文）と `--verbose/-v`、`emotion/noise` は
+追加で `--base/-b`、`test` は `PRESET` 引数と `--emotion/-e`、`--intensity/-i`、`--text/-t`、
+`--verbose/-v` を受け取ります。
 
-### VOICEPEAK 向け: `yomiage vp-tune ...`
-
-VOICEPEAK ナレーター用の同等コマンド群。
+VOICEPEAK 系:
 
 ```bash
 yomiage vp-tune range "Otomachi Una"
@@ -233,102 +157,60 @@ yomiage vp-tune preset "Otomachi Una"
 yomiage vp-tune emotion "Otomachi Una" --base female_young
 yomiage vp-tune noise "Otomachi Una" --base female_young
 yomiage vp-tune demo "Otomachi Una"
-yomiage vp-tune test "Otomachi Una" female_young --emotion happy --intensity 0.7
+yomiage vp-tune test "Otomachi Una" male_young --emotion happy --intensity 0.7
 ```
 
-プロファイルは `config/voicepeak_profiles/<narrator>.yaml` に保存される。
+チューニングの profile は checkout の `config/voice_profiles/` または
+`config/voicepeak_profiles/` に保存されます。インストール環境では、実行時の作業ディレクトリと
+profile path を明示してください。
 
-## Studio（動画素材生成）
-
-台本ファイルから音声素材を一括合成するコマンド群。
-
-### `yomiage studio synth <script>`
+## Studio
 
 ```bash
 yomiage studio synth script.txt --format ymm4
-yomiage studio synth script.csv --speaker-map speakers.yaml --pause 0.4
-yomiage studio synth script.json --provider voicevox --project demo01 --no-cache
-```
-
-| オプション | 短縮 | 説明 |
-|-----------|------|------|
-| `--provider` | `-p` | TTSプロバイダー |
-| `--output` | `-o` | 出力ディレクトリ |
-| `--format` | `-f` | `ymm4` / `plain`（デフォルト: `ymm4`） |
-| `--pause` | | セリフ間ポーズ秒（デフォルト: 0.3） |
-| `--speaker-map` | | 話者→ボイスのマッピングYAML/JSON |
-| `--project` | `-n` | プロジェクト名 |
-| `--no-cache` | | キャッシュ無効化 |
-
-### `yomiage studio preview <script>`
-
-台本の指定行をプレビュー再生する。
-
-```bash
 yomiage studio preview script.txt --line 3
+yomiage studio voices --provider voicevox
 ```
 
-### `yomiage studio voices`
+`studio synth SCRIPT_FILE` は `.txt/.csv/.json`、`--provider/-p`、`--output/-o`（既定 `output`）、
+`--format/-f (ymm4|plain)`、`--pause`、`--speaker-map`、`--project/-n`、`--no-cache`、
+`--verbose/-v` を受け取ります。`preview` は `--line/-l`（1-based）、provider、speaker-map、
+verbose、`voices` は provider と verbose を受け取ります。
 
-各プロバイダーで利用可能なボイス一覧を表示する。
+## News / Slack
 
-```bash
-yomiage studio voices
-yomiage studio voices --provider voicepeak
-```
-
-## ニュース
-
-### `yomiage news daily`
-
-日次ニュースサマリを生成して読み上げる。
+News は action を positional に渡します。
 
 ```bash
-yomiage news daily
 yomiage news daily --output news.wav
+yomiage news check --provider voicevox
 yomiage news daily --gemini-key "$GEMINI_API_KEY"
 ```
 
-| オプション | 短縮 | 説明 |
-|-----------|------|------|
-| `--provider` | `-p` | TTSプロバイダー |
-| `--output` | `-o` | 音声ファイル出力先（指定時は再生せずファイル化） |
-| `--gemini-key` | | Gemini APIキー（Ollamaフォールバック）。`GEMINI_API_KEY` 環境変数からも取得 |
-| `--verbose` | `-v` | 詳細ログ |
+`news` の action は `daily|check`（既定 `daily`）。共通 option は `--provider/-p`、`--output/-o`、
+`--gemini-key`（`GEMINI_API_KEY` env も可）、`--verbose/-v` です。
 
-### `yomiage news check`
-
-速報をチェックし、閾値を超えたものを読み上げる。
-
-```bash
-yomiage news check
-```
-
-## Slack連携
-
-### `yomiage slack start`
-
-Slack WebSocket監視を開始する。重要度の高いメッセージを読み上げる。
+Slack は `slack-sdk` extra と `SLACK_BOT_TOKEN`/`SLACK_APP_TOKEN` が必要です。
 
 ```bash
 yomiage slack start
 ```
 
-要件: `SLACK_BOT_TOKEN` と `SLACK_APP_TOKEN` を `.env` に設定。
+action は `start`（既定）、option は `--verbose/-v` です。HEMS/MQTT command はありません。
 
-## APIサーバー
-
-### `yomiage serve`
-
-FastAPIサーバーを起動する。
+## FastAPI server
 
 ```bash
+# local-only (default)
 yomiage serve
-yomiage serve --host 0.0.0.0 --port 8030
+yomiage serve --host 127.0.0.1 --port 8030
+
+# explicitly authenticated external bind
+YOMIAGE_API_TOKEN='replace-with-a-long-random-token' \
+  yomiage serve --host 0.0.0.0 --port 8030
 ```
 
-| オプション | 説明 |
-|-----------|------|
-| `--host` | バインドホスト（デフォルト: `0.0.0.0`） |
-| `--port` | バインドポート（デフォルト: `8030`） |
-| `--verbose` / `-v` | 詳細ログ |
+`--host` の既定は `127.0.0.1`、`--port` の既定は `8030`、`--api-token`（env:
+`YOMIAGE_API_TOKEN`）は外部 bind に必須、`--verbose/-v` は詳細ログです。非 loopback で token が
+ない場合は uvicorn 起動前に拒否されます。認証、rate limit、partial semantics は
+[REST API リファレンス](api-reference.md)を参照してください。

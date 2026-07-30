@@ -2,6 +2,10 @@
 
 本ドキュメントは voisona-yomiage プロジェクト内の Ollama 依存箇所を llama.cpp（または同等のローカル LLM サーバ）へ置き換えるためのリファクタ計画です。**完全ローカルホスティング前提**で記述しています。
 
+> **状態: 提案（未実装）** — 現行の既定 backend は Ollama です。この設計書は将来の候補を
+> 記録するものであり、現行 CLI/API の起動手順ではありません。以前存在した
+> `nlp/translator.py` は削除済みで、翻訳専用モジュールを前提にしないでください。
+
 本 PJ は既に `LLMBackend` というプロバイダ抽象を持っていますが、`OllamaClient` を直接利用している箇所も多く、**新しい `LlamaCppClient`（または既存の `OpenAIBackend` の URL 指定）への切替 + 直接利用箇所のリファクタ**が必要です。
 
 ---
@@ -15,22 +19,21 @@
 | 1 | `src/yomiage/nlp/ollama_client.py` | 全体 | Ollama 直接クライアント | `aiohttp` | `POST /api/chat`, `GET /api/tags` | `qwen3.5:3b` |
 | 2 | `src/yomiage/nlp/llm_backend.py` | 71–113, 274–304 | `OllamaBackend` + factory | — | 上を委譲 | — |
 | 3 | `src/yomiage/nlp/scene_analyzer.py` | 57–109 | シーン/感情解析（バッチ） | LLMBackend or OllamaClient | — | — |
-| 4 | `src/yomiage/nlp/translator.py` | 22–41 | 翻訳 | OllamaClient 直接 | `/api/chat` | — |
-| 5 | `src/yomiage/news/summarizer.py` | 89–137 | ニュース要約 + 翻訳 | OllamaClient 直接 | `/api/chat` | — |
-| 6 | `src/yomiage/news/urgency.py` | 14–55 | 緊急度スコアリング | OllamaClient 直接 | `/api/chat` | — |
-| 7 | `src/yomiage/news/scheduler.py` | 29–106 | スケジューラ + romanize | OllamaClient 直接 | `/api/chat` | — |
-| 8 | `src/yomiage/batch/analyzer.py` | 86–512 | バッチ解析（3 段 LLM、JSON 出力） | OllamaClient 直接 | `/api/chat` | — |
-| 9 | `src/yomiage/batch/engine.py` | 36–42 | OllamaClient 初期化 | — | — | — |
-| 10 | `src/yomiage/slack/scorer.py` | 17–57 | Slack 重要度スコアリング | OllamaClient 直接 | `/api/chat` | — |
-| 11 | `src/yomiage/api/analyzer.py` | 41–109 | TextAnalyzer (LLMBackend factory) | — | — | デフォルト `"ollama"` |
-| 12 | `src/yomiage/api/config.py` | 42–117 | LLMConfig (`backend="ollama"` デフォ) | — | — | — |
-| 13 | `src/yomiage/api/pipeline.py` | 54–65 | バックエンド構築 | — | — | — |
-| 14 | `src/yomiage/cli.py` | 54–106 | CLI 起動時 OllamaClient 生成 | — | — | `qwen3.5:3b` |
-| 15 | `src/yomiage/server.py` | 25–65 | FastAPI 起動時 OllamaClient 生成 | — | — | `qwen3.5:3b` |
-| 16 | `config/default.yaml` | 24–27 | `ollama:` 設定セクション | — | `${OLLAMA_URL}` | `qwen3:8b` |
-| 17 | `.env.example` | 全体 | 環境変数 | — | `OLLAMA_URL`, `OLLAMA_MODEL`, `OLLAMA_SUMMARY_MODEL` | — |
-| 18 | `infra/docker-compose.yml` | 全体 | VOICEVOX のみ（Ollama 定義なし） | — | — | — |
-| 19 | `docs/installation.md`, `architecture.md`, `configuration.md`, `README.md` | 各所 | セットアップ・設定説明 | — | — | — |
+| 4 | `src/yomiage/news/summarizer.py` | 89–137 | ニュース要約 | OllamaClient 直接 | `/api/chat` | — |
+| 5 | `src/yomiage/news/urgency.py` | 14–55 | 緊急度スコアリング | OllamaClient 直接 | `/api/chat` | — |
+| 6 | `src/yomiage/news/scheduler.py` | 29–106 | スケジューラ + romanize | OllamaClient 直接 | `/api/chat` | — |
+| 7 | `src/yomiage/batch/analyzer.py` | 86–512 | バッチ解析（3 段 LLM、JSON 出力） | OllamaClient 直接 | `/api/chat` | — |
+| 8 | `src/yomiage/batch/engine.py` | 36–42 | OllamaClient 初期化 | — | — | — |
+| 9 | `src/yomiage/slack/scorer.py` | 17–57 | Slack 重要度スコアリング | OllamaClient 直接 | `/api/chat` | — |
+| 10 | `src/yomiage/api/analyzer.py` | 41–109 | TextAnalyzer (LLMBackend factory) | — | — | デフォルト `"ollama"` |
+| 11 | `src/yomiage/api/config.py` | 42–117 | LLMConfig (`backend="ollama"` デフォ) | — | — | — |
+| 12 | `src/yomiage/api/pipeline.py` | 54–65 | バックエンド構築 | — | — | — |
+| 13 | `src/yomiage/cli.py` | 54–106 | CLI 起動時 OllamaClient 生成 | — | — | `qwen3.5:3b` |
+| 14 | `src/yomiage/server.py` | 25–65 | FastAPI 起動時 OllamaClient 生成 | — | — | `qwen3.5:3b` |
+| 15 | `config/default.yaml` | 24–27 | `ollama:` 設定セクション | — | `${OLLAMA_URL}` | `qwen3:8b` |
+| 16 | `.env.example` | 全体 | 環境変数 | — | `OLLAMA_URL`, `OLLAMA_MODEL`, `OLLAMA_SUMMARY_MODEL` | — |
+| 17 | `infra/docker-compose.yml` | 全体 | VOICEVOX のみ（Ollama 定義なし） | — | — | — |
+| 18 | `docs/installation.md`, `architecture.md`, `configuration.md`, `README.md` | 各所 | セットアップ・設定説明 | — | — | — |
 
 ### 1.2 重要な前提
 
@@ -38,7 +41,7 @@
 - 埋め込みなし、VLM なし。
 - Docker Compose 上に Ollama サービスは無い（**ホストの Ollama を呼ぶ前提**）。これは llama.cpp 移行でも同様にホスト稼働 or compose 追加の選択肢あり。
 - `LLMBackend` 抽象（`OllamaBackend` / `OpenAIBackend` / `AnthropicBackend`）は既にあり、`OpenAIBackend` は llama.cpp の `/v1/chat/completions` をそのまま叩ける構造。
-- 一方で **多くのコンポーネント（translator / news / batch / slack / cli / server）が `OllamaClient` を直接型付けで受けている**ため、llama.cpp 切替には型のリファクタが必要。
+- 一方で **多くのコンポーネント（news / batch / slack / cli / server）が `OllamaClient` を直接型付けで受けている**ため、llama.cpp 切替には型のリファクタが必要。
 - `config/default.yaml` のデフォルト (`qwen3:8b`) と `OllamaClient` のデフォルト (`qwen3.5:3b`) で表記揺れあり。
 
 ---
@@ -255,7 +258,6 @@ YAML ローダ（108–117 行）も `llamacpp:` セクションを優先で読�
 
 | ファイル | 現在の引数 | 変更後 |
 |---|---|---|
-| `nlp/translator.py` (22) | `OllamaClient` | `LLMBackend` |
 | `news/summarizer.py` (94) | `OllamaClient` | `LLMBackend` |
 | `news/urgency.py` (17) | `OllamaClient` | `LLMBackend` |
 | `news/scheduler.py` (29) | `OllamaClient` | `LLMBackend` |
@@ -392,7 +394,7 @@ pytest tests/
 3. `LLMConfig` のデフォルトを `"llamacpp"` に
 4. `config/default.yaml` / `.env.example` を更新（`ollama:` セクションは後方互換で残置）
 5. `cli.py` / `server.py` の起動コードを `create_llm_backend()` 利用に書換
-6. `news/*` / `batch/*` / `slack/*` / `translator.py` を `LLMBackend` 受けに書換
+6. `news/*` / `batch/*` / `slack/*` を `LLMBackend` 受けに書換
 7. `scene_analyzer.py` の auto-wrap に `LlamaCppClient` 追加
 8. ドキュメント (`installation.md`, `architecture.md`, `configuration.md`, `README.md`) 更新
 9. `OllamaClient` を非推奨マーク → 次メジャーで削除

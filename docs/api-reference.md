@@ -1,111 +1,106 @@
 # REST API リファレンス
 
-FastAPIサーバー（`yomiage serve`）が提供するエンドポイント。
+`yomiage serve` が起動する FastAPI アプリケーションの契約です。既定の bind は
+`127.0.0.1:8030`（CLI の `--port` で変更可能）です。別ホストから使う場合は、
+`--host 0.0.0.0 --api-token "$YOMIAGE_API_TOKEN"` のように明示的な token が必要です。
 
-デフォルト: `http://0.0.0.0:8030`
+## 認証・入力制限
 
-## ヘルスチェック
+- token 未設定の loopback 起動では認証なしで利用できます。
+- `api_token` が設定されると `/health` と `/health/live` を除く全 endpoint が
+  `Authorization: Bearer <token>` を要求します。`/health/ready` も保護対象です。
+- token は constant-time 比較され、ログ・metrics・error payload に出ません。
+- request body は既定 1 MiB、合成 text は既定 100,000 文字、URL response は既定 10 MiB までです。
+  job queue、active job 数、peer address 単位の rate limit も適用されます。
+- `url` は共通 URL policy で検証されます。HTTP(S) 以外、userinfo、loopback/private/link-local/
+  multicast/reserved 宛先、private redirect は既定拒否です。
+
+エラーは次の形式で返ります（本文や secret を含めません）。
+
+```json
+{"error": {"code": "url_not_allowed", "message": "URL is not allowed"}}
+```
+
+主な status は `400`（validation/URL policy）、`401`（Bearer 欠落）、`403`（token 不正）、
+`409`（状態競合）、`413`（body/text 上限）、`429`（rate/queue 上限）、`503`（runtime 未準備）です。
+
+## Health
 
 ### `GET /health`
 
+プロセスが HTTP を受け付けているかを返します。
+
 ```json
-{
-  "status": "ok",
-  "reading": false
-}
+{"status": "ok", "reading": false}
 ```
 
 ### `GET /health/live`
 
-プロセスのliveness probe。外部のTTS/LLM停止では失敗せず、常に `200`（`{"status":"ok","live":true}`）を返す。
-認証なしで利用できる。
+外部 Provider が停止していても成功する liveness probe です。
+
+```json
+{"status": "ok", "live": true}
+```
 
 ### `GET /health/ready`
 
-Provider、LLM、ffmpeg、storage、SQLiteを個別に確認するreadiness probe。全依存が利用可能な場合は`200`
-（`status: "ready"`）、それ以外は`503`（`status: "not_ready"`）を返す。livenessと異なり、
-Bearer token設定時は認証が必要となる。
+Provider、LLM、ffmpeg、storage、SQLite など runtime dependency の readiness を返します。
+`status: "ready"` は 200、未準備なら 503 です。token 設定時は認証が必要です。
 
-## 読み上げ制御
+## Reader 制御
 
 ### `GET /api/yomiage/status`
 
-現在の読み上げ状態を返す。
-
-```json
-{
-  "running": true,
-  "paused": false,
-  "chapter": "第一章",
-  "chunk": 42,
-  "total_chunks": 150
-}
-```
+Reader の現在状態を返します（engine の実装状態に応じて chapter/chunk などが含まれます）。
 
 ### `POST /api/yomiage/read`
 
-URLの読み上げを開始する。
+URL の読み上げを background job として開始します。
 
-リクエスト:
 ```json
-{
-  "url": "https://www.aozora.gr.jp/cards/...",
-  "provider": "voisona"
-}
+{"url": "https://www.aozora.gr.jp/cards/000879/files/127_15260.html"}
 ```
 
-レスポンス:
 ```json
-{
-  "status": "started",
-  "url": "https://..."
-}
+{"status": "started", "url": "https://…", "job_id": "…"}
 ```
 
-| フィールド | 型 | 必須 | 説明 |
-|-----------|-----|------|------|
-| `url` | string | はい | 読み上げ対象URL |
-| `provider` | string | いいえ | TTSプロバイダー（`voisona` / `voicevox` / `voicepeak`） |
-
-エラー:
-- `409`: 既に読み上げ中
-- `503`: エンジン未初期化
+`provider` フィールドは受け付けません（過去の no-op 引数との wire compatibility のため未知
+field は無視されます）。URL が policy に違反する場合は job/artifact を作成する前に `400` です。
+既に読み上げ中なら `409` になります。
 
 ### `POST /api/yomiage/pause`
-
-読み上げを一時停止する。
 
 ```json
 {"status": "paused"}
 ```
 
-### `POST /api/yomiage/resume`
+実行中でない場合は `409` です。
 
-一時停止中の読み上げを再開する。
+### `POST /api/yomiage/resume`
 
 ```json
 {"status": "resumed"}
 ```
 
-### `POST /api/yomiage/stop`
+pause 中でない場合は `409` です。
 
-読み上げを停止する。
+### `POST /api/yomiage/stop`
 
 ```json
 {"status": "stopped"}
 ```
 
-## 音声合成
+## 即時合成
 
 ### `POST /api/yomiage/synthesize`
 
-テキストを即座に合成し、音声ファイルを返す。
+text を primary/fallback 設定で合成し、`audio/{output_format}` の binary を返します。
 
-リクエスト:
 ```json
 {
   "text": "こんにちは",
-  "voice_id": "4",
+  "voice_id": "47",
   "speed": 1.0,
   "pitch": 0.0,
   "volume": 0.0,
@@ -117,184 +112,143 @@ URLの読み上げを開始する。
 }
 ```
 
-レスポンス: `audio/wav` などの音声バイナリ（`StreamingResponse`）。
+| field | type | default | 備考 |
+| --- | --- | --- | --- |
+| `text` | string | 必須 | `max_text_chars` 以下 |
+| `voice_id` | string/null | null | Provider に渡す ID（別 Provider へ再利用しない） |
+| `speed` | float | 1.0 | 話速 |
+| `pitch` | float | 0.0 | ピッチ |
+| `volume` | float | 0.0 | 音量 |
+| `intonation` | float | 1.0 | 抑揚 |
+| `preset` | string/null | null | profile preset |
+| `emotion` | string | `neutral` | 感情タグ |
+| `intensity` | float | 0.5 | Providerへ渡す感情強度。対応範囲はProvider依存 |
+| `output_format` | string | `wav` | Provider/ffmpegが対応する形式。変換にはffmpegが必要な場合あり |
 
-HTTP ヘッダ:
-- `X-Audio-Duration`: 音声の長さ（秒）
-- `X-Audio-Format`: フォーマット（`wav` / `mp3` など）
-
-| フィールド | 型 | デフォルト | 説明 |
-|-----------|-----|-----------|------|
-| `text` | string | — | 合成するテキスト |
-| `voice_id` | string | `null` | ボイスID |
-| `speed` | float | `1.0` | 話速 |
-| `pitch` | float | `0.0` | ピッチ |
-| `volume` | float | `0.0` | 音量 |
-| `intonation` | float | `1.0` | イントネーション |
-| `preset` | string | `null` | VoiceProfile プリセット |
-| `emotion` | string | `"neutral"` | 感情タグ |
-| `intensity` | float | `0.5` | 感情の強度 |
-| `output_format` | string | `"wav"` | 出力フォーマット |
+response headers: `X-Audio-Duration`（秒）、`X-Audio-Format`。入力上限超過や admission 拒否時は
+binary の代わりに JSON error を返します。
 
 ### `GET /api/yomiage/voices`
 
-利用可能なボイス一覧を返す。
+利用可能なボイスを返します。`provider=voisona|voicevox|voicepeak`（未指定時は primary、
+fallback 名を指定した場合は fallback）を query で指定できます。
 
-クエリパラメータ:
-- `provider`: `voisona` / `voicevox` / `voicepeak`（未指定時は primary）
-
-レスポンス:
 ```json
 {
   "engine": "voicevox",
-  "voices": [
-    {"id": "4", "name": "ナースロボ＿タイプＴ"}
-  ]
+  "voices": [{"id": "47", "name": "ナースロボ＿タイプＴ"}]
 }
 ```
 
+## Batch job
+
 ### `POST /api/yomiage/synthesize/batch`
 
-URL を対象にバッチ合成ジョブを開始する。
+URL を検証し、非同期 Batch job を受け付けます。
 
-リクエスト:
 ```json
 {
   "url": "https://www.aozora.gr.jp/cards/...",
   "mode": "voicevox",
   "output_format": "wav",
   "video": false,
-  "style": null
+  "style": null,
+  "allow_partial": false
 }
 ```
 
-レスポンス:
+`mode` は `voisona|voicevox|voicepeak`、`output_format` は `wav|mp3|flac` です。`allow_partial`
+の既定は false です。
+
 ```json
-{
-  "job_id": "abc123",
-  "status": "pending"
-}
+{"job_id": "abc123", "status": "pending"}
 ```
 
 ### `GET /api/yomiage/synthesize/batch/{job_id}`
 
-ジョブの状態を取得する。
-
-レスポンス:
 ```json
 {
   "id": "abc123",
-  "url": "https://...",
+  "url": "https://…",
   "mode": "voicevox",
   "status": "synthesizing",
   "percent": 45.0,
   "message": "音声を合成中です",
+  "work_id": "…",
+  "plan_id": "…",
+  "run_id": "…",
+  "allow_partial": false,
+  "completion_status": null,
   "output_path": null,
+  "result": null,
   "error": null
 }
 ```
 
 ### `GET /api/yomiage/synthesize/batch/{job_id}/progress`
 
-SSE でジョブ進捗を配信する。
+`text/event-stream` で `event: progress` を送ります。終端 status は `completed`,
+`complete_with_warnings`, `partial`, `failed`, `cancelled` のいずれかです。
 
 ```text
 event: progress
 data: {"job_id":"abc123","status":"synthesizing","percent":45.0,...}
 ```
 
-## メトリクス
+### partial semantics
+
+`failed`/`pending`/欠損 WAV が一つでもある場合、完全成功 (`complete`) にはなりません。
+
+- `allow_partial=false`（既定）: concat を拒否し、job は `failed`。通常の `full.wav` は生成しません。
+- `allow_partial=true`: 検証済み utterance だけを結合し、job/result/manifest/SSE に `partial` を残します。
+  partial run では動画生成を実行しません。
+- すべて成功なら `completed`、明示 skip のみなら `complete_with_warnings` です。
+
+この状態は `completion_status` と run の `artifact-manifest.json` を正として判定します。
+
+## Metrics
 
 ### `GET /api/yomiage/metrics`
 
-TTS 合成・バッチジョブの実行メトリクスを返す。
+合成回数、error/fallback/cache、latency、queue、partial などの process-local counters と、
+利用可能なら SQLite JobRepository から算出した `persistent_jobs` を返します。process counters は
+再起動でリセットされます。本文、token、password、完全 URL は保存しません。
 
-レスポンス:
-```json
-{
-  "synthesis": {
-    "total": 120,
-    "errors": 2,
-    "error_rate": 0.0167,
-    "cache_hits": 80,
-    "cache_misses": 40,
-    "cache_hit_rate": 0.6667,
-    "average_duration_ms": 145.2,
-    "max_duration_ms": 1200.0,
-    "total_chars": 5600
-  },
-  "batch_jobs": {
-    "total": 5,
-    "completed": 4,
-    "failed": 1
-  }
-}
-```
-
-メトリクスはプロセス内のカウンタ（合成回数、latency、queue、fallback、partial、error category）であり、
-再起動するとリセットされる。`persistent_jobs` が含まれる場合はSQLite JobRepositoryから都度算出する
-永続値で、再起動後も保持される。本文、token、password、完全なURLはメトリクスへ保存しない。
-
-## ニュース
+## News
 
 ### `POST /api/yomiage/news`
 
-日次ニュースサマリを生成して読み上げる。
+設定済み RSS を取得し、LLM で日次要約して読み上げます。
 
-レスポンス:
 ```json
-{
-  "status": "reading",
-  "article_count": 15
-}
+{"status": "reading", "article_count": 15}
 ```
 
-## 使用例
+## 起動と curl
+
+### local-only
 
 ```bash
-# ヘルスチェック
-curl http://localhost:8030/health
-
-# 読み上げ開始
-curl -X POST http://localhost:8030/api/yomiage/read \
-  -H "Content-Type: application/json" \
-  -d '{"url": "https://www.aozora.gr.jp/cards/000879/files/127_15260.html"}'
-
-# 状態確認
-curl http://localhost:8030/api/yomiage/status
-
-# 一時停止
-curl -X POST http://localhost:8030/api/yomiage/pause
-
-# 再開
-curl -X POST http://localhost:8030/api/yomiage/resume
-
-# 停止
-curl -X POST http://localhost:8030/api/yomiage/stop
-
-# テキスト合成（音声ファイルを保存）
-curl -X POST http://localhost:8030/api/yomiage/synthesize \
-  -H "Content-Type: application/json" \
-  -d '{"text": "テスト読み上げです", "speed": 1.1}' \
+uv run yomiage serve --host 127.0.0.1 --port 8030
+curl http://127.0.0.1:8030/health
+curl -X POST http://127.0.0.1:8030/api/yomiage/synthesize \
+  -H 'Content-Type: application/json' \
+  -d '{"text":"テスト読み上げです","output_format":"wav"}' \
   --output output.wav
-
-# ボイス一覧
-curl http://localhost:8030/api/yomiage/voices
-
-# バッチ合成ジョブ開始
-JOB=$(curl -s -X POST http://localhost:8030/api/yomiage/synthesize/batch \
-  -H "Content-Type: application/json" \
-  -d '{"url": "https://...", "mode": "voicevox"}' | jq -r '.job_id')
-
-# ジョブ状態確認
-curl http://localhost:8030/api/yomiage/synthesize/batch/$JOB
-
-# SSE 進捗確認
-curl -N http://localhost:8030/api/yomiage/synthesize/batch/$JOB/progress
-
-# メトリクス
-curl http://localhost:8030/api/yomiage/metrics
-
-# ニュース
-curl -X POST http://localhost:8030/api/yomiage/news
 ```
+
+### authenticated external bind
+
+```bash
+export YOMIAGE_API_TOKEN='replace-with-a-long-random-token'
+uv run yomiage serve --host 0.0.0.0 --port 8030
+curl -H "Authorization: Bearer $YOMIAGE_API_TOKEN" http://127.0.0.1:8030/api/yomiage/status
+```
+
+公開 bind で token を URL query、ログ、shell history、成果物へ書かないでください。TLS、proxy、
+network ACL は別途設定が必要です。
+
+## Python SDK
+
+SDK の型、`TTSBridge`、`TextAnalyzer`、`Pipeline` の使用例は [Python SDK リファレンス](sdk-reference.md)
+を参照してください。

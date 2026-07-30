@@ -1,42 +1,45 @@
 # 設定リファレンス
 
-## 設定ファイル
+設定は `load_settings()`/`Settings`（新規コード）または互換用 `load_config()`（legacy
+Provider/CLI）から読み込みます。解決順は次のとおりです。
 
-設定は、組み込み標準値、パッケージ同梱YAML、ユーザー設定、環境変数の順に
-重ね合わせて解決される。wheelインストール後もカレントディレクトリに依存せず、
-標準YAMLは `importlib.resources` から読み込まれる。
+1. wheel に同梱された immutable 標準 YAML
+2. `YOMIAGE_USER_CONFIG_DIR` のユーザー YAML
+3. YAML 内 `${VAR}` 展開と `YOMIAGE_*` 環境変数
+4. `overrides` など呼び出し側の明示値
 
-- 同梱リソース（`default.yaml`、`scene_params.yaml`、`voices.yaml`、`math_dict.yaml`）は変更不可。
-- checkoutで開発する場合はリポジトリの `config/` を `load_config(config_dir=...)` で明示指定できる。
-- ユーザー設定と編集対象プロファイルは `YOMIAGE_USER_CONFIG_DIR`（既定:
-  `~/.config/humeina-unit`）へ置く。標準リソースへユーザープロファイルを追加しない。
-- `.env` は認証情報・接続先などの環境変数を指定するために使う。
+相対パスはロード時に絶対化されます。標準 YAML はカレントディレクトリではなく
+`importlib.resources` から読み込まれます。
 
-| ファイル | 内容 |
-|---------|------|
-| `yomiage/resources/config/default.yaml`（wheel内） | メイン設定（標準値） |
-| `yomiage/resources/config/scene_params.yaml`（wheel内） | シーン修飾子・感情スタイルウェイト |
-| `yomiage/resources/config/voices.yaml`（wheel内） | ボイス定義 |
-| `yomiage/resources/config/math_dict.yaml`（wheel内） | 数式記号→読み下し辞書 |
-| `${YOMIAGE_USER_CONFIG_DIR}/voice_profiles/*.yaml` | VoiSona/VOICEVOX 用ボイスプロファイル |
-| `${YOMIAGE_USER_CONFIG_DIR}/voicepeak_profiles/*.yaml` | VOICEPEAK 用ナレータープロファイル |
-| `.env` | 認証情報・接続先（gitignore対象） |
+## ファイルとパスの境界
 
-YAMLファイル内で `${ENV_VAR:-default}` 構文を使って環境変数を参照できる。
+| 種類 | 既定値/例 | 編集可否 |
+| --- | --- | --- |
+| 標準設定 | `yomiage/resources/config/{default,voices,scene_params,math_dict}.yaml` | 不可（wheel 内） |
+| ユーザー設定 | `~/.config/humeina-unit/config.yaml` または `settings.yaml` | 可 |
+| Batchプロファイル | `batch.voice_profile_dir` 等で指定したディレクトリ | 可 |
+| runtime data | `./data/`（`YOMIAGE_DATA_DIR`） | 可/バックアップ対象 |
+| Batch output | `./output/`（`YOMIAGE_OUTPUT_DIR` または `batch.output_dir`） | 可/成果物 |
+| assets | `./assets/`（`YOMIAGE_ASSETS_DIR`） | 可 |
+| Job DB | `./data/jobs.sqlite3`（`YOMIAGE_SQLITE_PATH`） | 可/バックアップ対象 |
 
-## config/default.yaml
+checkout の `config/` を開発用に使う場合は `load_config(config_dir=Path("config"))` または
+`Settings.from_yaml("config", base_dir=...)` のように明示します。インストール後の標準値を
+リポジトリ相対パスから解決しないでください。
 
-### tts
+## 主要な YAML セクション
+
+### `tts`
 
 ```yaml
 tts:
   primary_provider: voisona       # voisona / voicevox / voicepeak
-  fallback_provider: voicevox     # フォールバックプロバイダー
-  lookahead_chunks: 5             # NLP先読みチャンク数
-  max_chunk_chars: 200            # チャンク最大文字数
+  fallback_provider: voicevox     # null も可。primary と同じ値は禁止
+  lookahead_chunks: 5
+  max_chunk_chars: 200
 ```
 
-### voisona
+### Provider
 
 ```yaml
 voisona:
@@ -44,266 +47,126 @@ voisona:
   username: ${VOISONA_USERNAME}
   password: ${VOISONA_PASSWORD}
   default_voice: nurse-robot-type-t_ja_JP
-  language: ja_JP
-```
 
-### voicevox
-
-```yaml
 voicevox:
   url: ${VOICEVOX_URL:-http://localhost:50021}
-  default_speaker: 47             # デフォルトスピーカーID
-```
+  default_speaker: 47
 
-### voicepeak
-
-```yaml
 voicepeak:
-  path: null                         # VOICEPEAK_PATHで実行ファイルを指定
+  path: /absolute/path/to/voicepeak
   default_narrator: "Otomachi Una"
-  max_chars: 140                  # 1呼び出しあたり最大文字数（超えたら分割）
-  pitch_scale: 300                # ピッチスケール基準
+  max_chars: 140
 ```
 
-### ollama
+`Settings` では同じ内容を `providers.voisona` / `providers.voicevox` /
+`providers.voicepeak` に正規化します。primary Provider が有効な場合、VoiSona の username/password、
+VOICEPEAK の executable path など必要値を起動前に検証します。無効な fallback の secret は要求
+されません。
+
+### `ollama`/`llm` とニュース
 
 ```yaml
 ollama:
   url: ${OLLAMA_URL:-http://localhost:11434}
-  model: ${OLLAMA_MODEL:-qwen3:8b}        # NLP分析用モデル
-  summary_model: ${OLLAMA_SUMMARY_MODEL}  # ニュース要約用（オプション、未指定時は model と同じ）
-```
+  model: ${OLLAMA_MODEL:-qwen3:8b}
+  summary_model: ${OLLAMA_SUMMARY_MODEL}
 
-Ollama 呼び出しが失敗した場合のフォールバックとして Gemini API を使うことができる（`yomiage news --gemini-key` または `GEMINI_API_KEY` 環境変数）。
-
-### news
-
-```yaml
 news:
-  daily_schedule: "08:00"         # 日次サマリ時刻
-  poll_interval_minutes: 5        # 速報チェック間隔（分）
-  urgency_threshold: 0.8          # 速報判定閾値（0.0〜1.0）
-  foreign_language: translate     # 外国語記事の処理
-  sources:                        # RSSソース
-    - nhk_main
-    - bbc_world
-    - guardian_world
-  tts:
-    speed: 1.1                    # ニュース読み上げ速度
+  urgency_threshold: 0.8
+  sources: [nhk_main, bbc_world, guardian_world]
+  tts: {speed: 1.1}
 ```
 
-利用可能なRSSソース:
-- `nhk_main` — NHK 主要ニュース
-- `nhk_international` — NHK 国際ニュース
-- `bbc_world` — BBC World News
-- `guardian_world` — The Guardian World
+`Settings` では `llm.backend: ollama|openai|anthropic` に正規化します。OpenAI/Anthropic を
+有効にする場合だけ API key が必須です。Gemini fallback は `news` の `--gemini-key` または
+`GEMINI_API_KEY` で明示的に有効化します。
 
-### slack
-
-```yaml
-slack:
-  enabled: false
-  channels: []                    # 監視対象チャンネル
-  mention_boost: 0.5              # メンション時のスコアブースト
-  importance_threshold: 0.6       # 重要度閾値
-```
-
-### reader
-
-```yaml
-reader:
-  auto_advance: true              # チャプター自動遷移
-  bookmark_auto_save: true        # ブックマーク自動保存
-```
-
-### batch
+### `batch`
 
 ```yaml
 batch:
-  output_dir: output                          # 出力ベースディレクトリ
-  default_mode: voisona                       # デフォルトTTSモード
-  analysis_window_chars: 3000                 # Pass 1 ウィンドウサイズ（文字）
-  analysis_window_sentences: 25               # Pass 2 ウィンドウサイズ（文数）
-  manifest_save_interval: 10                  # マニフェスト保存間隔（文数）
-  silence_duration: 1.5                       # シーンブレーク無音秒数
-  concat_format: wav                          # デフォルト結合フォーマット
-  cleanup_after_concat: false                 # 結合後に個別ファイル削除
-  voisona_vm_mount: ${VOISONA_VM_MOUNT:-Z:}   # VM内のvirtiofsマウントポイント
-  voice_profile_dir: ${YOMIAGE_USER_CONFIG_DIR:-~/.config/humeina-unit}/voice_profiles
-  synth_concurrency: 1                        # VoiSona同時合成ジョブ数（流量制御）
+  output_dir: output
+  default_mode: voisona
+  analysis_window_chars: 3000
+  analysis_window_sentences: 25
+  manifest_save_interval: 10
+  silence_duration: 1.5
+  concat_format: wav
+  cleanup_after_concat: false
+  voisona_vm_mount: Z:
+  voice_profile_dir: ~/.config/humeina-unit/voice_profiles
+  voicevox_profile_dir: ~/.config/humeina-unit/voicevox_profiles
+  voicepeak_profile_dir: ~/.config/humeina-unit/voicepeak_profiles
+  synth_concurrency: 1
 ```
 
-`synth_concurrency` を 1 にしておくと VoiSona に対する同時接続が 1 本のみ（推奨）。値を増やすと並列合成で高速化するが VoiSona 側のキューが増える点に注意。
+`output/works/{work_id}/plans/{plan_id}.json` と `runs/{run_id}/` が新しい保存形式です。
+旧 manifest は読み取り互換ですが、既存ファイルを上書きして移行しません。`synth_concurrency`
+は 1 以上 256 以下です。
 
-### ex_voice
-
-```yaml
-ex_voice:
-  enabled: false                                         # CLI の --ex-voice でも有効化可
-  wav_dir: ${EX_VOICE_WAV_DIR:-}
-  cooldown_chunks: 10                                    # 直近何チャンク以内は再挿入しない
-  max_per_chapter: 8                                     # 1チャプターあたりの最大挿入数
-  llm_max_insertions: 2                                  # LLMバッチごとの最大挿入数
-```
-
-### studio
+### `server` と `storage`
 
 ```yaml
-studio:
-  default_format: ymm4            # ymm4 / plain
-  default_pause: 0.3              # セリフ間ポーズ（秒）
-  max_slug_chars: 15              # ファイル名スラッグの最大文字数
-  default_provider: voicevox
-  cache_enabled: true             # 音声キャッシュ
-```
+server:
+  host: 127.0.0.1
+  port: 8030
+  api_token: ${YOMIAGE_API_TOKEN}
+  max_body_bytes: 1048576
+  max_text_chars: 100000
+  max_url_response_bytes: 10485760
+  job_queue_size: 64
+  max_active_jobs: 65
+  client_rate_limit: 60
+  client_rate_window_seconds: 60
 
-### video
-
-```yaml
-video:
-  enabled: false
-  resolution: [1920, 1080]
-  fps: 24
-  codec: libx264
-  crf: 23
-  preset: medium
-  subtitle:
-    font_size: 48
-    font_name: "Noto Sans JP"
-    outline_size: 3
-    margin_bottom: 60
-    max_chars_per_line: 20
-    speaker_colors:
-      _narrator: "#FFFFFF"
-      _dialogue: "#FFFF00"
-      _thought: "#87CEEB"
-  background:
-    transition: fade
-    transition_duration: 1.0
-    ken_burns_enabled: false
-    ken_burns_zoom: 1.2
-    scene_colors:
-      daily: "#2C3E50"
-      battle: "#8B0000"
-      romance: "#FF69B4"
-      tense: "#1C1C1C"
-      comedy: "#FFD700"
-      sad: "#4A4A8A"
-      horror: "#0D0D0D"
-  portrait:
-    enabled: true
-    position: bottom_right
-    max_height_ratio: 0.7
-    fade_duration: 0.3
-    margin_x: 50
-    margin_y: 20
-  audio:
-    bgm_enabled: false
-    bgm_volume: 0.15
-    bgm_idle_volume: 0.3
-    se_enabled: false
-    se_volume: 0.5
-    ducking_fade: 0.5
-  title_card:
-    enabled: false
-    duration: 3.0
-    font_size: 72
-    subtitle_font_size: 36
+storage:
+  data_dir: data
+  output_dir: output
   assets_dir: assets
+  sqlite_path: data/jobs.sqlite3
+  ffmpeg_executable: null
 ```
 
-## config/scene_params.yaml
+`server.host` の既定は loopback です。非 loopback bind は token がないと拒否されます。
+`/health` と `/health/live` 以外の endpoint に Bearer 認証を付ける場合は、[REST API](api-reference.md)
+の起動手順に従います。本文、URL取得サイズ、job admission、rate limit は API 側でも検証されます。
 
-### シーン修飾子
+## 環境変数
 
-ベースパラメータに対して乗算（speed）または加算（volume, intonation）される。
+Provider/LLM の接続先は従来の変数も受け付けます。パス・運用制御は `YOMIAGE_*` を優先します。
 
-```yaml
-scenes:
-  daily:    { speed: 1.0,  volume: 0,  intonation: 1.0 }
-  battle:   { speed: 1.1,  volume: 2,  intonation: 1.3 }
-  romance:  { speed: 0.9,  volume: 0,  intonation: 0.8 }
-  tense:    { speed: 1.05, volume: 1,  intonation: 1.1 }
-  comedy:   { speed: 1.0,  volume: 0,  intonation: 1.2 }
-  sad:      { speed: 0.85, volume: -1, intonation: 0.7 }
-  horror:   { speed: 0.9,  volume: -1, intonation: 0.6 }
+| 変数 | 用途 |
+| --- | --- |
+| `VOISONA_URL`, `VOISONA_USERNAME`, `VOISONA_PASSWORD` | VoiSona 接続/認証 |
+| `VOICEVOX_URL` | VOICEVOX 接続 |
+| `VOICEPEAK_PATH` | VOICEPEAK executable |
+| `OLLAMA_URL`, `OLLAMA_MODEL`, `OLLAMA_SUMMARY_MODEL` | LLM 接続/モデル |
+| `GEMINI_API_KEY` | ニュース用 Gemini fallback |
+| `YOMIAGE_USER_CONFIG_DIR` | ユーザー設定/プロファイル root |
+| `YOMIAGE_DATA_DIR`, `YOMIAGE_OUTPUT_DIR`, `YOMIAGE_ASSETS_DIR` | data/output/assets |
+| `YOMIAGE_SQLITE_PATH` | JobRepository DB |
+| `YOMIAGE_FFMPEG_EXECUTABLE` | ffmpeg の絶対パス |
+| `YOMIAGE_API_TOKEN` | 外部 bind と API Bearer token |
+| `YOMIAGE_SERVER_MAX_TEXT_CHARS`, `YOMIAGE_SERVER_MAX_BODY_BYTES` | API 入力上限 |
+| `YOMIAGE_SERVER_MAX_URL_RESPONSE_BYTES` | URL 取得 bytes 上限 |
+| `YOMIAGE_SERVER_JOB_QUEUE_SIZE`, `YOMIAGE_SERVER_MAX_ACTIVE_JOBS` | admission 上限 |
+| `YOMIAGE_SERVER_CLIENT_RATE_LIMIT`, `YOMIAGE_SERVER_CLIENT_RATE_WINDOW_SECONDS` | peer 単位 rate limit |
+| `VOISONA_VM_MOUNT` | VoiSona VM 内の file destination mount |
+| `EX_VOICE_WAV_DIR` | EX voice WAV ディレクトリ |
+| `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN` | 任意 Slack 監視 |
+
+HEMS/MQTT 用の設定キーや接続手順はありません。
+
+## Python から読む
+
+```python
+from yomiage.settings import Settings
+from yomiage.config import load_settings
+
+settings = load_settings(user_config_dir="~/.config/humeina-unit")
+settings = Settings.from_yaml(user_config_dir="~/.config/humeina-unit")
+legacy = settings.to_legacy_dict()  # 旧 Provider/CLI adapter 用
 ```
 
-### 感情スタイルウェイト
-
-VoiSona Talk の5要素スタイルウェイト: [Normal, Happy, Angry, Sad, Smol]
-
-```yaml
-emotion_styles:
-  neutral:   [1.0, 0.0, 0.0, 0.0, 0.0]
-  happy:     [0.3, 0.7, 0.0, 0.0, 0.0]
-  angry:     [0.2, 0.0, 0.8, 0.0, 0.0]
-  sad:       [0.2, 0.0, 0.0, 0.8, 0.0]
-  surprised: [0.5, 0.3, 0.0, 0.0, 0.2]
-  scared:    [0.3, 0.0, 0.2, 0.5, 0.0]
-  gentle:    [0.4, 0.3, 0.0, 0.0, 0.3]
-```
-
-intensity < 1.0 の場合、neutral との線形補間が適用される。
-
-## config/voices.yaml
-
-プロバイダーごとのボイス定義。キャラクター自動割当時のプールとして使用。
-
-```yaml
-providers:
-  voisona:
-    voices:
-      - id: "nurse-robot-type-t_ja_JP"
-        label: "ナースロボ＿タイプT"
-        gender: female
-        age_group: young_adult
-        favorite: true
-  voicevox:
-    voices:
-      - id: 47
-        label: "ナースロボ＿タイプT（ノーマル）"
-        gender: female
-        age_group: young_adult
-        favorite: true
-        default: true
-      - id: 46
-        label: "ナースロボ＿タイプT（楽々）"
-        ...
-
-favorites_only: true              # お気に入りボイスのみ使用
-```
-
-## config/math_dict.yaml
-
-数式記号や演算子を読み下すための辞書。`MathProcessor` がリアルタイム/バッチ両方で利用する。
-
-## ボイスプロファイル
-
-`yomiage tune` / `yomiage vp-tune` コマンドで生成・更新される。
-
-| ディレクトリ | 対象 |
-|-------------|------|
-| `${YOMIAGE_USER_CONFIG_DIR}/voice_profiles/` | VoiSona / VOICEVOX |
-| `${YOMIAGE_USER_CONFIG_DIR}/voicepeak_profiles/` | VOICEPEAK |
-
-## 環境変数一覧
-
-| 変数 | 用途 | デフォルト |
-|------|------|-----------|
-| `VOISONA_URL` | VoiSona Talk APIのURL | `http://localhost:32766` |
-| `VOISONA_USERNAME` | VoiSona Talk ユーザー名 | — |
-| `VOISONA_PASSWORD` | VoiSona Talk パスワード | — |
-| `VOISONA_VOICE_NAME` | VoiSona 既定ボイス名 | `nurse-robot-type-t_ja_JP` |
-| `VOICEVOX_URL` | VOICEVOX Engine URL | `http://localhost:50021` |
-| `OLLAMA_URL` | Ollama URL | `http://localhost:11434` |
-| `OLLAMA_MODEL` | NLP分析用モデル | `qwen3:8b` |
-| `OLLAMA_SUMMARY_MODEL` | ニュース要約用モデル | （`OLLAMA_MODEL` と同じ） |
-| `GEMINI_API_KEY` | Gemini フォールバック有効化 | — |
-| `VOISONA_VM_MOUNT` | VM内virtiofsマウントポイント | `Z:` |
-| `EX_VOICE_WAV_DIR` | EXボイス用WAV格納ディレクトリ | （未指定） |
-| `SLACK_BOT_TOKEN` | Slack Bot Token | — |
-| `SLACK_APP_TOKEN` | Slack App Token | — |
-| `MQTT_BROKER` | MQTTブローカー | `localhost` |
-| `MQTT_PORT` | MQTTポート | `1883` |
-| `MQTT_USER` / `MQTT_PASS` | MQTT認証 | — |
+公開 SDK の `PipelineConfig.from_yaml()` は互換用の軽量 DTO です。新規 application 境界では
+型付き `Settings` を渡してください。Provider secret を `print(settings)` やログに出さないでください。

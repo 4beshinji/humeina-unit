@@ -92,7 +92,7 @@ WIP上限1の場合の推奨順:
 | OBS-001 | R4 | P1 | M | done | API-001, JOB-001, SYN-001 | D | worker | worker | 2026-07-30 | 2026-07-30 |
 | CLN-001 | R5 | P2 | L | done | TST-002, API-002 | A | worker | worker | 2026-07-30 | 2026-07-30 |
 | CLN-002 | R5 | P2 | M | done | API-001, CLN-001 | C | worker | worker | 2026-07-30 | 2026-07-30 |
-| DOC-001 | R5 | P1 | M | in_progress | CLN-001, CLN-002, OBS-001 | D | worker | worker | 2026-07-30 | — |
+| DOC-001 | R5 | P1 | M | done | CLN-001, CLN-002, OBS-001 | D | worker | worker | 2026-07-30 | 2026-07-30 |
 | OPS-001 | R5 | P1 | M | backlog | DOC-001, TST-002, OBS-001 | D | worker | — | — | — |
 
 ## 4. タスクカード
@@ -900,6 +900,19 @@ WIP上限1の場合の推奨順:
 - Result: 1000行超のCLIをreader、batch、studio、tuning、news、slack、serverとcomposition/commonへ分割し、`yomiage.cli:app`を215行の互換facadeにした。全root/subcommandのhelp matrixを追加した。
 - Manual verification: 既存command名・option、具象Provider非構築、Typer外層依存、private helper monkeypatch、missing-profile stdout表示を確認した。
 - Remaining risks: private helperは互換のため遅延参照として残す。CLI名称再設計は非対象。
+
+### DOC-001 検証証跡
+
+- Commit/PR: 本waveのローカルコミット
+- 実行日: 2026-07-30
+- 担当: worker（実装）、explorer/root（レビュー・統合）
+- Commands:
+  - Markdown local link / documented CLI help smoke — 32 passed
+  - 非E2E全pytest — 662 passed, 2 skipped, 6 deselected
+  - `.venv/bin/python -m ruff check src/ tests/` / `git diff --check` — pass
+- Result: 実tree、canonical plan/run/artifact、API認証/制限/partial semantics、CLI help、typed Settings、SDK、ADR、legacy migrationの説明を同期した。backup→read-only import→copy-on-write→検証→rollback手順を追加し、HEMS/MQTTと未実装機能を現行仕様から除外した。
+- Manual verification: 独立レビューで検出したSlack action、profile/config path、未反映環境変数、API/SDKの過剰記述を修正し、リンクと全CLI helpを再確認した。
+- Remaining risks: OPS-001のProvider実機/GPU依存E2E、ライセンス・VM境界検証は未実施でbacklogに残す。
 
 タスク完了時に以下の形式で追記する。
 
