@@ -9,11 +9,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 from yomiage.batch.job_manager import BatchJobManager
-from yomiage.server import app
+from yomiage.server import ServerDependencies, create_app
 
 
 @pytest.fixture
-def client(monkeypatch):
+def client(tmp_path):
     """TestClient with mocked engine and job manager."""
     mock_engine = MagicMock()
     mock_engine.is_running = False
@@ -21,12 +21,15 @@ def client(monkeypatch):
     mock_engine.tts = MagicMock()
 
     manager = BatchJobManager({})
-    monkeypatch.setattr(manager, "run_job", AsyncMock())
+    manager.run_job = AsyncMock()
 
-    monkeypatch.setattr("yomiage.server._engine", mock_engine)
-    monkeypatch.setattr("yomiage.server._job_manager", manager)
+    application = create_app(
+        {"storage": {"sqlite_path": str(tmp_path / "jobs.sqlite3")}},
+        ServerDependencies(engine=mock_engine, job_manager=manager),
+    )
 
-    return TestClient(app)
+    with TestClient(application) as test_client:
+        yield test_client
 
 
 class TestBatchSynthesizeEndpoints:
@@ -80,9 +83,7 @@ class TestBatchSynthesizeEndpoints:
         )
         job_id = create_resp.json()["job_id"]
 
-        from yomiage import server as server_mod
-
-        manager = server_mod._job_manager
+        manager = client.app.state.job_manager
         test_queue: asyncio.Queue[dict] = asyncio.Queue()
 
         def mock_subscribe(jid: str) -> asyncio.Queue[dict]:

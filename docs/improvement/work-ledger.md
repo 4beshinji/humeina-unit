@@ -56,9 +56,11 @@ agent typeを指定する。
 
 WIP上限1の場合の推奨順:
 
-1. `API-001`
+1. `API-002`
+2. `OBS-001`
 
-`API-001` 完了後は、依存が解ける `API-002` と `OBS-001` を別レーンで進められる。
+`API-002` と `OBS-001` は変更領域が近いため、先にP0の `API-002` を統合してから
+`OBS-001` へ進む。
 
 ## 3. タスク一覧
 
@@ -85,9 +87,9 @@ WIP上限1の場合の推奨順:
 | TST-002 | R3 | P1 | M | done | SYN-002, SYN-003, SYN-004 | D | worker | worker | 2026-07-30 | 2026-07-30 |
 | JOB-001 | R4 | P1 | L | done | RUN-002, DOM-003, REL-001 | B | sol_high | root | 2026-07-30 | 2026-07-30 |
 | JOB-002 | R4 | P1 | L | done | JOB-001, SYN-004 | B | luna_max | luna_max | 2026-07-30 | 2026-07-30 |
-| API-001 | R4 | P1 | L | ready | CFG-002, SYN-002, JOB-001 | C | luna_max | — | — | — |
-| API-002 | R4 | P0 | M | backlog | API-001, SEC-001, SEC-002, JOB-002 | C | worker | — | — | — |
-| OBS-001 | R4 | P1 | M | backlog | API-001, JOB-001, SYN-001 | D | worker | — | — | — |
+| API-001 | R4 | P1 | L | done | CFG-002, SYN-002, JOB-001 | C | luna_max | luna_max | 2026-07-30 | 2026-07-30 |
+| API-002 | R4 | P0 | M | ready | API-001, SEC-001, SEC-002, JOB-002 | C | worker | — | — | — |
+| OBS-001 | R4 | P1 | M | ready | API-001, JOB-001, SYN-001 | D | worker | — | — | — |
 | CLN-001 | R5 | P2 | L | backlog | TST-002, API-002 | A | worker | — | — | — |
 | CLN-002 | R5 | P2 | M | backlog | API-001, CLN-001 | C | worker | — | — | — |
 | DOC-001 | R5 | P1 | M | backlog | CLN-001, CLN-002, OBS-001 | D | worker | — | — | — |
@@ -830,6 +832,19 @@ WIP上限1の場合の推奨順:
 - Result: 有限queueとactive task registryを持つTaskSupervisorを追加し、CAS遷移、cancel cleanup待機、shutdown、再起動回収・resume、FastAPI lifespanとread/batch入口を接続した。
 - Manual verification: task例外回収、queue上限、RUNNING→INTERRUPTED、QUEUED→CANCELLED、failed Batch→FAILED、shutdown時のcancel request・Provider・repository close順を確認した。
 - Remaining risks: SQLite単一ホスト前提。lifespan外compat taskとReadingEngine内部の旧task生成は後続API/CLNタスクで整理する。
+
+### API-001 検証証跡
+
+- Commit/PR: 本waveのローカルコミット
+- 実行日: 2026-07-30
+- 担当: luna_max（実装・レビュー）、root（統合レビュー）
+- Commands:
+  - factory/server/lifespan/architecture関連テスト — root 30 passed
+  - 非E2E全pytest — 573 passed, 2 skipped, 6 deselected
+  - `.venv/bin/ruff check src/ tests/` / `git diff --check` — pass
+- Result: `create_app(settings, dependencies)`、ServerDependencies、per-app runtime/lifespanを導入し、全routeをapp state依存へ移行した。具象Reader Provider構築はbootstrapへ移した。
+- Manual verification: 別設定の2 app同時分離、resourceの一度だけのclose、startup途中失敗のcleanup、既存serverテストのglobal monkeypatch除去、legacy `app`互換を確認した。
+- Remaining risks: 既存route/SSE互換のためendpointはReadingEngine/BatchJobManager facadeへ直接依存する。専用UseCase化は後続整理で扱う。
 
 タスク完了時に以下の形式で追記する。
 
