@@ -67,6 +67,17 @@ class SceneAnalyzer:
             )
         # 後方互換プロパティ
         self.ollama = backend if isinstance(backend, OllamaClient) else None
+        # planning adapter が「解析は完了したが rule-based fallback を使った」ことを
+        # warningへ反映できるよう、インスタンスの生存期間中に一度でもfallbackしたかを
+        #保持する。NLPAnalyzerが複数チャンクを順に処理しても、途中の失敗を最後の結果で
+        #上書きしない。
+        self._fallback_used = False
+
+    @property
+    def fallback_used(self) -> bool:
+        """LLM unavailable/失敗時の既定分析を一度でも使用したか."""
+
+        return self._fallback_used
 
     async def analyze_batch(
         self,
@@ -77,8 +88,16 @@ class SceneAnalyzer:
         if not segments:
             return []
 
-        # SLMが利用不可の場合はデフォルト値で返す
-        if not await self._backend.is_available():
+        # SLMが利用不可の場合はデフォルト値で返す。health endpoint自体が落ちている
+        # backendも「利用不可」と同じ扱いにし、planning全体を失敗させない。
+        try:
+            available = await self._backend.is_available()
+        except Exception as exc:
+            self._fallback_used = True
+            logger.warning(f"LLM availability check failed, using default analysis: {exc}")
+            return self._default_analysis(segments)
+        if not available:
+            self._fallback_used = True
             logger.warning("LLM backend unavailable, using default analysis")
             return self._default_analysis(segments)
 
@@ -103,6 +122,7 @@ class SceneAnalyzer:
                 prompt, system=ANALYSIS_SYSTEM_PROMPT
             )
         except Exception as e:
+            self._fallback_used = True
             logger.warning(f"SLM analysis failed: {e}")
             return self._default_analysis(segments)
 

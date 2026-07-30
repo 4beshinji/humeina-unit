@@ -26,7 +26,15 @@ async def play_wav(audio_data: bytes) -> float:
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
         )
-        await proc.communicate(input=audio_data)
+        try:
+            await proc.communicate(input=audio_data)
+        except asyncio.CancelledError:
+            # task cancellation alone leaves aplay alive and can continue emitting audio
+            # after ReadingEngine.stop().  Terminate the child before propagating cancellation.
+            if proc.returncode is None:
+                proc.kill()
+                await proc.wait()
+            raise
         if proc.returncode != 0:
             raise RuntimeError(f"aplay exited with {proc.returncode}")
         return duration

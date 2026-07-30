@@ -3,17 +3,19 @@
 from __future__ import annotations
 
 import re
+from importlib.resources.abc import Traversable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import yaml
 from loguru import logger
 
+from ..resource_loader import packaged_config_resource
+
 if TYPE_CHECKING:
     from .llm_backend import LLMBackend
 
-# デフォルト辞書パス
-_DEFAULT_DICT = Path(__file__).parent.parent.parent.parent / "config" / "math_dict.yaml"
+_DEFAULT_RESOURCE = packaged_config_resource("math_dict.yaml")
 
 # LaTeX ブロックの正規表現
 _INLINE_MATH_RE = re.compile(r"\\\((.+?)\\\)", re.DOTALL)
@@ -50,11 +52,11 @@ class MathProcessor:
 
     def __init__(
         self,
-        dict_path: Path | None = None,
+        dict_path: Path | Traversable | None = None,
         llm: LLMBackend | None = None,
     ) -> None:
         self._llm = llm
-        self._dict = self._load_dict(dict_path or _DEFAULT_DICT)
+        self._dict = self._load_dict(dict_path or _DEFAULT_RESOURCE)
         self._build_complex_patterns()
 
     # ──────────────────────────────────────────
@@ -380,9 +382,13 @@ class MathProcessor:
         _COMPLEX_LATEX_RE = [re.compile(p) for p in patterns]
 
     @staticmethod
-    def _load_dict(path: Path) -> dict:
+    def _load_dict(path: Path | Traversable) -> dict:
         try:
-            with open(path, encoding="utf-8") as f:
+            if isinstance(path, Path):
+                file = path.open(encoding="utf-8")
+            else:
+                file = path.open("r", encoding="utf-8")
+            with file as f:
                 return yaml.safe_load(f) or {}
         except FileNotFoundError:
             logger.warning(f"Math dictionary not found: {path}")

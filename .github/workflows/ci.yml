@@ -1,0 +1,106 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      run_e2e:
+        description: "Run external-service E2E tests"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+env:
+  UV_CACHE_DIR: ${{ runner.temp }}/uv-cache
+
+jobs:
+  tests:
+    name: pytest (unit)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Install dependencies
+        run: uv sync --extra dev
+      - name: Run unit and integration tests
+        run: uv run python -m pytest -q -m "not e2e and not packaging"
+
+  lint:
+    name: ruff
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Install dependencies
+        run: uv sync --extra dev
+      - name: Run Ruff
+        run: uv run python -m ruff check src/ tests/
+
+  packaging:
+    name: packaging smoke
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Install test dependencies
+        run: uv sync --extra dev
+      - name: Build wheel
+        run: uv build --wheel
+      - name: Create isolated wheel environment
+        run: |
+          uv venv --python 3.12 "${RUNNER_TEMP}/yomiage-wheel-smoke"
+          uv pip install \
+            --python "${RUNNER_TEMP}/yomiage-wheel-smoke/bin/python" \
+            dist/*.whl
+      - name: Run installed-wheel smoke tests
+        env:
+          YOMIAGE_SMOKE_PYTHON: ${{ runner.temp }}/yomiage-wheel-smoke/bin/python
+        run: uv run python -m pytest -q tests/smoke -m packaging
+
+  e2e:
+    name: pytest (e2e)
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_e2e == true }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Install dependencies
+        run: uv sync --extra dev
+      - name: Run explicitly marked external-service tests
+        run: uv run python -m pytest -q -m e2e

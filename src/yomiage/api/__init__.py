@@ -2,7 +2,27 @@
 
 from .analyzer import TextAnalyzer
 from .bridge import TTSBridge
-from .config import AnalyzerConfig, LLMConfig, PipelineConfig, TTSEngineConfig
+from .config import (
+    AnalyzerConfig,
+    ApplicationSettings,
+    AppSettings,
+    BatchSettings,
+    ConfigPaths,
+    LLMConfig,
+    LLMSettings,
+    PathSettings,
+    PathsSettings,
+    PipelineConfig,
+    ProviderSettings,
+    ProvidersSettings,
+    RuntimePaths,
+    ServerSettings,
+    Settings,
+    SettingsPaths,
+    StorageSettings,
+    TTSEngineConfig,
+    TTSSettings,
+)
 from .models import AnalysisResult, PipelineChunk, SynthesisResult, VoiceInfo
 from .pipeline import Pipeline
 
@@ -21,5 +41,20 @@ __all__ = [
     "PipelineConfig",
     "TTSEngineConfig",
     "AnalyzerConfig",
+    "AppSettings",
+    "ApplicationSettings",
+    "ConfigPaths",
     "LLMConfig",
+    "Settings",
+    "TTSSettings",
+    "ProviderSettings",
+    "ProvidersSettings",
+    "LLMSettings",
+    "BatchSettings",
+    "ServerSettings",
+    "StorageSettings",
+    "PathSettings",
+    "PathsSettings",
+    "RuntimePaths",
+    "SettingsPaths",
 ]

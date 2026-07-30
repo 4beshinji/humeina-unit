@@ -37,6 +37,14 @@ yomiage = "yomiage.cli:app"
 [tool.hatch.build.targets.wheel]
 packages = ["src/yomiage"]
 
+[tool.hatch.build.targets.wheel.force-include]
+# Standard YAML is immutable package data; user-editable profiles remain outside
+# the wheel under the configured user profile directory.
+"src/yomiage/resources/config/default.yaml" = "yomiage/resources/config/default.yaml"
+"src/yomiage/resources/config/voices.yaml" = "yomiage/resources/config/voices.yaml"
+"src/yomiage/resources/config/scene_params.yaml" = "yomiage/resources/config/scene_params.yaml"
+"src/yomiage/resources/config/math_dict.yaml" = "yomiage/resources/config/math_dict.yaml"
+
 [tool.ruff]
 target-version = "py312"
 line-length = 100
@@ -49,4 +57,5 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 markers = [
     "e2e: tests that exercise real external services (VOICEVOX/VoiSona/VOICEPEAK/Ollama)",
+    "packaging: tests that validate an installed wheel outside the repository checkout",
 ]

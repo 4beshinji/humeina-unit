@@ -1,0 +1,301 @@
+{
+  "name": "mixed_scene_boundaries",
+  "source": "fixture://plans/mixed",
+  "text": "朝の光が差し込んだ。\n太郎は「おはよう」と言った。\n(今日はいい日になりそうだ)\n花子は「本当に」と尋ねた。\n***\n夕暮れになった。",
+  "config": {
+    "analysis": {
+      "model": "fixture-rule-based",
+      "window": 200
+    }
+  },
+  "max_chunk_chars": 32,
+  "expected_plan": {
+    "schema_version": 1,
+    "plan_id": "plan_1e9b955cf0874e8e5530",
+    "source_fingerprint": "b294efc4ef0449736d910f142823632ee29aa7e225d9bcdd1a5b3644e73ac1ea",
+    "config_fingerprint": "13eb892a5e545277fb0e5bfdbb025a5002a9db4824b08dda5b1de818e5bc1f4b",
+    "utterances": [
+      {
+        "id": "u-0000",
+        "order": 0,
+        "text": "朝の光が差し込んだ。太郎は",
+        "segment_type": "narration",
+        "speaker_id": null,
+        "scene": "daily",
+        "emotion": "neutral",
+        "intensity": 0.5,
+        "voice_intent": {
+          "archetype": null,
+          "gender": null,
+          "age_group": null,
+          "speaking_rate": 1,
+          "pitch": 0,
+          "volume": 0,
+          "intonation": 1,
+          "emotion": "neutral",
+          "intensity": 0.5,
+          "preferred_voice_profile": null
+        },
+        "source_ref": {
+          "url": "fixture://plans/mixed",
+          "chapter": null,
+          "start": null,
+          "end": null,
+          "locator": null
+        }
+      },
+      {
+        "id": "u-0001",
+        "order": 1,
+        "text": "「おはよう」",
+        "segment_type": "dialogue",
+        "speaker_id": "太郎",
+        "scene": "daily",
+        "emotion": "neutral",
+        "intensity": 0.5,
+        "voice_intent": {
+          "archetype": null,
+          "gender": null,
+          "age_group": null,
+          "speaking_rate": 1,
+          "pitch": 0,
+          "volume": 0,
+          "intonation": 1,
+          "emotion": "neutral",
+          "intensity": 0.5,
+          "preferred_voice_profile": null
+        },
+        "source_ref": {
+          "url": "fixture://plans/mixed",
+          "chapter": null,
+          "start": null,
+          "end": null,
+          "locator": null
+        }
+      },
+      {
+        "id": "u-0002",
+        "order": 2,
+        "text": "と言った。",
+        "segment_type": "narration",
+        "speaker_id": null,
+        "scene": "daily",
+        "emotion": "neutral",
+        "intensity": 0.5,
+        "voice_intent": {
+          "archetype": null,
+          "gender": null,
+          "age_group": null,
+          "speaking_rate": 1,
+          "pitch": 0,
+          "volume": 0,
+          "intonation": 1,
+          "emotion": "neutral",
+          "intensity": 0.5,
+          "preferred_voice_profile": null
+        },
+        "source_ref": {
+          "url": "fixture://plans/mixed",
+          "chapter": null,
+          "start": null,
+          "end": null,
+          "locator": null
+        }
+      },
+      {
+        "id": "u-0003",
+        "order": 3,
+        "text": "(今日はいい日になりそうだ)",
+        "segment_type": "thought",
+        "speaker_id": null,
+        "scene": "daily",
+        "emotion": "neutral",
+        "intensity": 0.5,
+        "voice_intent": {
+          "archetype": null,
+          "gender": null,
+          "age_group": null,
+          "speaking_rate": 1,
+          "pitch": 0,
+          "volume": 0,
+          "intonation": 1,
+          "emotion": "neutral",
+          "intensity": 0.5,
+          "preferred_voice_profile": null
+        },
+        "source_ref": {
+          "url": "fixture://plans/mixed",
+          "chapter": null,
+          "start": null,
+          "end": null,
+          "locator": null
+        }
+      },
+      {
+        "id": "u-0004",
+        "order": 4,
+        "text": "花子は",
+        "segment_type": "narration",
+        "speaker_id": null,
+        "scene": "daily",
+        "emotion": "neutral",
+        "intensity": 0.5,
+        "voice_intent": {
+          "archetype": null,
+          "gender": null,
+          "age_group": null,
+          "speaking_rate": 1,
+          "pitch": 0,
+          "volume": 0,
+          "intonation": 1,
+          "emotion": "neutral",
+          "intensity": 0.5,
+          "preferred_voice_profile": null
+        },
+        "source_ref": {
+          "url": "fixture://plans/mixed",
+          "chapter": null,
+          "start": null,
+          "end": null,
+          "locator": null
+        }
+      },
+      {
+        "id": "u-0005",
+        "order": 5,
+        "text": "「本当に」",
+        "segment_type": "dialogue",
+        "speaker_id": "花子",
+        "scene": "daily",
+        "emotion": "neutral",
+        "intensity": 0.5,
+        "voice_intent": {
+          "archetype": null,
+          "gender": null,
+          "age_group": null,
+          "speaking_rate": 1,
+          "pitch": 0,
+          "volume": 0,
+          "intonation": 1,
+          "emotion": "neutral",
+          "intensity": 0.5,
+          "preferred_voice_profile": null
+        },
+        "source_ref": {
+          "url": "fixture://plans/mixed",
+          "chapter": null,
+          "start": null,
+          "end": null,
+          "locator": null
+        }
+      },
+      {
+        "id": "u-0006",
+        "order": 6,
+        "text": "と尋ねた。夕暮れになった。",
+        "segment_type": "narration",
+        "speaker_id": null,
+        "scene": "daily",
+        "emotion": "neutral",
+        "intensity": 0.5,
+        "voice_intent": {
+          "archetype": null,
+          "gender": null,
+          "age_group": null,
+          "speaking_rate": 1,
+          "pitch": 0,
+          "volume": 0,
+          "intonation": 1,
+          "emotion": "neutral",
+          "intensity": 0.5,
+          "preferred_voice_profile": null
+        },
+        "source_ref": {
+          "url": "fixture://plans/mixed",
+          "chapter": null,
+          "start": null,
+          "end": null,
+          "locator": null
+        }
+      }
+    ],
+    "warnings": [
+      {
+        "code": "SCENE_BREAK_SKIPPED",
+        "message": "scene break is a navigation marker and is not synthesized",
+        "severity": "info",
+        "utterance_id": null
+      },
+      {
+        "code": "NLP_FALLBACK",
+        "message": "LLM scene analysis unavailable; rule-based values were used",
+        "severity": "info",
+        "utterance_id": null
+      }
+    ]
+  },
+  "batch_manifest": {
+    "work_id": "fixture-mixed",
+    "work_title": "mixed fixture",
+    "source_url": "fixture://plans/mixed",
+    "mode": "voicevox",
+    "sentences": [
+      {
+        "index": 0,
+        "text": "朝の光が差し込んだ。太郎は",
+        "chapter_index": null,
+        "segment_type": "narration"
+      },
+      {
+        "index": 1,
+        "text": "「おはよう」",
+        "chapter_index": null,
+        "segment_type": "dialogue",
+        "speaker": "太郎"
+      },
+      {
+        "index": 2,
+        "text": "と言った。",
+        "chapter_index": null,
+        "segment_type": "narration"
+      },
+      {
+        "index": 3,
+        "text": "(今日はいい日になりそうだ)",
+        "chapter_index": null,
+        "segment_type": "thought"
+      },
+      {
+        "index": 4,
+        "text": "花子は",
+        "chapter_index": null,
+        "segment_type": "narration"
+      },
+      {
+        "index": 5,
+        "text": "「本当に」",
+        "chapter_index": null,
+        "segment_type": "dialogue",
+        "speaker": "花子"
+      },
+      {
+        "index": 6,
+        "text": "と尋ねた。",
+        "chapter_index": null,
+        "segment_type": "narration"
+      },
+      {
+        "index": 7,
+        "text": "",
+        "chapter_index": null,
+        "segment_type": "scene_break"
+      },
+      {
+        "index": 8,
+        "text": "夕暮れになった。",
+        "chapter_index": null,
+        "segment_type": "narration"
+      }
+    ]
+  }
+}

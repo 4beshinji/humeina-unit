@@ -6,6 +6,7 @@ import hashlib
 import json
 from pathlib import Path
 
+from ..utils.atomic_io import atomic_write_json
 from .models import ScriptLine, SpeakerMapping
 
 
@@ -61,7 +62,4 @@ class SynthCache:
 
     def _save(self) -> None:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-        self._cache_file.write_text(
-            json.dumps(self._hashes, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        atomic_write_json(self._cache_file, self._hashes)

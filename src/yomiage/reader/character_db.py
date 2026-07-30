@@ -6,6 +6,8 @@ from pathlib import Path
 
 from loguru import logger
 
+from ..utils.atomic_io import atomic_write_json
+
 DEFAULT_CHAR_DIR = Path("data/characters")
 
 
@@ -55,7 +57,7 @@ class CharacterDB:
             return
         path = self._path()
         data = {name: asdict(char) for name, char in self._characters.items()}
-        path.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+        atomic_write_json(path, data)
 
     @property
     def characters(self) -> dict[str, CharacterProfile]:

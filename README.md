@@ -74,6 +74,9 @@ uv run yomiage serve
 | [docs/configuration.md](docs/configuration.md) | 設定リファレンス |
 | [docs/api-reference.md](docs/api-reference.md) | REST API リファレンス |
 | [docs/virtiofs-setup.md](docs/virtiofs-setup.md) | virtiofs セットアップ |
+| [docs/improvement/README.md](docs/improvement/README.md) | アーキテクチャ改善ロードマップ |
+| [docs/improvement/architecture-plan.md](docs/improvement/architecture-plan.md) | 目標設計・段階移行計画 |
+| [docs/improvement/work-ledger.md](docs/improvement/work-ledger.md) | 依存関係・受入条件付き作業台帳 |
 
 ## ライセンス
 

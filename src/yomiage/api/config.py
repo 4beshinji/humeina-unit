@@ -4,9 +4,26 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ..config import load_config
+from ..settings import (
+    ApplicationSettings,
+    AppSettings,
+    BatchSettings,
+    ConfigPaths,
+    LLMSettings,
+    PathSettings,
+    PathsSettings,
+    ProviderSettings,
+    ProvidersSettings,
+    RuntimePaths,
+    ServerSettings,
+    Settings,
+    SettingsPaths,
+    StorageSettings,
+    TTSSettings,
+)
 
 
 class TTSEngineConfig(BaseModel):
@@ -16,8 +33,8 @@ class TTSEngineConfig(BaseModel):
     url: str | None = None
     username: str | None = None
     password: str | None = None
-    default_voice: str | None = None
-    extra: dict = {}
+    default_voice: str | int | None = None
+    extra: dict = Field(default_factory=dict)
 
     def to_provider_dict(self) -> dict:
         """プロバイダーが期待するdict形式に変換."""
@@ -51,7 +68,7 @@ class LLMConfig(BaseModel):
 class AnalyzerConfig(BaseModel):
     """テキスト分析設定."""
 
-    llm: LLMConfig = LLMConfig()
+    llm: LLMConfig = Field(default_factory=LLMConfig)
     max_chunk_chars: int = 200
 
 
@@ -60,7 +77,7 @@ class PipelineConfig(BaseModel):
 
     tts: TTSEngineConfig
     tts_fallback: TTSEngineConfig | None = None
-    analyzer: AnalyzerConfig = AnalyzerConfig()
+    analyzer: AnalyzerConfig = Field(default_factory=AnalyzerConfig)
     scene_params: dict | None = None
     lookahead: int = 3
     voice_profile_dir: Path | None = None
@@ -73,11 +90,33 @@ class PipelineConfig(BaseModel):
         return cls.from_dict(raw)
 
     @classmethod
+    def from_settings(cls, settings: Settings) -> PipelineConfig:
+        """型付きSettingsから、既存SDK DTOへ最小変換する。
+
+        Provider実装の全面移行（SYN-001）はCFG-001の対象外なので、変換は
+        ここに閉じ込めてraw dictが新しいapplication層へ漏れないようにする。
+        """
+
+        if not isinstance(settings, Settings):
+            raise TypeError("settings must be a Settings instance")
+        return cls.from_dict(settings.to_legacy_dict())
+
+    @classmethod
     def from_dict(cls, data: dict) -> PipelineConfig:
         """既存のraw dict設定形式から変換."""
         tts_cfg = data.get("tts", {})
         primary_name = tts_cfg.get("primary_provider", "voicevox")
         fallback_name = tts_cfg.get("fallback_provider")
+
+        supported = {"voisona", "voicevox", "voicepeak"}
+        configured_names = (primary_name, fallback_name)
+        unknown = [
+            name
+            for name in configured_names
+            if name is not None and (not isinstance(name, str) or name not in supported)
+        ]
+        if unknown:
+            raise ValueError(f"Unknown TTS provider: {', '.join(map(str, unknown))}")
 
         primary_engine_cfg = data.get(primary_name, {})
         tts = TTSEngineConfig(
@@ -126,7 +165,31 @@ class PipelineConfig(BaseModel):
             scene_params=data.get("scene_params"),
             lookahead=tts_cfg.get("lookahead_chunks", 3),
             voice_profile_dir=Path(batch_cfg["voice_profile_dir"])
+            .expanduser()
             if batch_cfg.get("voice_profile_dir")
             else None,
             voice_profile_name=batch_cfg.get("default_voice_profile"),
         )
+
+
+__all__ = [
+    "AppSettings",
+    "ApplicationSettings",
+    "AnalyzerConfig",
+    "BatchSettings",
+    "ConfigPaths",
+    "LLMConfig",
+    "LLMSettings",
+    "PathSettings",
+    "PathsSettings",
+    "PipelineConfig",
+    "ProviderSettings",
+    "ProvidersSettings",
+    "RuntimePaths",
+    "SettingsPaths",
+    "ServerSettings",
+    "Settings",
+    "StorageSettings",
+    "TTSSettings",
+    "TTSEngineConfig",
+]

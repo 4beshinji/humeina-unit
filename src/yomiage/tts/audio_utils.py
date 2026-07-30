@@ -16,6 +16,8 @@ from typing import TYPE_CHECKING
 
 from loguru import logger
 
+from ..utils.atomic_io import atomic_replace_file, atomic_write_wav
+
 if TYPE_CHECKING:
     pass
 
@@ -30,21 +32,22 @@ def write_silence_wav(
     num_samples = int(sample_rate * duration)
     data_size = num_samples * 2  # 16-bit mono
 
-    with open(path, "wb") as f:
-        f.write(b"RIFF")
-        f.write(struct.pack("<I", 36 + data_size))
-        f.write(b"WAVE")
-        f.write(b"fmt ")
-        f.write(struct.pack("<I", 16))
-        f.write(struct.pack("<H", 1))  # PCM
-        f.write(struct.pack("<H", 1))  # mono
-        f.write(struct.pack("<I", sample_rate))
-        f.write(struct.pack("<I", sample_rate * 2))
-        f.write(struct.pack("<H", 2))
-        f.write(struct.pack("<H", 16))
-        f.write(b"data")
-        f.write(struct.pack("<I", data_size))
-        f.write(b"\x00" * data_size)
+    buf = io.BytesIO()
+    buf.write(b"RIFF")
+    buf.write(struct.pack("<I", 36 + data_size))
+    buf.write(b"WAVE")
+    buf.write(b"fmt ")
+    buf.write(struct.pack("<I", 16))
+    buf.write(struct.pack("<H", 1))  # PCM
+    buf.write(struct.pack("<H", 1))  # mono
+    buf.write(struct.pack("<I", sample_rate))
+    buf.write(struct.pack("<I", sample_rate * 2))
+    buf.write(struct.pack("<H", 2))
+    buf.write(struct.pack("<H", 16))
+    buf.write(b"data")
+    buf.write(struct.pack("<I", data_size))
+    buf.write(b"\x00" * data_size)
+    atomic_write_wav(path, buf.getvalue())
 
 
 def concat_wav_files(
@@ -78,15 +81,35 @@ def concat_wav_files(
         else:
             cmd += ["-codec:a", "pcm_s16le"]
 
-        cmd.append(str(output))
+        def _run_ffmpeg(temporary_output: Path) -> None:
+            # 一時名は拡張子が ``.tmp`` のため、出力formatを明示する。
+            ffmpeg_cmd = [*cmd, "-f", output_format, str(temporary_output)]
+            result = subprocess.run(
+                ffmpeg_cmd, capture_output=True, text=True, timeout=600
+            )
+            if result.returncode != 0:
+                raise RuntimeError(f"ffmpeg concat failed: {result.stderr}")
 
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=600
-        )
-        if result.returncode != 0:
-            raise RuntimeError(f"ffmpeg concat failed: {result.stderr}")
+        if output_format == "wav":
+            atomic_replace_file(
+                output,
+                _run_ffmpeg,
+                validator=_validate_wav_file,
+            )
+        else:
+            # MP3/FLACはWAV検証対象外だが、同じ原子的公開境界を使う。
+            atomic_replace_file(output, _run_ffmpeg)
     finally:
         Path(concat_list).unlink(missing_ok=True)
+
+
+def _validate_wav_file(path: Path) -> None:
+    """WAV concat結果が読み取り可能か検証する."""
+    try:
+        with wave.open(str(path), "rb") as stream:
+            stream.getparams()
+    except (EOFError, OSError, wave.Error) as exc:
+        raise ValueError(f"Invalid WAV output: {path}") from exc
 
 
 def concat_wav_bytes(wav_parts: list[bytes]) -> bytes:

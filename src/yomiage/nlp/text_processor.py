@@ -2,21 +2,23 @@
 
 import re
 import unicodedata
+from importlib.resources.abc import Traversable
 from pathlib import Path
 
 from bs4 import BeautifulSoup
 
+from ..resource_loader import packaged_config_resource
 from .math_processor import MathProcessor
 
 _DEFAULT_MATH_DICT = (
-    Path(__file__).parent.parent.parent.parent / "config" / "math_dict.yaml"
+    packaged_config_resource("math_dict.yaml")
 )
 
 
 class TextProcessor:
     """テキスト前処理."""
 
-    def __init__(self, math_dict_path: Path | None = None) -> None:
+    def __init__(self, math_dict_path: Path | Traversable | None = None) -> None:
         self._math = MathProcessor(dict_path=math_dict_path or _DEFAULT_MATH_DICT)
 
     def process(self, text: str) -> str:

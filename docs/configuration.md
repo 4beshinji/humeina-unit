@@ -2,16 +2,24 @@
 
 ## 設定ファイル
 
-設定は `config/` ディレクトリのYAMLファイルと `.env` 環境変数の2層構造。
+設定は、組み込み標準値、パッケージ同梱YAML、ユーザー設定、環境変数の順に
+重ね合わせて解決される。wheelインストール後もカレントディレクトリに依存せず、
+標準YAMLは `importlib.resources` から読み込まれる。
+
+- 同梱リソース（`default.yaml`、`scene_params.yaml`、`voices.yaml`、`math_dict.yaml`）は変更不可。
+- checkoutで開発する場合はリポジトリの `config/` を `load_config(config_dir=...)` で明示指定できる。
+- ユーザー設定と編集対象プロファイルは `YOMIAGE_USER_CONFIG_DIR`（既定:
+  `~/.config/humeina-unit`）へ置く。標準リソースへユーザープロファイルを追加しない。
+- `.env` は認証情報・接続先などの環境変数を指定するために使う。
 
 | ファイル | 内容 |
 |---------|------|
-| `config/default.yaml` | メイン設定 |
-| `config/scene_params.yaml` | シーン修飾子・感情スタイルウェイト |
-| `config/voices.yaml` | ボイス定義 |
-| `config/math_dict.yaml` | 数式記号→読み下し辞書 |
-| `config/voice_profiles/*.yaml` | VoiSona/VOICEVOX 用ボイスプロファイル |
-| `config/voicepeak_profiles/*.yaml` | VOICEPEAK 用ナレータープロファイル |
+| `yomiage/resources/config/default.yaml`（wheel内） | メイン設定（標準値） |
+| `yomiage/resources/config/scene_params.yaml`（wheel内） | シーン修飾子・感情スタイルウェイト |
+| `yomiage/resources/config/voices.yaml`（wheel内） | ボイス定義 |
+| `yomiage/resources/config/math_dict.yaml`（wheel内） | 数式記号→読み下し辞書 |
+| `${YOMIAGE_USER_CONFIG_DIR}/voice_profiles/*.yaml` | VoiSona/VOICEVOX 用ボイスプロファイル |
+| `${YOMIAGE_USER_CONFIG_DIR}/voicepeak_profiles/*.yaml` | VOICEPEAK 用ナレータープロファイル |
 | `.env` | 認証情報・接続先（gitignore対象） |
 
 YAMLファイル内で `${ENV_VAR:-default}` 構文を使って環境変数を参照できる。
@@ -32,7 +40,7 @@ tts:
 
 ```yaml
 voisona:
-  url: ${VOISONA_URL:-http://192.168.1.173:32766}
+  url: ${VOISONA_URL:-http://localhost:32766}
   username: ${VOISONA_USERNAME}
   password: ${VOISONA_PASSWORD}
   default_voice: nurse-robot-type-t_ja_JP
@@ -51,7 +59,7 @@ voicevox:
 
 ```yaml
 voicepeak:
-  path: /home/sin/code/una/Voicepeak-linux64/Voicepeak/voicepeak
+  path: null                         # VOICEPEAK_PATHで実行ファイルを指定
   default_narrator: "Otomachi Una"
   max_chars: 140                  # 1呼び出しあたり最大文字数（超えたら分割）
   pitch_scale: 300                # ピッチスケール基準
@@ -121,7 +129,7 @@ batch:
   concat_format: wav                          # デフォルト結合フォーマット
   cleanup_after_concat: false                 # 結合後に個別ファイル削除
   voisona_vm_mount: ${VOISONA_VM_MOUNT:-Z:}   # VM内のvirtiofsマウントポイント
-  voice_profile_dir: config/voice_profiles    # ボイスプロファイル探索先
+  voice_profile_dir: ${YOMIAGE_USER_CONFIG_DIR:-~/.config/humeina-unit}/voice_profiles
   synth_concurrency: 1                        # VoiSona同時合成ジョブ数（流量制御）
 ```
 
@@ -132,7 +140,7 @@ batch:
 ```yaml
 ex_voice:
   enabled: false                                         # CLI の --ex-voice でも有効化可
-  wav_dir: ${EX_VOICE_WAV_DIR:-/home/sin/code/una/VoiceWav}
+  wav_dir: ${EX_VOICE_WAV_DIR:-}
   cooldown_chunks: 10                                    # 直近何チャンク以内は再挿入しない
   max_per_chapter: 8                                     # 1チャプターあたりの最大挿入数
   llm_max_insertions: 2                                  # LLMバッチごとの最大挿入数
@@ -276,14 +284,14 @@ favorites_only: true              # お気に入りボイスのみ使用
 
 | ディレクトリ | 対象 |
 |-------------|------|
-| `config/voice_profiles/` | VoiSona / VOICEVOX |
-| `config/voicepeak_profiles/` | VOICEPEAK |
+| `${YOMIAGE_USER_CONFIG_DIR}/voice_profiles/` | VoiSona / VOICEVOX |
+| `${YOMIAGE_USER_CONFIG_DIR}/voicepeak_profiles/` | VOICEPEAK |
 
 ## 環境変数一覧
 
 | 変数 | 用途 | デフォルト |
 |------|------|-----------|
-| `VOISONA_URL` | VoiSona Talk APIのURL | `http://192.168.1.173:32766` |
+| `VOISONA_URL` | VoiSona Talk APIのURL | `http://localhost:32766` |
 | `VOISONA_USERNAME` | VoiSona Talk ユーザー名 | — |
 | `VOISONA_PASSWORD` | VoiSona Talk パスワード | — |
 | `VOISONA_VOICE_NAME` | VoiSona 既定ボイス名 | `nurse-robot-type-t_ja_JP` |
@@ -293,7 +301,7 @@ favorites_only: true              # お気に入りボイスのみ使用
 | `OLLAMA_SUMMARY_MODEL` | ニュース要約用モデル | （`OLLAMA_MODEL` と同じ） |
 | `GEMINI_API_KEY` | Gemini フォールバック有効化 | — |
 | `VOISONA_VM_MOUNT` | VM内virtiofsマウントポイント | `Z:` |
-| `EX_VOICE_WAV_DIR` | EXボイス用WAV格納ディレクトリ | `/home/sin/code/una/VoiceWav` |
+| `EX_VOICE_WAV_DIR` | EXボイス用WAV格納ディレクトリ | （未指定） |
 | `SLACK_BOT_TOKEN` | Slack Bot Token | — |
 | `SLACK_APP_TOKEN` | Slack App Token | — |
 | `MQTT_BROKER` | MQTTブローカー | `localhost` |

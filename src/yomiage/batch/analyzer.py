@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import hashlib
 from typing import Any
 
 from loguru import logger
 
+from ..core.identity import build_identity
 from ..nlp.classifier import SegmentType, TextClassifier
 from ..nlp.ollama_client import OllamaClient
 from ..nlp.speaker import SpeakerExtractor
@@ -109,7 +109,20 @@ class BatchAnalyzer:
         from pathlib import Path
 
         source = registry.resolve(url)
-        work_id = hashlib.md5(url.encode()).hexdigest()[:12]
+        source_kind = type(source).__name__.removesuffix("Source").lower() or "url"
+        identity = build_identity(
+            url,
+            {
+                "analysis_window_chars": self.window_chars,
+                "analysis_window_sentences": self.window_sentences,
+                "splitter_max_chars": 500,
+                # ``mode`` is intentionally excluded by the identity utility.  Provider changes
+                # should reuse this plan while receiving a fresh run directory.
+                "mode": mode,
+            },
+            source_kind=source_kind,
+        )
+        work_id = identity.work_id
 
         # 目次取得
         toc = await source.get_table_of_contents(url)
@@ -132,6 +145,11 @@ class BatchAnalyzer:
             work_title=work_title,
             source_url=url,
             mode=mode,
+            plan_id=identity.plan_id,
+            run_id=identity.run_id,
+            job_id=identity.job_id,
+            source_fingerprint=identity.source_fingerprint,
+            config_fingerprint=identity.config_fingerprint,
         )
 
         char_db = CharacterDB(work_id)

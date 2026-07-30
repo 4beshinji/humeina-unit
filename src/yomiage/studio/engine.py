@@ -8,9 +8,9 @@ from pathlib import Path
 import typer
 from loguru import logger
 
-from ..config import get_tts_config
-from ..tts.base import TTSProvider
-from .cache import SynthCache
+from ..application.synthesis import SynthesisService
+from ..bootstrap import create_studio_providers, create_synthesis_service
+from ..tts.cache import TTSCache
 from .models import ScriptLine, SpeakerMapping, StudioProject
 from .naming import FileNamer
 from .output import StudioOutputWriter
@@ -21,9 +21,16 @@ from .synthesizer import StudioSynthesizer
 class StudioEngine:
     """Studioオーケストレーター."""
 
-    def __init__(self, config: dict, output_dir: Path = Path("output")):
+    def __init__(
+        self,
+        config: dict,
+        output_dir: Path = Path("output"),
+        *,
+        synthesis_service: SynthesisService | None = None,
+    ):
         self.config = config
         self.output_dir = output_dir
+        self._synthesis_service = synthesis_service
 
     async def synth(
         self,
@@ -61,27 +68,44 @@ class StudioEngine:
         logger.info(f"Speakers: {', '.join(speakers)}")
 
         # 3. プロバイダー初期化
-        providers = self._create_providers(mappings)
-        synthesizer = StudioSynthesizer(
-            providers=providers, default_provider=default_provider
-        )
+        # 外部からserviceを注入した場合、Providerはcomposition root側の所有物である。
+        # ここでlegacy Providerを生成すると未使用のセッションがリークするため、完全に
+        # 構築をスキップする。
+        providers = {} if self._synthesis_service is not None else self._create_providers(mappings)
 
-        # 4. ファイル命名 + キャッシュ
+        # 4. ファイル命名 + 共通service cache
         namer = FileNamer(format=fmt, max_slug_chars=max_slug)
-        cache = SynthCache(project_dir) if cache_enabled else None
+        cache = TTSCache(project_dir / "cache") if cache_enabled else None
+        service = self._synthesis_service or create_synthesis_service(
+            providers,
+            primary=default_provider,
+            fallback=self._configured_fallback_provider(default_provider),
+            cache=cache,
+            config=self.config,
+        )
+        owns_service = self._synthesis_service is None
+        synthesizer = StudioSynthesizer(
+            providers=providers,
+            default_provider=default_provider,
+            synthesis_service=service,
+        )
 
         # 5. 合成
         def on_progress(current: int, total: int, line: ScriptLine) -> None:
             pass  # ログはsynthesizer内で出力
 
-        results = await synthesizer.synthesize_all(
-            lines=lines,
-            speaker_mappings=mappings,
-            namer=namer,
-            output_dir=project_dir,
-            cache=cache,
-            on_progress=on_progress,
-        )
+        try:
+            results = await synthesizer.synthesize_all(
+                lines=lines,
+                speaker_mappings=mappings,
+                namer=namer,
+                output_dir=project_dir,
+                cache=None,
+                on_progress=on_progress,
+            )
+        finally:
+            if owns_service:
+                await service.close()
 
         # 6. プロジェクト構築
         project = StudioProject(
@@ -148,13 +172,26 @@ class StudioEngine:
             speaker=line.speaker, provider=default_provider, voice_id=""
         ))
 
-        providers = self._create_providers(mappings)
+        providers = {} if self._synthesis_service is not None else self._create_providers(mappings)
+        service = self._synthesis_service or create_synthesis_service(
+            providers,
+            primary=default_provider,
+            fallback=self._configured_fallback_provider(default_provider),
+            config=self.config,
+        )
+        owns_service = self._synthesis_service is None
         synthesizer = StudioSynthesizer(
-            providers=providers, default_provider=default_provider
+            providers=providers,
+            default_provider=default_provider,
+            synthesis_service=service,
         )
 
         typer.echo(f"Preview [{line_number}] {line.speaker}: {line.text}")
-        await synthesizer.preview_line(line, mapping)
+        try:
+            await synthesizer.preview_line(line, mapping)
+        finally:
+            if owns_service:
+                await service.close()
 
     def _resolve_speaker_mappings(
         self,
@@ -208,33 +245,27 @@ class StudioEngine:
 
         return mappings
 
-    def _create_providers(
-        self, mappings: dict[str, SpeakerMapping]
-    ) -> dict[str, TTSProvider]:
+    def _create_providers(self, mappings: dict[str, SpeakerMapping]) -> dict:
         """必要なTTSプロバイダーを初期化."""
-        from ..tts.voicepeak import VoicepeakProvider
-        from ..tts.voicevox import VoicevoxProvider
-        from ..tts.voisona import VoisonaProvider
-
         needed = {m.provider for m in mappings.values()}
-        providers: dict[str, TTSProvider] = {}
-
-        factory = {
-            "voicevox": lambda: VoicevoxProvider(
-                get_tts_config(self.config, "voicevox")
-            ),
-            "voisona": lambda: VoisonaProvider(
-                get_tts_config(self.config, "voisona")
-            ),
-            "voicepeak": lambda: VoicepeakProvider(
-                get_tts_config(self.config, "voicepeak")
-            ),
-        }
-
-        for name in needed:
-            if name in factory:
-                providers[name] = factory[name]()
-            else:
-                logger.warning(f"Unknown provider: {name}, skipping")
-
+        fallback = self._configured_fallback_provider(
+            self.config.get("studio", {}).get("default_provider", "voicevox")
+        )
+        if fallback:
+            needed.add(fallback)
+        providers = create_studio_providers(self.config, needed)
+        for name in needed - providers.keys():
+            logger.warning(f"Unknown provider: {name}, skipping")
         return providers
+
+    def _configured_fallback_provider(self, primary: str) -> str | None:
+        """Studio/legacy tts設定からfallback名を解決する。"""
+
+        studio_cfg = self.config.get("studio", {})
+        tts_cfg = self.config.get("tts", {})
+        if not isinstance(studio_cfg, dict):
+            studio_cfg = {}
+        if not isinstance(tts_cfg, dict):
+            tts_cfg = {}
+        fallback = studio_cfg.get("fallback_provider") or tts_cfg.get("fallback_provider")
+        return str(fallback) if fallback and str(fallback) != primary else None

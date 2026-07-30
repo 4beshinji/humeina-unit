@@ -1,6 +1,7 @@
 """CLI entry point — typer application."""
 
 import asyncio
+import ipaddress
 import os
 from pathlib import Path
 
@@ -72,8 +73,12 @@ def _create_reading_engine(
         model=ollama_cfg.get("model", "qwen3.5:3b"),
     )
 
-    scene_config_path = Path("config/scene_params.yaml")
-    param_mapper = ParamMapper.from_config_file(scene_config_path)
+    scene_params = config.get("scene_params")
+    param_mapper = (
+        ParamMapper(scene_params)
+        if isinstance(scene_params, dict)
+        else ParamMapper.from_config_file()
+    )
 
     ex_voice_manager = None
     if ex_voice:
@@ -1018,14 +1023,50 @@ def studio_voices(
 # --- Server ---
 
 
+def _is_loopback_host(host: str) -> bool:
+    """bind先がloopbackアドレスまたはlocalhostか判定する."""
+    normalized = host.strip().lower().rstrip(".")
+    if normalized == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(normalized).is_loopback
+    except ValueError:
+        return False
+
+
+def _validate_server_bind(host: str, api_token: str | None) -> None:
+    """安全なbind既定値と、未実装認証境界を検証する."""
+    if _is_loopback_host(host):
+        return
+    if not api_token:
+        raise typer.BadParameter(
+            "非loopback bindにはAPI tokenが必要です。"
+            " --api-tokenまたはYOMIAGE_API_TOKENを設定してください。",
+            param_hint="--host",
+        )
+    raise typer.BadParameter(
+        "非loopback bindは現在未対応です（API-002の認証実装後に利用可能になります）。",
+        param_hint="--host",
+    )
+
+
 @app.command()
 def serve(
-    host: str = typer.Option("0.0.0.0", help="ホスト"),
+    host: str = typer.Option("127.0.0.1", help="ホスト"),
     port: int = typer.Option(8030, help="ポート"),
+    api_token: str | None = typer.Option(
+        None,
+        "--api-token",
+        envvar="YOMIAGE_API_TOKEN",
+        help="外部bind用API token（認証実装前は外部bindを拒否）",
+        show_default=False,
+    ),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
     """FastAPIサーバー起動."""
+    _validate_server_bind(host, api_token)
     _setup_logging(verbose)
+    logger.info("Server bind mode: loopback ({host}:{port})", host=host, port=port)
     import uvicorn
 
     uvicorn.run(

@@ -69,10 +69,12 @@ def _create_engine(config: dict) -> ReadingEngine:
         model=ollama_cfg.get("model", "qwen3.5:3b"),
     )
 
-    from pathlib import Path
-
-    scene_config_path = Path("config/scene_params.yaml")
-    param_mapper = ParamMapper.from_config_file(scene_config_path)
+    scene_params = config.get("scene_params")
+    param_mapper = (
+        ParamMapper(scene_params)
+        if isinstance(scene_params, dict)
+        else ParamMapper.from_config_file()
+    )
 
     return ReadingEngine(
         tts_manager=tts_manager,
@@ -134,6 +136,7 @@ class BatchSynthesizeRequest(BaseModel):
     output_format: str = "wav"
     video: bool = False
     style: str | None = None
+    allow_partial: bool = False
 
 
 @app.get("/health")
@@ -253,6 +256,7 @@ async def synthesize_batch(req: BatchSynthesizeRequest):
         output_format=req.output_format,
         video=req.video,
         style=req.style,
+        allow_partial=req.allow_partial,
     )
     asyncio.create_task(
         _job_manager.run_job(
@@ -260,6 +264,7 @@ async def synthesize_batch(req: BatchSynthesizeRequest):
             output_format=req.output_format,
             video=req.video,
             style=req.style,
+            allow_partial=req.allow_partial,
         )
     )
     return {"job_id": job.id, "status": job.status}
@@ -288,7 +293,12 @@ async def batch_job_progress(job_id: str):
             while True:
                 event = await queue.get()
                 yield f"event: progress\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
-                if event["status"] in ("completed", "failed"):
+                if event["status"] in (
+                    "completed",
+                    "complete_with_warnings",
+                    "partial",
+                    "failed",
+                ):
                     break
         finally:
             _job_manager.unsubscribe(job_id, queue)

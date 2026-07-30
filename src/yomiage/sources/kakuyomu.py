@@ -2,12 +2,14 @@
 
 import asyncio
 import re
+from urllib.parse import urlsplit
 
-import aiohttp
 from bs4 import BeautifulSoup
 from loguru import logger
 
+from ..ports.sources import URLPolicy
 from .base import Chapter, ChapterInfo, ContentSource
+from .http import HTTPFetcher
 
 _semaphore = asyncio.Semaphore(1)
 _MIN_INTERVAL = 1.0
@@ -24,9 +26,21 @@ class KakuyomuSource(ContentSource):
     _WORK_PATTERN = re.compile(r"kakuyomu\.jp/works/(\d+)")
     _EPISODE_PATTERN = re.compile(r"kakuyomu\.jp/works/(\d+)/episodes/(\d+)")
 
+    def __init__(
+        self,
+        fetcher: HTTPFetcher | None = None,
+        *,
+        policy: URLPolicy | None = None,
+    ) -> None:
+        super().__init__(fetcher, policy=policy)
+
     @classmethod
     def can_handle(cls, url: str) -> bool:
-        return "kakuyomu.jp" in url
+        try:
+            hostname = (urlsplit(url).hostname or "").lower().rstrip(".")
+        except ValueError:
+            return False
+        return hostname == "kakuyomu.jp" or hostname.endswith(".kakuyomu.jp")
 
     def _extract_work_id(self, url: str) -> str:
         m = self._WORK_PATTERN.search(url)
@@ -40,14 +54,13 @@ class KakuyomuSource(ContentSource):
 
     async def _fetch_html(self, url: str) -> str:
         async with _semaphore:
-            async with aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=30),
+            response = await self._fetcher.fetch(
+                url,
                 headers={"User-Agent": "humeina-unit/0.1"},
-            ) as session:
-                async with session.get(url) as resp:
-                    if resp.status != 200:
-                        raise RuntimeError(f"Kakuyomu fetch failed: {resp.status} for {url}")
-                    html = await resp.text()
+            )
+            if response.status != 200:
+                raise RuntimeError(f"Kakuyomu fetch failed: {response.status} for {url}")
+            html = response.text()
             await asyncio.sleep(_MIN_INTERVAL)
             return html
 

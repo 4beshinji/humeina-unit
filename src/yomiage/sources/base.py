@@ -3,6 +3,9 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
+from ..ports.sources import URLPolicy
+from .http import HTTPFetcher
+
 
 @dataclass
 class ChapterInfo:
@@ -27,6 +30,22 @@ class Chapter:
 
 class ContentSource(ABC):
     """コンテンツソース抽象基底クラス."""
+
+    def __init__(
+        self,
+        fetcher: HTTPFetcher | None = None,
+        *,
+        policy: URLPolicy | None = None,
+    ) -> None:
+        """共通fetcherを注入する.
+
+        テストではfake transport/resolverを持つfetcherを渡せる。省略時も必ず同じ
+        URL policyを通る既定fetcherを生成し、サイト別実装が直接HTTPへ接続しない。
+        """
+
+        if fetcher is not None and policy is not None:
+            raise ValueError("pass either fetcher or policy, not both")
+        self._fetcher = fetcher or HTTPFetcher(policy=policy)
 
     @classmethod
     @abstractmethod
