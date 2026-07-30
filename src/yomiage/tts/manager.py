@@ -7,7 +7,7 @@ import io
 import time
 import wave
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
@@ -17,6 +17,7 @@ from .playback import play_wav
 if TYPE_CHECKING:
     from ..api.hooks import EventHooks
     from ..api.metrics import MetricsCollector
+    from ..application.synthesis import SynthesisService
     from ..tools.voice_profile import VoiceProfile
 
 
@@ -37,6 +38,8 @@ class TTSManager:
         voice_profile: "VoiceProfile | None" = None,
         hooks: "EventHooks | None" = None,
         metrics: "MetricsCollector | None" = None,
+        service: "SynthesisService | None" = None,
+        owns_service: bool = False,
     ):
         self.primary = primary
         self.fallback = fallback
@@ -44,6 +47,15 @@ class TTSManager:
         self.voice_profile = voice_profile
         self._hooks = hooks
         self._metrics = metrics
+        # TTSManager is retained as a queue/playback compatibility facade for Reader/News.
+        # Retry, fallback, cache, timeout, and provider lifecycle are owned by the canonical
+        # application SynthesisService.  A service can be injected by bootstrap; direct legacy
+        # construction lazily adapts its providers on first synthesis.
+        self._service = service
+        self._owns_service = bool(owns_service and service is not None)
+        self._closed_owned_service = False
+        if service is not None:
+            self._attach_metrics(service)
         self._queue: asyncio.Queue[tuple[str, TTSParams] | RawAudioItem | None] = asyncio.Queue()
         self._audio_queue: asyncio.Queue[AudioResult | None] = asyncio.Queue()
         self._pause_event = asyncio.Event()
@@ -51,6 +63,54 @@ class TTSManager:
         self._stop_event = asyncio.Event()
         self._synth_task: asyncio.Task | None = None
         self._play_task: asyncio.Task | None = None
+
+    @property
+    def service(self) -> "SynthesisService | None":
+        """Canonical synthesis service used by this compatibility facade."""
+
+        return self._service
+
+    @property
+    def owns_service(self) -> bool:
+        """Whether closing this facade also closes its providers."""
+
+        return self._owns_service
+
+    @property
+    def providers_closed(self) -> bool:
+        """Whether an owned service already closed the legacy providers."""
+
+        return self._closed_owned_service
+
+    def _attach_metrics(self, service: "SynthesisService") -> None:
+        """Attach a collector only when a supplied service has no collector."""
+
+        if self._metrics is None or getattr(service, "metrics", None) is not None:
+            return
+        try:
+            service.metrics = self._metrics
+        except (AttributeError, TypeError):
+            # Keep facade compatibility with third-party read-only service ports.
+            return
+
+    def _ensure_service(self) -> "SynthesisService":
+        """Build the canonical service once for legacy direct construction."""
+
+        if self._service is None:
+            # Import lazily to avoid a bootstrap -> manager import cycle during composition.
+            from ..bootstrap import create_synthesis_service
+
+            providers: dict[str, Any] = {self.primary.name: self.primary}
+            if self.fallback is not None and self.fallback.name != self.primary.name:
+                providers[self.fallback.name] = self.fallback
+            self._service = create_synthesis_service(
+                providers,
+                primary=self.primary.name,
+                fallback=self.fallback.name if self.fallback is not None else None,
+                metrics=self._metrics,
+            )
+            self._owns_service = True
+        return self._service
 
     async def start(self) -> None:
         """Start the synthesis and playback worker loops."""
@@ -143,57 +203,61 @@ class TTSManager:
             kwargs["alp"] = params.alp
         if params.style_weights:
             kwargs["style_weights"] = params.style_weights
+        if params.extra:
+            kwargs.update(params.extra)
         return kwargs
 
     async def _do_synthesize(self, text: str, params: TTSParams) -> AudioResult:
-        provider = self._select_provider()
         kwargs = self._build_kwargs(params)
-        engine_name = provider.name
+        engine_name = self._select_provider().name
 
         if self._hooks:
             self._hooks.emit_synthesis_start(text, engine_name, kwargs)
 
         start = asyncio.get_event_loop().time()
         try:
-            result = await provider.synthesize(text, **kwargs)
+            from ..application.synthesis import SynthesisRequest
+            from ..core.models import VoiceIntent
+
+            try:
+                intent = VoiceIntent(
+                    speaking_rate=float(kwargs.get("speed", 1.0)),
+                    pitch=float(kwargs.get("pitch", 0.0)),
+                    volume=float(kwargs.get("volume", 0.0)),
+                    intonation=float(kwargs.get("intonation", 1.0)),
+                    emotion=str(kwargs.get("emotion", "neutral")),
+                    intensity=max(0.0, min(1.0, float(kwargs.get("intensity", 0.5)))),
+                    preferred_voice_profile=(
+                        str(kwargs["preset"]) if kwargs.get("preset") is not None else None
+                    ),
+                )
+            except (TypeError, ValueError):
+                intent = VoiceIntent()
+            result = await self._ensure_service().synthesize(
+                SynthesisRequest(text=text, voice_intent=intent, metadata=kwargs)
+            )
             duration_ms = (asyncio.get_event_loop().time() - start) * 1000
             if self._hooks:
                 self._hooks.emit_synthesis_end(
                     text, engine_name, kwargs, duration_ms, cache_hit=False
                 )
-            if self._metrics:
-                self._metrics.record_synthesis(
-                    duration_ms=duration_ms,
-                    cache_hit=False,
-                    text=text,
-                )
-            return result
+            return AudioResult(
+                audio_data=result.audio_data or b"",
+                format=result.format,
+                sample_rate=result.sample_rate,
+                duration=result.duration,
+            )
         except Exception as e:
-            if self.fallback and provider is not self.fallback:
-                logger.warning(
-                    f"{provider.name} failed ({e}), using {self.fallback.name}"
-                )
-                return await self.fallback.synthesize(text, **kwargs)
-            duration_ms = (asyncio.get_event_loop().time() - start) * 1000
             if self._hooks:
                 self._hooks.emit_synthesis_error(
                     text, engine_name, kwargs, str(e)
                 )
-            if self._metrics:
-                self._metrics.record_synthesis(
-                    duration_ms=duration_ms,
-                    error=True,
-                    cache_hit=False,
-                    text=text,
-                )
             raise
 
     def _select_provider(self) -> TTSProvider:
-        if self.primary.healthy:
-            return self.primary
-        if self.fallback:
-            logger.warning(f"{self.primary.name} unhealthy, using {self.fallback.name}")
-            return self.fallback
+        # Provider selection/fallback is owned by SynthesisService.  This method remains as a
+        # Reader compatibility hook for choosing playback strategy and never executes a second
+        # fallback branch.
         return self.primary
 
     def _is_slow_provider(self) -> bool:
@@ -289,8 +353,7 @@ class TTSManager:
             if not text.strip():
                 continue
 
-            kwargs = self._build_kwargs(params)
-            synth_coro = self._select_provider().synthesize(text, **kwargs)
+            synth_coro = self._do_synthesize(text, params)
 
             try:
                 if prev_play_duration > 0:
@@ -302,7 +365,7 @@ class TTSManager:
                 else:
                     result = await synth_coro
             except Exception as e:
-                logger.error(f"VoiSona synthesis failed: {e}")
+                logger.error(f"Slow-provider synthesis failed: {e}")
                 if prev_play_duration > 0:
                     await asyncio.sleep(prev_play_duration)
                 prev_play_duration = 0.0
@@ -336,3 +399,17 @@ class TTSManager:
             elif result.duration and result.duration > 0:
                 # VoiSona: audio played via SPICE, just wait for duration
                 await asyncio.sleep(result.duration)
+
+    async def close(self) -> None:
+        """Stop worker tasks and close resources owned by this facade."""
+
+        if any(
+            task is not None and not task.done()
+            for task in (self._synth_task, self._play_task)
+        ):
+            await self.stop()
+        if self._owns_service and self._service is not None:
+            await self._service.close()
+            self._service = None
+            self._owns_service = False
+            self._closed_owned_service = True

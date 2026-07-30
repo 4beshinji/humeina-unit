@@ -33,23 +33,9 @@ def _load_config() -> dict:
 
 
 def _create_tts_manager(config: dict, provider_override: str | None = None):
-    from .config import get_tts_config
-    from .tts.factory import create_provider_from_dict
-    from .tts.manager import TTSManager
+    from .bootstrap import create_tts_manager
 
-    tts_cfg = config.get("tts", {})
-    primary_name = provider_override or tts_cfg.get("primary_provider", "voicevox")
-    fallback_name = tts_cfg.get("fallback_provider")
-    lookahead = tts_cfg.get("lookahead_chunks", 3)
-
-    primary = create_provider_from_dict(primary_name, get_tts_config(config, primary_name))
-    fallback = None
-    if fallback_name and fallback_name != primary_name:
-        fallback = create_provider_from_dict(
-            fallback_name, get_tts_config(config, fallback_name)
-        )
-
-    return TTSManager(primary=primary, fallback=fallback, lookahead=lookahead)
+    return create_tts_manager(config, provider_override)
 
 
 def _create_reading_engine(
@@ -989,15 +975,11 @@ def studio_voices(
     config = _load_config()
 
     async def _run():
-        from .config import get_tts_config
-        from .tts.voicepeak import VoicepeakProvider
-        from .tts.voicevox import VoicevoxProvider
-        from .tts.voisona import VoisonaProvider
+        from .bootstrap import create_tts_provider
 
         providers_map = {
-            "voicevox": lambda: VoicevoxProvider(get_tts_config(config, "voicevox")),
-            "voisona": lambda: VoisonaProvider(get_tts_config(config, "voisona")),
-            "voicepeak": lambda: VoicepeakProvider(get_tts_config(config, "voicepeak")),
+            name: lambda name=name: create_tts_provider(config, name)
+            for name in ("voicevox", "voisona", "voicepeak")
         }
 
         targets = [provider] if provider else list(providers_map.keys())

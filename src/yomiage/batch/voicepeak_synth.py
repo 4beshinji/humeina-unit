@@ -5,10 +5,11 @@ from typing import Any
 
 from loguru import logger
 
+from ..application.synthesis import SynthesisService
+from ..core.models import VoiceIntent
 from ..reader.character_db import CharacterDB
 from ..reader.param_mapper import ParamMapper
 from ..tts.audio_utils import write_silence_wav
-from ..tts.voicepeak import VoicepeakProvider
 from .manifest import SentenceEntry
 from .synthesizer import BatchSynthesizer
 
@@ -22,8 +23,18 @@ class VoicepeakBatchSynthesizer(BatchSynthesizer):
         param_mapper: ParamMapper,
         character_db: CharacterDB | None = None,
         voice_profile: Any = None,
+        provider: Any | None = None,
+        synthesis_service: SynthesisService | None = None,
     ):
-        self.provider = VoicepeakProvider(config)
+        # Provider construction belongs to bootstrap; this object remains a parameter-builder
+        # compatibility facade for old Batch imports.
+        if provider is None:
+            from ..bootstrap import create_tts_provider
+
+            provider = create_tts_provider({"voicepeak": config}, "voicepeak")
+        self.provider = provider
+        self.synthesis_service = synthesis_service
+        self.config = dict(config or {})
         self.param_mapper = param_mapper
         self.character_db = character_db
         self.voice_profile = voice_profile
@@ -43,14 +54,28 @@ class VoicepeakBatchSynthesizer(BatchSynthesizer):
         emotions = params.get("emotions", {})
 
         try:
-            result = await self.provider.synthesize(
-                entry.text,
-                voice="neutral",
-                speed=speed_float,
-                pitch=pitch / self.provider.pitch_scale if self.provider.pitch_scale else 0,
-                emotions=emotions,
+            pitch_scale = getattr(self.provider, "pitch_scale", 300)
+            intent = VoiceIntent(
+                speaking_rate=float(speed_float),
+                pitch=float(pitch / pitch_scale) if pitch_scale else 0.0,
+                emotion=entry.emotion,
+                intensity=entry.intensity,
             )
-            output_path.write_bytes(result.audio_data)
+            result = await self._synthesize_request(
+                text=entry.text,
+                destination=output_path,
+                intent=intent,
+                metadata={
+                    "speed": speed_float,
+                    "pitch": pitch / pitch_scale if pitch_scale else 0,
+                    "emotions": emotions,
+                    **params,
+                },
+            )
+            if result.audio_data and not output_path.exists():
+                output_path.write_bytes(result.audio_data)
+            if not output_path.exists():
+                raise RuntimeError("SynthesisService returned no VOICEPEAK artifact")
             logger.debug(f"VOICEPEAK synthesized: {filename}")
             return filename
         except Exception as e:
@@ -61,7 +86,7 @@ class VoicepeakBatchSynthesizer(BatchSynthesizer):
         write_silence_wav(output_path, duration)
 
     async def is_available(self) -> bool:
-        return await self.provider.is_available()
+        return (await self._ensure_synthesis_service().health()).healthy
 
     def _build_params(self, entry: SentenceEntry) -> dict:
         """SentenceEntryからTTSパラメータを構築."""

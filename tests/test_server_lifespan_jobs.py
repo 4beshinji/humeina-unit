@@ -10,9 +10,11 @@ from types import SimpleNamespace
 from fastapi.testclient import TestClient
 
 from yomiage.adapters.persistence.sqlite import SQLiteJobRepository
+from yomiage.bootstrap import create_synthesis_service
 from yomiage.core.jobs import Job, JobState
 from yomiage.ports.sources import URLPolicy
-from yomiage.server import ServerDependencies, create_app
+from yomiage.server import ServerDependencies, _close_engine_resources, create_app
+from yomiage.tts.manager import TTSManager
 
 
 class _PublicResolver:
@@ -44,6 +46,23 @@ class _Engine:
 
     async def stop_tts(self) -> None:
         self.closed_tts = True
+
+
+class _ManagedProvider:
+    name = "managed"
+    is_slow = False
+
+    def __init__(self) -> None:
+        self.closed = 0
+
+    async def health(self):
+        return True
+
+    async def synthesize(self, _request):
+        return b"RIFF"
+
+    async def close(self) -> None:
+        self.closed += 1
 
 
 def _config(path: Path, output: Path) -> dict:
@@ -91,6 +110,21 @@ def test_lifespan_recovers_running_job_and_closes_repository_and_tts(tmp_path: P
     assert closed == ["primary", "fallback"]
     assert application.state.task_supervisor is None
     assert application.state.job_repository is None
+
+
+def test_owned_canonical_service_closes_provider_exactly_once() -> None:
+    provider = _ManagedProvider()
+    service = create_synthesis_service({"managed": provider}, primary="managed")
+    manager = TTSManager(
+        provider,  # type: ignore[arg-type]
+        service=service,
+        owns_service=True,
+    )
+    engine = SimpleNamespace(is_running=False, tts=manager)
+
+    asyncio.run(_close_engine_resources(engine))
+
+    assert provider.closed == 1
 
 
 def test_read_endpoint_uses_lifespan_supervisor_task_registry(tmp_path: Path) -> None:

@@ -25,15 +25,69 @@ from .tts.base import TTSProvider
 from .tts.cache import TTSCache
 from .tts.factory import create_provider_from_dict
 from .tts.manager import TTSManager
-from .tts.voicepeak import VoicepeakProvider
-from .tts.voicevox import VoicevoxProvider
-from .tts.voisona import VoisonaProvider
 
 
-def create_tts_provider(config: Mapping[str, Any] | Any, provider: str) -> Any:
-    """設定からlegacy TTS providerを生成するcomposition-root helper。"""
+def create_tts_provider(config: Mapping[str, Any] | Any, provider: str | None = None) -> Any:
+    """設定からlegacy TTS providerを生成するcomposition-root helper。
 
-    return create_provider_from_dict(provider, dict(get_tts_config(config, provider)))
+    Providerの具象constructorは ``tts.factory`` に閉じ込める。``TTSEngineConfig`` を
+    直接渡す公開SDK呼び出しもここで受けることで、CLI/Batch/Bridgeがそれぞれ別の
+    constructor mapを持たないようにする。
+    """
+
+    if provider is None:
+        engine = getattr(config, "engine", None)
+        if not isinstance(engine, str) or not engine:
+            raise ValueError("provider name is required")
+        provider = engine
+        to_dict = getattr(config, "to_provider_dict", None)
+        values = to_dict() if callable(to_dict) else get_tts_config(config, provider)
+    else:
+        values = get_tts_config(config, provider)
+    return create_provider_from_dict(str(provider), dict(values))
+
+
+def create_tts_manager(
+    config: Mapping[str, Any] | Any,
+    provider_override: str | None = None,
+    *,
+    voice_profile: Any | None = None,
+    hooks: EventHooks | None = None,
+    metrics: MetricsCollector | None = None,
+) -> TTSManager:
+    """Reader/News互換のTTSManager facadeをcomposition rootで生成する。"""
+
+    raw = config if isinstance(config, Mapping) else {}
+    tts_cfg = raw.get("tts", {}) if isinstance(raw, Mapping) else {}
+    if not isinstance(tts_cfg, Mapping):
+        tts_cfg = {}
+    primary_name = str(provider_override or tts_cfg.get("primary_provider", "voicevox"))
+    fallback_name = tts_cfg.get("fallback_provider")
+    primary = create_tts_provider(config, primary_name)
+    fallback = None
+    if fallback_name and str(fallback_name) != primary_name:
+        fallback = create_tts_provider(config, str(fallback_name))
+
+    providers = {primary.name: primary}
+    if fallback is not None:
+        providers[fallback.name] = fallback
+    service = create_synthesis_service(
+        providers,
+        primary=primary.name,
+        fallback=fallback.name if fallback is not None else None,
+        config=raw,
+        metrics=metrics,
+    )
+    return TTSManager(
+        primary=primary,
+        fallback=fallback,
+        lookahead=int(tts_cfg.get("lookahead_chunks", 3)),
+        voice_profile=voice_profile,
+        hooks=hooks,
+        metrics=metrics,
+        service=service,
+        owns_service=True,
+    )
 
 
 def create_reading_engine(
@@ -47,25 +101,11 @@ def create_reading_engine(
     tts_cfg = config.get("tts", {})
     if not isinstance(tts_cfg, Mapping):
         tts_cfg = {}
-    primary_name = str(tts_cfg.get("primary_provider", "voicevox"))
-    fallback_name = tts_cfg.get("fallback_provider")
-    providers = {
-        "voisona": lambda: VoisonaProvider(get_tts_config(config, "voisona")),
-        "voicevox": lambda: VoicevoxProvider(get_tts_config(config, "voicevox")),
-        "voicepeak": lambda: VoicepeakProvider(get_tts_config(config, "voicepeak")),
-    }
-    primary = providers.get(primary_name, providers["voicevox"])()
-    fallback = None
-    if fallback_name and fallback_name != primary_name and fallback_name in providers:
-        fallback = providers[str(fallback_name)]()
-
     voice_section = config.get("voisona", {})
     voice_name = voice_section.get("default_voice") if isinstance(voice_section, Mapping) else None
     voice_profile = resolve_voice_profile(voice_name) if voice_name else None
-    tts_manager = TTSManager(
-        primary=primary,
-        fallback=fallback,
-        lookahead=int(tts_cfg.get("lookahead_chunks", 3)),
+    tts_manager = create_tts_manager(
+        config,
         voice_profile=voice_profile,
         hooks=hooks,
         metrics=metrics,
@@ -93,6 +133,8 @@ def create_reading_engine(
         param_mapper=param_mapper,
         auto_advance=bool(reader_cfg.get("auto_advance", True)),
         lookahead_chunks=int(tts_cfg.get("lookahead_chunks", 5)),
+        synthesis_service=tts_manager.service,
+        metrics=metrics,
     )
 
 
@@ -124,6 +166,7 @@ def create_synthesis_service(
     retry_policy: RetryPolicy | Any | None = None,
     timeout: float | None = None,
     concurrency: int | Mapping[str, int] | None = None,
+    metrics: Any | None = None,
 ) -> SynthesisService:
     """legacy provider群を統一SynthesisServiceへ適合する。"""
 
@@ -176,6 +219,7 @@ def create_synthesis_service(
         concurrency=resolved_concurrency,
         cache=cache,
         artifact_store=artifact_store,
+        metrics=metrics,
     )
 
 
@@ -183,5 +227,6 @@ __all__ = [
     "create_reading_engine",
     "create_synthesis_service",
     "create_studio_providers",
+    "create_tts_manager",
     "create_tts_provider",
 ]

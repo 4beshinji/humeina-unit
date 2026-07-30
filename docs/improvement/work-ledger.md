@@ -89,9 +89,9 @@ WIP上限1の場合の推奨順:
 | JOB-002 | R4 | P1 | L | done | JOB-001, SYN-004 | B | luna_max | luna_max | 2026-07-30 | 2026-07-30 |
 | API-001 | R4 | P1 | L | done | CFG-002, SYN-002, JOB-001 | C | luna_max | luna_max | 2026-07-30 | 2026-07-30 |
 | API-002 | R4 | P0 | M | done | API-001, SEC-001, SEC-002, JOB-002 | C | worker | worker | 2026-07-30 | 2026-07-30 |
-| OBS-001 | R4 | P1 | M | ready | API-001, JOB-001, SYN-001 | D | worker | — | — | — |
-| CLN-001 | R5 | P2 | L | ready | TST-002, API-002 | A | worker | — | — | — |
-| CLN-002 | R5 | P2 | M | backlog | API-001, CLN-001 | C | worker | — | — | — |
+| OBS-001 | R4 | P1 | M | done | API-001, JOB-001, SYN-001 | D | worker | worker | 2026-07-30 | 2026-07-30 |
+| CLN-001 | R5 | P2 | L | done | TST-002, API-002 | A | worker | worker | 2026-07-30 | 2026-07-30 |
+| CLN-002 | R5 | P2 | M | ready | API-001, CLN-001 | C | worker | — | — | — |
 | DOC-001 | R5 | P1 | M | backlog | CLN-001, CLN-002, OBS-001 | D | worker | — | — | — |
 | OPS-001 | R5 | P1 | M | backlog | DOC-001, TST-002, OBS-001 | D | worker | — | — | — |
 
@@ -858,6 +858,34 @@ WIP上限1の場合の推奨順:
 - Result: Bearer認証、constant-time token比較、body/text/queue/active/rate制限、安定error DTO、非loopback公開ガードを追加した。SEC-002 URLPolicyを受付前検査と実際のReader/Batch取得へ一貫して伝播した。
 - Manual verification: chunked bodyの413、認証401/403、quota/race時429、拒否時にjobを残さないこと、tokenをログへ出さないことを確認した。
 - Remaining risks: OAuth、複数ユーザー、課金は非対象。FastAPI標準の422 validation detailは維持する。
+
+### OBS-001 検証証跡
+
+- Commit/PR: 本waveのローカルコミット
+- 実行日: 2026-07-30
+- 担当: worker（実装）、explorer/root（レビュー・統合）
+- Commands:
+  - health/metrics/server/synthesis関連テスト — worker 43 passed、root 38 passed
+  - レビュー修正focused回帰 — 62 passed
+  - 非E2E全pytest — 590 passed, 2 skipped, 6 deselected
+  - `.venv/bin/python -m ruff check src/ tests/` / `git diff --check` — pass
+- Result: liveness/readinessを分離し、Provider/LLM/ffmpeg/storage/SQLiteをsecret-freeに検査するHealthUseCaseを追加した。process metricsへ現在job state、遷移、queue/active、fallback、partial、error categoryを追加し、SQLite永続job countと分離した。
+- Manual verification: TTS停止時もliveは200、readyは503、readyはtoken設定時に保護されること、本文・実パス・任意health detailsをpayloadへ保持しないことを確認した。
+- Remaining risks: process metricsは再起動でリセットされる。分散集約とtracingは非対象。
+
+### CLN-001 検証証跡
+
+- Commit/PR: 本waveのローカルコミット
+- 実行日: 2026-07-30
+- 担当: worker（実装）、explorer/root（レビュー・統合）
+- Commands:
+  - Bridge/SDK/Batch/Reader/CLI/architecture focused回帰 — worker 56 passed、root 93 passed
+  - レビュー修正focused回帰 — 62 passed
+  - 非E2E全pytest — 590 passed, 2 skipped, 6 deselected
+  - `.venv/bin/python -m ruff check src/ tests/` / `git diff --check` — pass
+- Result: Provider構築をbootstrap/factoryへ集約し、Bridge、TTSManager、旧BatchSynthesizerを共有SynthesisServiceへの薄いfacadeにした。fallback/retry/cache/metrics/lifecycleをcanonical serviceへ一本化し、architecture allowlistを縮小した。
+- Manual verification: facade側二重metrics、空設定Batch互換、同期tuner初期化、Reader/Manager二重service、Provider二重closeを独立レビューで検出・修正した。
+- Remaining risks: 公開互換のためBridge/Manager/Batch facade自体は残す。CLIファイル分割はCLN-002で扱う。
 
 タスク完了時に以下の形式で追記する。
 

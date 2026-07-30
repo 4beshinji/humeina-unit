@@ -183,6 +183,7 @@ class SynthesisService:
         concurrency: int | Mapping[str, int] = 1,
         cache: Any | None = None,
         artifact_store: ArtifactStore | None = None,
+        metrics: Any | None = None,
     ) -> None:
         self._providers: dict[str, TTSProviderPort] = {}
         if providers is not None:
@@ -220,6 +221,10 @@ class SynthesisService:
         self._semaphores: dict[str, asyncio.Semaphore] = {}
         self.cache = cache
         self.artifact_store = artifact_store
+        # Keep this as a duck-typed port so application does not depend on the
+        # HTTP/API metrics module.  Composition roots may provide any object
+        # exposing ``record_synthesis``.
+        self.metrics = metrics
         self._closed = False
 
     @property
@@ -371,6 +376,13 @@ class SynthesisService:
                     attempts=0,
                     started=started,
                 )
+                self._record_metrics(
+                    duration_ms=(time.monotonic() - started) * 1000,
+                    provider=name,
+                    cache_hit=True,
+                    fallback_used=fallback_used,
+                    text_length=len(req.text),
+                )
                 return result
             health = await self.health(name)
             if not health.healthy:
@@ -433,6 +445,13 @@ class SynthesisService:
                 continue
             if self.cache is not None and result.audio_data:
                 await self._cache_put(key, result.audio_data, name, req)
+            self._record_metrics(
+                duration_ms=(time.monotonic() - started) * 1000,
+                provider=name,
+                cache_hit=False,
+                fallback_used=fallback_used,
+                text_length=len(req.text),
+            )
             return result
         category = ProviderErrorCategory.UNKNOWN
         provider_name = candidates[-1] if candidates else None
@@ -451,6 +470,14 @@ class SynthesisService:
             "errors": errors,
             "elapsed_ms": (time.monotonic() - started) * 1000,
         }
+        self._record_metrics(
+            duration_ms=(time.monotonic() - started) * 1000,
+            provider=provider_name,
+            error=True,
+            error_category=category.value,
+            fallback_used=bool(len(candidates) > 1 and errors),
+            text_length=len(req.text),
+        )
         raise SynthesisFailure(
             "all synthesis providers failed",
             request=req,
@@ -720,6 +747,45 @@ class SynthesisService:
         else:
             value = method(key, data)
         await self._maybe_await(value)
+
+    def _record_metrics(
+        self,
+        *,
+        duration_ms: float,
+        provider: str | None = None,
+        error: bool = False,
+        error_category: str | None = None,
+        cache_hit: bool = False,
+        fallback_used: bool = False,
+        partial: bool = False,
+        text_length: int | None = None,
+    ) -> None:
+        """Emit one logical synthesis event through an optional metrics port."""
+
+        recorder = getattr(self.metrics, "record_synthesis", None)
+        if not callable(recorder):
+            return
+        kwargs = {
+            "duration_ms": duration_ms,
+            "error": error,
+            "cache_hit": cache_hit,
+            "provider": provider,
+            "error_category": error_category,
+            "fallback_used": fallback_used,
+            "partial": partial,
+            "text_length": text_length,
+        }
+        try:
+            recorder(**kwargs)
+        except TypeError:
+            # Accommodate a small pre-OBS metrics fake while never forwarding
+            # synthesis text to a metrics implementation.
+            recorder(
+                duration_ms=duration_ms,
+                error=error,
+                cache_hit=cache_hit,
+                text="",
+            )
 
     @staticmethod
     async def _maybe_await(value: Any) -> Any:

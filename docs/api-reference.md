@@ -15,6 +15,17 @@ FastAPIサーバー（`yomiage serve`）が提供するエンドポイント。
 }
 ```
 
+### `GET /health/live`
+
+プロセスのliveness probe。外部のTTS/LLM停止では失敗せず、常に `200`（`{"status":"ok","live":true}`）を返す。
+認証なしで利用できる。
+
+### `GET /health/ready`
+
+Provider、LLM、ffmpeg、storage、SQLiteを個別に確認するreadiness probe。全依存が利用可能な場合は`200`
+（`status: "ready"`）、それ以外は`503`（`status: "not_ready"`）を返す。livenessと異なり、
+Bearer token設定時は認証が必要となる。
+
 ## 読み上げ制御
 
 ### `GET /api/yomiage/status`
@@ -219,6 +230,10 @@ TTS 合成・バッチジョブの実行メトリクスを返す。
   }
 }
 ```
+
+メトリクスはプロセス内のカウンタ（合成回数、latency、queue、fallback、partial、error category）であり、
+再起動するとリセットされる。`persistent_jobs` が含まれる場合はSQLite JobRepositoryから都度算出する
+永続値で、再起動後も保持される。本文、token、password、完全なURLはメトリクスへ保存しない。
 
 ## ニュース
 

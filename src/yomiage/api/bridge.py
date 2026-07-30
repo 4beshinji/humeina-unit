@@ -5,16 +5,19 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ..application.synthesis import SynthesisFailure, SynthesisRequest, SynthesisService
-from ..bootstrap import create_synthesis_service
+from ..bootstrap import create_synthesis_service, create_tts_provider
 from ..core.models import VoiceIntent
 from ..tts.base import AudioResult, TTSParams, TTSProvider
 from ..tts.cache import TTSCache
-from ..tts.factory import create_provider
 from ..tts.retry import RetryConfig
 from .hooks import EventHooks
 from .long_text import LongTextOptions, synthesize_long_text
 from .metrics import MetricsCollector
 from .models import SynthesisResult, VoiceInfo
+
+# Backwards-compatible patch point for callers/tests that used to monkeypatch the bridge
+# factory.  The implementation itself now lives in the composition root.
+create_provider = create_tts_provider
 
 if TYPE_CHECKING:
     from ..tools.voice_profile import VoiceProfile
@@ -55,12 +58,14 @@ class TTSBridge:
         if service is not None:
             self._service = service
             self._owns_service = False
+            self._attach_metrics(service)
             if isinstance(provider, SynthesisService):
                 self._provider = provider.primary_provider
                 self._fallback = provider.fallback_provider
         elif isinstance(provider, SynthesisService):
             self._service = provider
             self._owns_service = False
+            self._attach_metrics(provider)
             self._provider = provider.primary_provider
             self._fallback = provider.fallback_provider
         else:
@@ -73,8 +78,26 @@ class TTSBridge:
                 fallback=fallback.name if fallback is not None else None,
                 cache=cache,
                 retry_policy=retry_config,
+                metrics=metrics,
             )
             self._owns_service = True
+
+    def _attach_metrics(self, service: SynthesisService) -> None:
+        """Attach the facade metrics port only when the service has none.
+
+        ``SynthesisService`` is the single synthesis observability boundary.  A service
+        supplied by a composition root may already own a collector; replacing it here
+        would either disconnect the root collector or make ownership ambiguous.
+        """
+
+        if self._metrics is None or getattr(service, "metrics", None) is not None:
+            return
+        try:
+            service.metrics = self._metrics
+        except (AttributeError, TypeError):
+            # Third-party service implementations may expose a read-only metrics port.
+            # Hooks remain available even when metrics cannot be attached.
+            return
 
     @property
     def service(self) -> SynthesisService:
@@ -252,12 +275,6 @@ class TTSBridge:
                 self._hooks.emit_synthesis_end(
                     text, engine_name, synth_kwargs, duration_ms, cache_hit=cache_hit
                 )
-            if self._metrics:
-                self._metrics.record_synthesis(
-                    duration_ms=duration_ms,
-                    cache_hit=cache_hit,
-                    text=text,
-                )
 
             return _to_api_synthesis_result(result)
         except SynthesisFailure as exc:
@@ -269,31 +286,15 @@ class TTSBridge:
                 last = errors[-1]
                 if isinstance(last, dict) and last.get("message"):
                     message = str(last["message"])
-            duration_ms = (asyncio.get_event_loop().time() - start) * 1000
             if self._hooks:
                 self._hooks.emit_synthesis_error(
                     text, engine_name, synth_kwargs, message
                 )
-            if self._metrics:
-                self._metrics.record_synthesis(
-                    duration_ms=duration_ms,
-                    error=True,
-                    cache_hit=False,
-                    text=text,
-                )
             raise RuntimeError(message) from exc
         except Exception as exc:
-            duration_ms = (asyncio.get_event_loop().time() - start) * 1000
             if self._hooks:
                 self._hooks.emit_synthesis_error(
                     text, engine_name, synth_kwargs, str(exc)
-                )
-            if self._metrics:
-                self._metrics.record_synthesis(
-                    duration_ms=duration_ms,
-                    error=True,
-                    cache_hit=False,
-                    text=text,
                 )
             raise
 

@@ -47,24 +47,16 @@ class ImportViolation:
 # これらは既存の外側/旧経路に残る依存であり、対応する移行タスクを必ず明記する。
 # 新規内側レイヤーの例外を追加する場合も、所有タスクなしでは受け入れない。
 LEGACY_IMPORT_ALLOWLIST = (
-    LegacyImportRule("src/yomiage/batch/voicepeak_synth.py", "yomiage.tts.voicepeak", "SYN-004"),
-    LegacyImportRule("src/yomiage/batch/voicevox_synth.py", "yomiage.tts.voicevox", "SYN-004"),
-    LegacyImportRule("src/yomiage/batch/voisona_synth.py", "yomiage.tts.voisona", "SYN-004"),
     LegacyImportRule("src/yomiage/cli.py", "typer", "CLN-002"),
     LegacyImportRule("src/yomiage/cli.py", "yomiage.tts.voicepeak", "CLN-002"),
     LegacyImportRule("src/yomiage/cli.py", "yomiage.tts.voicevox", "CLN-002"),
     LegacyImportRule("src/yomiage/cli.py", "yomiage.tts.voisona", "CLN-002"),
     LegacyImportRule("src/yomiage/server.py", "fastapi", "API-001"),
-    LegacyImportRule("src/yomiage/bootstrap.py", "yomiage.tts.voicepeak", "API-001"),
-    LegacyImportRule("src/yomiage/bootstrap.py", "yomiage.tts.voicevox", "API-001"),
-    LegacyImportRule("src/yomiage/bootstrap.py", "yomiage.tts.voisona", "API-001"),
     LegacyImportRule("src/yomiage/studio/engine.py", "typer", "SYN-002"),
     LegacyImportRule("src/yomiage/studio/engine.py", "yomiage.tts.voicepeak", "SYN-002"),
     LegacyImportRule("src/yomiage/studio/engine.py", "yomiage.tts.voicevox", "SYN-002"),
     LegacyImportRule("src/yomiage/studio/engine.py", "yomiage.tts.voisona", "SYN-002"),
     LegacyImportRule("src/yomiage/tools/tuner.py", "yomiage.tts.voisona", "CLN-001"),
-    LegacyImportRule("src/yomiage/tools/voicepeak_tuner.py", "yomiage.tts.voicepeak", "CLN-001"),
-    LegacyImportRule("src/yomiage/tools/voicevox_tuner.py", "yomiage.tts.voicevox", "CLN-001"),
     LegacyImportRule("src/yomiage/tts/factory.py", "yomiage.tts.voicepeak", "SYN-001"),
     LegacyImportRule("src/yomiage/tts/factory.py", "yomiage.tts.voicevox", "SYN-001"),
     LegacyImportRule("src/yomiage/tts/factory.py", "yomiage.tts.voisona", "SYN-001"),
@@ -216,3 +208,39 @@ def test_allowlist_entries_have_task_ids_and_point_to_existing_files():
     for rule in LEGACY_IMPORT_ALLOWLIST:
         assert task_id_pattern.fullmatch(rule.owner_task), rule
         assert (REPOSITORY_ROOT / rule.relative_path).is_file(), rule
+
+
+def test_batch_synthesis_facades_use_bootstrap_provider_construction():
+    """Batch mode facades must not reintroduce concrete-provider constructors."""
+
+    for name in ("voicevox_synth.py", "voisona_synth.py", "voicepeak_synth.py"):
+        source = (SOURCE_ROOT / "batch" / name).read_text(encoding="utf-8")
+        assert "from ..tts.voice" not in source
+        assert "Provider(" not in source
+        assert "hasattr(" not in source
+
+
+def test_batch_synthesis_facades_keep_empty_config_compatibility(monkeypatch):
+    """Legacy direct constructors still obtain a provider through bootstrap."""
+
+    from yomiage import bootstrap
+    from yomiage.batch.voicepeak_synth import VoicepeakBatchSynthesizer
+    from yomiage.batch.voicevox_synth import VoicevoxBatchSynthesizer
+    from yomiage.batch.voisona_synth import VoisonaBatchSynthesizer
+
+    sentinel = object()
+    calls: list[str] = []
+
+    def fake_provider(_config, provider: str):
+        calls.append(provider)
+        return sentinel
+
+    monkeypatch.setattr(bootstrap, "create_tts_provider", fake_provider)
+    facades = (
+        VoicevoxBatchSynthesizer({}, object()),
+        VoicepeakBatchSynthesizer({}, object()),
+        VoisonaBatchSynthesizer({}, object()),
+    )
+
+    assert all(facade.provider is sentinel for facade in facades)
+    assert calls == ["voicevox", "voicepeak", "voisona"]

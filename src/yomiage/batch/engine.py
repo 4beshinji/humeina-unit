@@ -11,7 +11,6 @@ from typing import Any
 from loguru import logger
 
 from ..adapters.persistence.filesystem import FilesystemArtifactStore
-from ..adapters.tts import LegacyTTSProviderAdapter, VoisonaFileProviderAdapter
 from ..application.synthesis import SynthesisRequest, SynthesisService
 from ..config import get_tts_config
 from ..core.identity import new_job_id, new_run_id
@@ -41,6 +40,7 @@ class BatchEngine:
         artifact_store: ArtifactStore | None = None,
         synthesis_service: SynthesisService | Any | None = None,
         url_policy: URLPolicy | None = None,
+        metrics: Any | None = None,
     ):
         self.config = config
         self.mode = mode
@@ -54,6 +54,13 @@ class BatchEngine:
         # analysis manifest.  Tests and composition roots may inject the shared application
         # service directly; in that case no BatchSynthesizer/provider is constructed here.
         self.synthesis_service = synthesis_service
+        self.metrics = metrics
+        if self.synthesis_service is not None and metrics is not None:
+            if getattr(self.synthesis_service, "metrics", None) is None:
+                try:
+                    self.synthesis_service.metrics = metrics
+                except AttributeError:  # pragma: no cover - immutable fake
+                    pass
         self._owns_synthesis_service = synthesis_service is None
         self.url_policy = url_policy
 
@@ -145,6 +152,7 @@ class BatchEngine:
         self, character_db: CharacterDB | None = None
     ) -> BatchSynthesizer:
         if self.mode == "voisona":
+            from ..bootstrap import create_tts_provider
             from .voisona_synth import VoisonaBatchSynthesizer
 
             return VoisonaBatchSynthesizer(
@@ -153,8 +161,10 @@ class BatchEngine:
                 character_db=character_db,
                 vm_mount=self.vm_mount,
                 voice_profile=self.voice_profile,
+                provider=create_tts_provider(self.config, "voisona"),
             )
         elif self.mode == "voicepeak":
+            from ..bootstrap import create_tts_provider
             from .voicepeak_synth import VoicepeakBatchSynthesizer
 
             return VoicepeakBatchSynthesizer(
@@ -162,8 +172,10 @@ class BatchEngine:
                 param_mapper=self.param_mapper,
                 character_db=character_db,
                 voice_profile=self.voice_profile,
+                provider=create_tts_provider(self.config, "voicepeak"),
             )
         else:
+            from ..bootstrap import create_tts_provider
             from .voicevox_synth import VoicevoxBatchSynthesizer
 
             return VoicevoxBatchSynthesizer(
@@ -171,6 +183,7 @@ class BatchEngine:
                 param_mapper=self.param_mapper,
                 character_db=character_db,
                 voice_profile=self.voice_profile,
+                provider=create_tts_provider(self.config, "voicevox"),
             )
 
     def _create_synthesis_service(
@@ -189,38 +202,27 @@ class BatchEngine:
             return self.synthesis_service
         provider = getattr(synthesizer, "provider", None) if synthesizer is not None else None
         if provider is None:
+            # Legacy test doubles may intentionally omit a provider and exercise the old
+            # synthesizer fallback below.  Real runs always obtain one through bootstrap in
+            # ``_create_synthesizer``.
             return None
-        if self.mode == "voisona":
-            adapter = VoisonaFileProviderAdapter(
-                provider,
-                name=self.mode,
-            )
-        else:
-            adapter = LegacyTTSProviderAdapter(provider, name=self.mode)
 
-        batch_cfg = self.config.get("batch", {})
-        synthesis_cfg = self.config.get("synthesis", {})
-        retry_cfg = synthesis_cfg.get("retry", batch_cfg.get("retry", {}))
-        retry_policy = None
-        if isinstance(retry_cfg, Mapping):
-            from ..application.synthesis import RetryPolicy
+        from ..bootstrap import create_synthesis_service
 
-            retry_policy = RetryPolicy(
-                max_retries=int(retry_cfg.get("max_retries", 0)),
-                backoff_factor=float(retry_cfg.get("backoff_factor", 0.0)),
-                max_backoff=float(retry_cfg.get("max_backoff", 30.0)),
-            )
-        timeout = synthesis_cfg.get("timeout", batch_cfg.get("synthesis_timeout"))
-        concurrency = synthesis_cfg.get(
-            "concurrency", batch_cfg.get("provider_concurrency", 1)
-        )
-        return SynthesisService(
-            {self.mode: adapter},
+        return create_synthesis_service(
+            {self.mode: provider},
             primary=self.mode,
-            retry_policy=retry_policy,
-            timeout=timeout,
-            concurrency=concurrency,
+            config=self.config,
+            concurrency=(
+                self.config.get("synthesis", {}).get(
+                    "concurrency",
+                    self.config.get("batch", {}).get("provider_concurrency", 1),
+                )
+                if isinstance(self.config.get("synthesis", {}), Mapping)
+                else None
+            ),
             artifact_store=self.artifact_store,
+            metrics=self.metrics,
         )
 
     @staticmethod

@@ -6,7 +6,7 @@ import inspect
 import tempfile
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 from ...ports.tts import (
     ProviderHealth,
@@ -17,6 +17,19 @@ from ...ports.tts import (
     normalize_voice_list,
 )
 from ...tts.base import TTSProvider
+
+
+@runtime_checkable
+class FileSynthesisProvider(Protocol):
+    """明示的な legacy file-output 契約。
+
+    旧Provider全体に ``synthesize_to_file`` が存在する前提で暗黙判定する代わりに、
+    file-only実装はこの小さな契約を満たすものとしてadapterへ渡す。
+    """
+
+    async def synthesize_to_file(
+        self, text: str, output_path: str, voice: str = "neutral", speed: float = 1.0, **params: Any
+    ) -> Any: ...
 
 
 class LegacyTTSProviderAdapter:
@@ -74,7 +87,11 @@ class LegacyTTSProviderAdapter:
         kwargs.setdefault("emotion", request.voice_intent.emotion.value)
         kwargs.setdefault("intensity", request.voice_intent.intensity)
         temporary_path: Path | None = None
-        file_method = getattr(self.provider, "synthesize_to_file", None)
+        file_method = None
+        if isinstance(self.provider, TTSProvider):
+            file_method = self.provider.synthesize_to_file
+        elif isinstance(self.provider, FileSynthesisProvider):
+            file_method = self.provider.synthesize_to_file
         if request.destination and callable(file_method):
             target = Path(request.destination)
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -217,4 +234,9 @@ class VoisonaFileProviderAdapter(LegacyTTSProviderAdapter):
             raise
 
 
-__all__ = ["LegacyTTSProviderAdapter", "VoisonaFileProviderAdapter", "adapt_provider"]
+__all__ = [
+    "FileSynthesisProvider",
+    "LegacyTTSProviderAdapter",
+    "VoisonaFileProviderAdapter",
+    "adapt_provider",
+]

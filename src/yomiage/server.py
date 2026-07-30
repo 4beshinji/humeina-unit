@@ -31,6 +31,7 @@ from pydantic import BaseModel
 from .adapters.persistence.sqlite import SQLiteJobRepository
 from .api.hooks import EventHooks
 from .api.metrics import MetricsCollector
+from .application.health import CHECK_NAMES, HealthCheck, HealthChecker, HealthReport
 from .application.jobs import SupervisorClosedError, TaskQueueFullError, TaskSupervisor
 from .batch.job_manager import BatchJobManager
 from .bootstrap import create_reading_engine
@@ -207,7 +208,7 @@ def _client_id(scope: Mapping[str, Any]) -> str:
 class _APISecurityMiddleware:
     """ASGI auth/body/rate gate that runs before FastAPI parses request bodies."""
 
-    _PUBLIC_PATHS = frozenset({"/health"})
+    _PUBLIC_PATHS = frozenset({"/health", "/health/live"})
 
     def __init__(self, app: Any, *, application: FastAPI) -> None:
         self.app = app
@@ -385,6 +386,11 @@ class ServerDependencies:
     hooks_factory: Callable[..., Any] | None = None
     metrics: MetricsCollector | None = None
     metrics_factory: Callable[..., Any] | None = None
+    health: Any | None = None
+    health_factory: Callable[..., Any] | None = None
+    health_checker: Any | None = None
+    health_checker_factory: Callable[..., Any] | None = None
+    health_dependencies: Any | None = None
     repository: JobRepository | None = None
     repository_factory: Callable[..., Any] | None = None
     supervisor: TaskSupervisor | None = None
@@ -407,6 +413,7 @@ class _Runtime:
     metrics: MetricsCollector | None
     repository: JobRepository | None
     supervisor: TaskSupervisor | None
+    health: Any | None = None
     security: _SecurityConfig | None = None
     admission: _AdmissionController | None = None
     url_policy: URLPolicy | None = None
@@ -512,7 +519,12 @@ async def _close_engine_resources(engine: Any) -> None:
     tts = getattr(engine, "tts", None)
     if tts is None:
         return
+    owns_service = bool(getattr(tts, "owns_service", False))
     await _await_close(tts, "TTS worker")
+    if owns_service or bool(getattr(tts, "providers_closed", False)):
+        # The canonical service closes its adapted providers.  Calling the legacy
+        # providers again would violate the exactly-once lifecycle contract.
+        return
     seen: set[int] = set()
     for provider in (getattr(tts, "primary", None), getattr(tts, "fallback", None)):
         if provider is None or id(provider) in seen:
@@ -589,6 +601,32 @@ async def _build_runtime(settings: Any, dependencies: ServerDependencies) -> _Ru
             )
         if runtime.repository is None:
             runtime.repository = SQLiteJobRepository(_job_database_path(config))
+
+        # Health is an application query, not a global singleton.  Tests and
+        # embedders may inject a complete checker or small fake; the default
+        # checker derives provider/LLM state from the composed engine and checks
+        # local storage/SQLite/ffmpeg without exposing raw exception details.
+        runtime.health = dependencies.health
+        if runtime.health is None:
+            runtime.health = dependencies.health_checker
+        health_factory = dependencies.health_factory or dependencies.health_checker_factory
+        if runtime.health is None and health_factory is not None:
+            runtime.health = await _resolve_factory(
+                health_factory,
+                config=config,
+                settings=config,
+                engine=runtime.engine,
+                repository=runtime.repository,
+                metrics=metrics,
+                dependencies=dependencies.health_dependencies,
+            )
+        if runtime.health is None:
+            runtime.health = HealthChecker(
+                engine=runtime.engine,
+                repository=runtime.repository,
+                config=config,
+                dependencies=dependencies.health_dependencies,
+            )
 
         if dependencies.url_policy is not None:
             runtime.url_policy = dependencies.url_policy
@@ -762,6 +800,11 @@ def _legacy_ephemeral_runtime() -> _Runtime:
         metrics=_metrics,
         repository=_job_repository,
         supervisor=_supervisor,
+        health=HealthChecker(
+            engine=_engine,
+            repository=_job_repository,
+            config=config,
+        ),
         security=_server_security(_config or {}),
         admission=_AdmissionController(
             max_active_jobs=_server_security(_config or {}).max_active_jobs,
@@ -786,6 +829,44 @@ def _runtime(request: Request) -> _Runtime:
     if getattr(request.app.state, "legacy_compat", False):
         return _legacy_ephemeral_runtime()
     raise HTTPException(503, "Application runtime not initialized")
+
+
+async def _health_method(runtime: _Runtime, names: tuple[str, ...]) -> Any:
+    health = runtime.health
+    if health is None:
+        health = HealthChecker(
+            engine=runtime.engine,
+            repository=runtime.repository,
+            config=runtime.config,
+        )
+    for name in names:
+        method = getattr(health, name, None)
+        if callable(method):
+            value = method()
+            return await value if inspect.isawaitable(value) else value
+    return None
+
+
+def _ready_report(value: Any) -> HealthReport:
+    if isinstance(value, HealthReport):
+        return value
+    if isinstance(value, Mapping):
+        raw_checks = value.get("checks", {})
+        checks = raw_checks if isinstance(raw_checks, Mapping) else {}
+        ready = value.get("ready")
+        if ready is None:
+            ready = str(value.get("status", "")).lower() in {"ok", "ready", "healthy"}
+        return HealthReport(bool(ready), {str(name): item for name, item in checks.items()})
+    if isinstance(value, bool):
+        return HealthReport(value, {})
+    return HealthReport(False, {})
+
+
+def _failed_health_report() -> HealthReport:
+    return HealthReport(
+        False,
+        {name: HealthCheck(False, "check_failed") for name in CHECK_NAMES},
+    )
 
 
 async def _submit_background_job(
@@ -942,6 +1023,7 @@ def create_app(
         application.state.job_manager = runtime.job_manager
         application.state.hooks = runtime.hooks
         application.state.metrics = runtime.metrics
+        application.state.health = runtime.health
         application.state.job_repository = runtime.repository
         application.state.task_supervisor = runtime.supervisor
         application.state.security = runtime.security
@@ -970,6 +1052,7 @@ def create_app(
                 "job_manager",
                 "hooks",
                 "metrics",
+                "health",
                 "job_repository",
                 "task_supervisor",
                 "security",
@@ -1015,6 +1098,32 @@ def create_app(
         runtime = _runtime(request)
         engine = runtime.engine
         return {"status": "ok", "reading": bool(engine and engine.is_running)}
+
+    @application.get("/health/live")
+    async def health_live(request: Request):
+        runtime = _runtime(request)
+        try:
+            value = await _health_method(runtime, ("liveness", "live"))
+            if isinstance(value, Mapping):
+                payload = dict(value)
+                payload.setdefault("status", "ok")
+                payload.setdefault("live", True)
+                return payload
+        except Exception:
+            # Liveness intentionally remains successful when a dependency probe
+            # is broken; it only answers whether this process can serve HTTP.
+            pass
+        return {"status": "ok", "live": True}
+
+    @application.get("/health/ready")
+    async def health_ready(request: Request):
+        runtime = _runtime(request)
+        try:
+            report = _ready_report(await _health_method(runtime, ("readiness", "ready")))
+        except Exception:
+            report = _failed_health_report()
+        payload = report.to_dict()
+        return JSONResponse(status_code=200 if report.ready else 503, content=payload)
 
     @application.get("/api/yomiage/status")
     async def status(request: Request):
@@ -1224,10 +1333,34 @@ def create_app(
 
     @application.get("/api/yomiage/metrics")
     async def get_metrics(request: Request):
-        metrics = _runtime(request).metrics
+        runtime = _runtime(request)
+        metrics = runtime.metrics
         if metrics is None:
             raise HTTPException(503, "Metrics not initialized")
-        return metrics.to_dict()
+        active, queued = _supervisor_counts(runtime)
+        metrics.set_queue_depth(queued, active_jobs=active)
+        payload = metrics.to_dict()
+        # Persistent job counts intentionally remain separate from process
+        # counters: a restart clears latency/counters but not this repository.
+        repository = runtime.repository
+        if repository is not None:
+            try:
+                listed = repository.list()
+                if inspect.isawaitable(listed):
+                    listed = await listed
+                by_state: dict[str, int] = {}
+                for item in listed or ():
+                    state = getattr(item, "state", None)
+                    state = getattr(state, "value", state)
+                    key = str(state or "unknown")
+                    by_state[key] = by_state.get(key, 0) + 1
+                payload["persistent_jobs"] = {
+                    "total": sum(by_state.values()),
+                    "by_state": by_state,
+                }
+            except Exception:
+                payload["persistent_jobs"] = {"total": None, "by_state": {}}
+        return payload
 
     @application.post("/api/yomiage/news")
     async def news_daily(request: Request):

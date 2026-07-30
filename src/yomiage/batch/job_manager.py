@@ -142,6 +142,7 @@ class BatchJobManager:
             output_format=output_format,
             cleanup=cleanup,
             url_policy=self.url_policy,
+            metrics=self._metrics,
         )
 
         async def progress_callback(status: str, percent: float, message: str) -> None:
@@ -256,13 +257,30 @@ class BatchJobManager:
                 output_path=job.output_path,
                 error=job.error,
             )
-        if self._metrics and status in (
+        terminal_statuses = (
             "completed",
             "complete_with_warnings",
             "partial",
             "failed",
-        ):
-            self._metrics.record_batch_job(status)
+        )
+        if self._metrics and status in terminal_statuses:
+            self._metrics.record_batch_job(status, job_id=job.id)
+        elif self._metrics:
+            self._metrics.record_job_state(status, job_id=job.id)
+        if self._metrics:
+            active = sum(
+                1
+                for item in self._jobs.values()
+                if item.status
+                not in {
+                    "completed",
+                    "complete_with_warnings",
+                    "partial",
+                    "failed",
+                    "cancelled",
+                }
+            )
+            self._metrics.set_queue_depth(max(0, active - 1), active_jobs=active)
 
     def _event(self, job: BatchJob, status: str, percent: float, message: str) -> dict:
         return {

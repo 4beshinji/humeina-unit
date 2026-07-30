@@ -4,6 +4,14 @@ FastAPI、Typer、具象TTS Providerはこのパッケージから直接参照�
 composition rootでportとadapterを組み立て、後続タスクでユースケースを追加する。
 """
 
+from .health import (
+    HealthCheck,
+    HealthChecker,
+    HealthDependencies,
+    HealthReport,
+    HealthService,
+    HealthUseCase,
+)
 from .jobs import (
     JobAlreadyActiveError,
     JobService,
@@ -57,6 +65,12 @@ __all__ = [
     "TaskQueueFullError",
     "TaskSupervisor",
     "TaskSupervisorError",
+    "HealthCheck",
+    "HealthChecker",
+    "HealthDependencies",
+    "HealthReport",
+    "HealthService",
+    "HealthUseCase",
     "RetryPolicy",
     "SynthesisFailure",
     "SynthesisRequest",

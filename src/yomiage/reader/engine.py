@@ -11,9 +11,8 @@ from typing import Any, Mapping
 
 from loguru import logger
 
-from ..adapters.tts import LegacyTTSProviderAdapter, VoisonaFileProviderAdapter
 from ..application.planning import ReaderPlanningAdapter, UtterancePlanner
-from ..application.synthesis import SynthesisService
+from ..application.synthesis import SynthesisRequest, SynthesisService
 from ..core.models import SourceRef, Utterance, VoiceIntent
 from ..core.plan import UtterancePlan
 from ..exvoice.catalog import normalize_wav
@@ -65,6 +64,7 @@ class ReadingEngine:
         planning_adapter: ReaderPlanningAdapter | None = None,
         playback_queue: UtterancePlaybackQueue | None = None,
         url_policy: URLPolicy | None = None,
+        metrics: Any | None = None,
     ):
         self.tts = tts_manager
         self.processor = text_processor or TextProcessor()
@@ -81,11 +81,20 @@ class ReadingEngine:
         self.synth_concurrency = synth_concurrency
         self.ex_voice = ex_voice
         self.synthesis_service = synthesis_service
+        if self.synthesis_service is not None and metrics is not None:
+            # Injected services remain caller-owned, but may still share the
+            # process metrics port with this composition root.
+            if getattr(self.synthesis_service, "metrics", None) is None:
+                try:
+                    self.synthesis_service.metrics = metrics
+                except AttributeError:  # pragma: no cover - immutable fake
+                    pass
         self._owns_synthesis_service = False
         self._planning_adapter = planning_adapter
         self._playback_queue = playback_queue
         self._owns_playback_queue = False
         self.url_policy = url_policy
+        self.metrics = metrics
 
         self._nlp_analyzer = NLPAnalyzer(
             max_chunk_chars=self.splitter.max_chars,
@@ -268,27 +277,22 @@ class ReadingEngine:
                 break
 
     def _ensure_synthesis_service(self) -> SynthesisService:
-        """service注入がない旧CLI向けに、provider adapterを組み立てる。"""
+        """service注入がない旧CLI向けにcanonical serviceを組み立てる。"""
 
         if self.synthesis_service is not None:
             return self.synthesis_service
 
-        def adapt(provider: object):
-            # VoiSonaはfile destinationをVM mountへ変換する既存adapterを使う。
-            if str(getattr(provider, "name", "")) == "voisona":
-                return VoisonaFileProviderAdapter(provider)
-            return LegacyTTSProviderAdapter(provider)
+        from ..bootstrap import create_synthesis_service
 
-        primary = adapt(self.tts.primary)
-        fallback = adapt(self.tts.fallback) if self.tts.fallback is not None else None
-        providers = {primary.name: primary}
-        if fallback is not None and fallback.name != primary.name:
-            providers[fallback.name] = fallback
-        self.synthesis_service = SynthesisService(
+        providers = {self.tts.primary.name: self.tts.primary}
+        if self.tts.fallback is not None and self.tts.fallback.name != self.tts.primary.name:
+            providers[self.tts.fallback.name] = self.tts.fallback
+        self.synthesis_service = create_synthesis_service(
             providers,
-            primary=primary.name,
-            fallback=fallback.name if fallback is not None else None,
+            primary=self.tts.primary.name,
+            fallback=self.tts.fallback.name if self.tts.fallback is not None else None,
             concurrency=max(1, self.synth_concurrency),
+            metrics=self.metrics,
         )
         self._owns_synthesis_service = True
         return self.synthesis_service
@@ -683,7 +687,7 @@ class ReadingEngine:
         work_dir = self.output_dir / f"_read_{work_id}_{ts}"
         work_dir.mkdir(parents=True, exist_ok=True)
 
-        provider = self.tts._select_provider()
+        service = self._ensure_synthesis_service()
 
         # VoiSona側の同時処理数を制限するセマフォ
         synth_sem = asyncio.Semaphore(self.synth_concurrency)
@@ -739,7 +743,6 @@ class ReadingEngine:
                 chunk, speak_text, params, kwargs = item
                 filename = f"{chunk.index:04d}.wav"
                 host_path = work_dir / filename
-                vm_path = f"{self.vm_mount}\\{work_dir.name}\\{filename}"
 
                 idx += 1
                 logger.debug(
@@ -749,10 +752,34 @@ class ReadingEngine:
 
                 async with synth_sem:  # VoiSona側の同時数を制限
                     try:
-                        await provider.synthesize_to_file(
-                            speak_text, vm_path, speed=params.speed, **kwargs
+                        try:
+                            intent = VoiceIntent(
+                                speaking_rate=float(params.speed),
+                                pitch=float(params.pitch),
+                                volume=float(params.volume),
+                                intonation=float(params.intonation),
+                                emotion=params.emotion,
+                                intensity=float(params.intensity),
+                                preferred_voice_profile=params.preset,
+                            )
+                        except (TypeError, ValueError):
+                            intent = VoiceIntent()
+                        result = await service.synthesize(
+                            SynthesisRequest(
+                                text=speak_text,
+                                voice_intent=intent,
+                                destination=str(host_path),
+                                metadata={
+                                    "run_dir": str(work_dir),
+                                    "vm_mount": self.vm_mount,
+                                    **kwargs,
+                                },
+                            )
                         )
                         if host_path.exists():
+                            completed[chunk.index] = host_path
+                        elif result.audio_data:
+                            host_path.write_bytes(result.audio_data)
                             completed[chunk.index] = host_path
                         else:
                             logger.warning(f"WAV not found: {host_path}")
