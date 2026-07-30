@@ -1,82 +1,120 @@
 # humeina-unit
 
-VoiSona Talk + VOICEVOX + VOICEPEAK を利用した高品質音声読み上げシステム。
+VoiSona Talk、VOICEVOX、VOICEPEAK を切り替えて日本語テキストを読み上げる、Python 3.12+ の
+CLI/API/SDK です。NLP 分析、発話計画、音声合成、バッチ成果物管理を単一プロセスの
+モジュラーモノリスとして提供します。
 
-NLPパイプラインで話者識別・シーン判別・感情分析を行い、小説の登場人物ごとに声色やパラメータを自動で変える。青空文庫・なろう・カクヨム・汎用Webページ（trafilatura抽出）に対応し、リアルタイム読み上げとバッチ合成・動画生成の各モードを提供する。
+## できること
 
-## 特徴
+- URL（青空文庫・小説家になろう・カクヨム・一般公開 Web）の取得と読み上げ
+- ルールベース分類、話者候補抽出、任意の Ollama/Gemini によるシーン・感情分析
+- VoiSona Talk（Windows VM）、VOICEVOX（HTTP/Docker）、VOICEPEAK（ローカル CLI）の選択と
+  fallback
+- `UtterancePlan` による Reader、Batch、API、SDK 間の発話境界共有
+- Batch の分析→合成→結合→任意動画生成、検証済み artifact manifest、partial 成果物の明示
+- Studio 台本合成、ニュース RSS 読み上げ、任意の Slack WebSocket 監視
 
-- **3つのTTSエンジン**: VoiSona Talk（Windows VM）、VOICEVOX（Docker）、VOICEPEAK（ローカルCLI）をフォールバック付きで使い分け
-- **NLPパイプライン**: ルールベース分類 → 話者識別 → SLM（Ollama / Gemini フォールバック）によるシーン・感情・視点分析
-- **キャラクター演じ分け**: VoiSona/VOICEPEAKモードでは1ボイスのパラメータ調整、VOICEVOXモードでは複数スピーカー割当
-- **バッチ合成**: 全文事前分析 → 連番WAV出力 → ffmpeg結合 → （任意で）動画生成
-- **動画生成**: 字幕付き動画 / 立ち絵差し替え動画を ffmpeg ベースで合成
-- **EXボイス自動挿入**: 音街ウナ等の固定WAVクリップを文脈に合わせて差し込み
-- **数式読み上げ**: 数学記号を辞書ベースで読み下し
-- **コンテンツソース**: 青空文庫、小説家になろう、カクヨム、汎用Webページ
-- **ニュース読み上げ**: RSS取得 → SLM要約 → 速報検知（日次/ポーリング）
-- **Studio（動画素材生成）**: 台本ファイル（txt/csv/json）から YMM4 等の素材を一括合成
-- **Slack連携**: WebSocket監視と重要度スコアリングで重要メッセージを読み上げ
-- **REST API / CLI**: FastAPIサーバーとtyper CLIの両方で操作可能
+HEMS/MQTT 接続や常駐クラウドサービスは提供していません。Slack は `slack-sdk` と Bot/App
+token を設定した場合だけ利用できます。
 
-## クイックスタート
+## インストール
 
 ```bash
-# インストール（uv推奨）
 uv sync --extra dev
 # または
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -e ".[dev]"
+```
 
-# 環境変数設定
-cp .env.example .env
-# .env を編集して VoiSona/VOICEVOX/VOICEPEAK/Ollama の接続先を設定
+標準 YAML は wheel 内の `yomiage/resources/config/` から読み込まれます。編集用設定と
+プロファイルは `YOMIAGE_USER_CONFIG_DIR`（既定 `~/.config/humeina-unit`）へ置きます。
+Provider/LLM の接続先や secret は `.env` または環境変数で指定してください。詳細は
+[インストール](docs/installation.md) と [設定リファレンス](docs/configuration.md) を参照してください。
 
-# リアルタイム読み上げ
-uv run yomiage read "https://www.aozora.gr.jp/cards/000879/files/127_15260.html"
+## 起動方法
 
-# バッチ合成（フルパイプライン: 分析→合成→結合）
-uv run yomiage batch run "https://www.aozora.gr.jp/cards/000879/files/127_15260.html" --mode voisona
+### ローカル専用（既定）
 
-# バッチ合成 + 動画生成
-uv run yomiage batch run "https://..." --mode voicepeak --video --style subtitle
-
-# ニュース日次サマリ
-uv run yomiage news daily
-
-# 台本から動画素材生成
+```bash
+uv run yomiage read "https://www.aozora.gr.jp/cards/000879/files/127_15260.html" -p voicevox
+uv run yomiage batch run "https://www.aozora.gr.jp/cards/000879/files/127_15260.html" --mode voicevox
 uv run yomiage studio synth script.txt --format ymm4
+```
 
-# APIサーバー起動
+API は既定で `127.0.0.1:8030` に bind します。
+
+```bash
 uv run yomiage serve
 ```
 
-## 必要環境
+### 認証付き外部 bind（明示的な運用時だけ）
 
-- Python 3.12+
-- [Ollama](https://ollama.ai/) + 日本語対応モデル（`qwen3:8b` 推奨。軽量用途は `qwen3.5:3b` 等）
-- 以下のいずれか（複数併用可、`tts.primary_provider` / `fallback_provider` で指定）:
-  - **VoiSona Talk**: Windows VM上で動作（バッチ用途は virtiofs 共有を推奨）
-  - **VOICEVOX**: Docker (`infra/docker compose up -d`)
-  - **VOICEPEAK**: ローカル CLI バイナリ
-- **ffmpeg**: バッチ合成の結合フェーズおよび動画生成で必須
-- （任意）Gemini API キー: Ollama がレートリミット等で失敗した際のフォールバック
+```bash
+YOMIAGE_API_TOKEN='replace-with-a-long-random-token' \
+  uv run yomiage serve --host 0.0.0.0 --port 8030
+```
+
+非 loopback bind は token がないと起動前に拒否されます。`/health` と `/health/live` 以外の
+HTTP endpoint は Bearer token を要求します。token をログや成果物へ記録しないでください。
+TLS、reverse proxy、Firewall は運用側で用意してください。
+
+## CLI の入口
+
+全コマンドの登録とオプションは、実装から生成される help を正とします。
+
+```bash
+uv run yomiage --help
+uv run yomiage batch --help
+uv run yomiage serve --help
+```
+
+代表的なコマンドは [CLI リファレンス](docs/cli-reference.md) に記載しています。
+
+## データと移行
+
+新規 Batch は次の canonical layout を使います。
+
+```text
+output/works/{work_id}/
+├── plans/{plan_id}.json
+└── runs/{run_id}/
+    ├── manifest.json
+    ├── artifact-manifest.json
+    └── *.wav / full.wav / full.mp4
+```
+
+旧 `output/{work_id}/manifest.json` と音声は読み取り互換です。移行は旧データをバックアップ
+してから read-only import/copy-on-write で新しい plan/run を作り、検証後に切り替えます。
+失敗時は旧ディレクトリをそのまま使って rollback できます。具体的なチェックリストは
+[legacy artifact 移行手順](docs/migration.md) を参照してください。
 
 ## ドキュメント
 
-| ドキュメント | 内容 |
-|-------------|------|
-| [docs/architecture.md](docs/architecture.md) | システムアーキテクチャ |
-| [docs/installation.md](docs/installation.md) | インストール・環境構築 |
-| [docs/cli-reference.md](docs/cli-reference.md) | CLI コマンドリファレンス |
-| [docs/batch-pipeline.md](docs/batch-pipeline.md) | バッチ合成パイプライン |
-| [docs/nlp-pipeline.md](docs/nlp-pipeline.md) | NLP処理パイプライン |
-| [docs/tts-providers.md](docs/tts-providers.md) | TTSプロバイダー詳細 |
-| [docs/configuration.md](docs/configuration.md) | 設定リファレンス |
-| [docs/api-reference.md](docs/api-reference.md) | REST API リファレンス |
-| [docs/virtiofs-setup.md](docs/virtiofs-setup.md) | virtiofs セットアップ |
-| [docs/improvement/README.md](docs/improvement/README.md) | アーキテクチャ改善ロードマップ |
-| [docs/improvement/architecture-plan.md](docs/improvement/architecture-plan.md) | 目標設計・段階移行計画 |
-| [docs/improvement/work-ledger.md](docs/improvement/work-ledger.md) | 依存関係・受入条件付き作業台帳 |
+| 文書 | 内容 |
+| --- | --- |
+| [インストール](docs/installation.md) | 依存、Provider、ローカル/API 起動 |
+| [アーキテクチャ](docs/architecture.md) | 実装パッケージ、依存方向、データフロー |
+| [CLI リファレンス](docs/cli-reference.md) | `yomiage --help` と一致するコマンド |
+| [設定リファレンス](docs/configuration.md) | Settings、環境変数、パス分類 |
+| [Batch パイプライン](docs/batch-pipeline.md) | plan/run、partial、artifact、動画 |
+| [REST API](docs/api-reference.md) | endpoint、認証、制限、状態 semantics |
+| [Python SDK](docs/sdk-reference.md) | `TTSBridge`、`TextAnalyzer`、`Pipeline` |
+| [NLP パイプライン](docs/nlp-pipeline.md) | 分類・話者・シーン分析 |
+| [TTS Provider](docs/tts-providers.md) | VoiSona/VOICEVOX/VOICEPEAK |
+| [virtiofs](docs/virtiofs-setup.md) | VoiSona VM の file destination |
+| [移行手順](docs/migration.md) | 旧 manifest/artifact の backup/import/rollback |
+| [ADR 索引](docs/adr/README.md) | 設計決定と実装タスクの対応 |
+| [改善ロードマップ](docs/improvement/README.md) | 作業計画と受入条件 |
+
+## 開発時の検証
+
+```bash
+uv run python -m pytest -q
+uv run python -m ruff check src/ tests/
+```
+
+外部 Provider を使う E2E は通常テストに含めず、利用可能な環境で明示的に実行します。
 
 ## ライセンス
 

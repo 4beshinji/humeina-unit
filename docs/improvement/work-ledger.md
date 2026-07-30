@@ -92,7 +92,7 @@ WIP上限1の場合の推奨順:
 | OBS-001 | R4 | P1 | M | done | API-001, JOB-001, SYN-001 | D | worker | worker | 2026-07-30 | 2026-07-30 |
 | CLN-001 | R5 | P2 | L | done | TST-002, API-002 | A | worker | worker | 2026-07-30 | 2026-07-30 |
 | CLN-002 | R5 | P2 | M | done | API-001, CLN-001 | C | worker | worker | 2026-07-30 | 2026-07-30 |
-| DOC-001 | R5 | P1 | M | ready | CLN-001, CLN-002, OBS-001 | D | worker | — | — | — |
+| DOC-001 | R5 | P1 | M | in_progress | CLN-001, CLN-002, OBS-001 | D | worker | worker | 2026-07-30 | — |
 | OPS-001 | R5 | P1 | M | backlog | DOC-001, TST-002, OBS-001 | D | worker | — | — | — |
 
 ## 4. タスクカード
