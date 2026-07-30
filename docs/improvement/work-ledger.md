@@ -56,18 +56,9 @@ agent typeを指定する。
 
 WIP上限1の場合の推奨順:
 
-1. `TST-002`
-2. `JOB-002`
-3. `API-001`
+1. `API-001`
 
-複数ワーカーを明示的に利用する場合、次のwaveは以下に分けられる。
-
-| Lane | タスク | 主な変更領域 |
-|---|---|---|
-| A | `TST-002` | `tests/contracts/`, fake provider entrypoint matrix |
-| B | `JOB-002` | `application/jobs.py`, FastAPI lifespan integration |
-
-`API-001` は同じluna_max担当の `JOB-002` 統合後に着手する。
+`API-001` 完了後は、依存が解ける `API-002` と `OBS-001` を別レーンで進められる。
 
 ## 3. タスク一覧
 
@@ -91,9 +82,9 @@ WIP上限1の場合の推奨順:
 | SYN-002 | R3 | P1 | L | done | SYN-001, DOM-002 | A | worker | worker | 2026-07-30 | 2026-07-30 |
 | SYN-003 | R3 | P1 | L | done | SYN-001, DOM-002 | A | luna_max | luna_max | 2026-07-30 | 2026-07-30 |
 | SYN-004 | R3 | P0 | L | done | SYN-001, DOM-002, REL-001, RUN-002 | A | luna_max | luna_max | 2026-07-30 | 2026-07-30 |
-| TST-002 | R3 | P1 | M | ready | SYN-002, SYN-003, SYN-004 | D | worker | — | — | — |
+| TST-002 | R3 | P1 | M | done | SYN-002, SYN-003, SYN-004 | D | worker | worker | 2026-07-30 | 2026-07-30 |
 | JOB-001 | R4 | P1 | L | done | RUN-002, DOM-003, REL-001 | B | sol_high | root | 2026-07-30 | 2026-07-30 |
-| JOB-002 | R4 | P1 | L | ready | JOB-001, SYN-004 | B | luna_max | — | — | — |
+| JOB-002 | R4 | P1 | L | done | JOB-001, SYN-004 | B | luna_max | luna_max | 2026-07-30 | 2026-07-30 |
 | API-001 | R4 | P1 | L | ready | CFG-002, SYN-002, JOB-001 | C | luna_max | — | — | — |
 | API-002 | R4 | P0 | M | backlog | API-001, SEC-001, SEC-002, JOB-002 | C | worker | — | — | — |
 | OBS-001 | R4 | P1 | M | backlog | API-001, JOB-001, SYN-001 | D | worker | — | — | — |
@@ -812,6 +803,33 @@ WIP上限1の場合の推奨順:
 - Result: ReadingEngineの通常入口をUtterancePlan/SynthesisServiceへ移行し、順序保持lookahead queue、発話参照bookmark、pause/stop/resume時のtask回収を実装した。
 - Manual verification: 複数話者の別request化、合成完了順に依存しない再生順、同一loop・別threadからのstop、未知utterance IDのorder fallback、旧bookmark JSON互換、service所有権を確認した。
 - Remaining risks: 実Provider/Windows VM E2EはOPS-001。長い単一UtteranceのTTS制限向け後段分割は今後の検討事項。
+
+### TST-002 検証証跡
+
+- Commit/PR: 本waveのローカルコミット
+- 実行日: 2026-07-30
+- 担当: worker（実装・レビュー）、root（統合レビュー）
+- Commands:
+  - `PYTHONPATH=src .venv/bin/python -m pytest tests/contracts -q` — 25 passed
+  - Provider/Batch/Reader/SDK/Studio関連テスト — worker 61 passed、root 53 passed
+  - 非E2E全pytest — 569 passed, 2 skipped, 6 deselected
+  - `.venv/bin/ruff check src/ tests/` / `git diff --check` — pass
+- Result: 新port、legacy bytes、VoiSona file-only adapterへ共通Provider契約を適用し、CLI・SDK・Reader・Batch・Studioのfallback/partial/cancel matrixを追加した。
+- Manual verification: canonical BatchでProvider pinがfallbackを無効化する不整合を修正し、partial時のconcat/video抑止、cancel時のfallback未実行・task回収・外部service非closeを確認した。
+- Remaining risks: 実Provider接続と音質比較はOPS-001で扱う。
+
+### JOB-002 検証証跡
+
+- Commit/PR: 本waveのローカルコミット
+- 実行日: 2026-07-30
+- 担当: luna_max（実装・レビュー）、root（統合レビュー）
+- Commands:
+  - JOB/repository/server/batch/architecture関連テスト — 44 passed
+  - 非E2E全pytest — 569 passed, 2 skipped, 6 deselected
+  - `.venv/bin/ruff check src/ tests/` / `git diff --check` — pass
+- Result: 有限queueとactive task registryを持つTaskSupervisorを追加し、CAS遷移、cancel cleanup待機、shutdown、再起動回収・resume、FastAPI lifespanとread/batch入口を接続した。
+- Manual verification: task例外回収、queue上限、RUNNING→INTERRUPTED、QUEUED→CANCELLED、failed Batch→FAILED、shutdown時のcancel request・Provider・repository close順を確認した。
+- Remaining risks: SQLite単一ホスト前提。lifespan外compat taskとReadingEngine内部の旧task生成は後続API/CLNタスクで整理する。
 
 タスク完了時に以下の形式で追記する。
 

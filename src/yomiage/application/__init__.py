@@ -4,6 +4,15 @@ FastAPI、Typer、具象TTS Providerはこのパッケージから直接参照�
 composition rootでportとadapterを組み立て、後続タスクでユースケースを追加する。
 """
 
+from .jobs import (
+    JobAlreadyActiveError,
+    JobService,
+    SupervisorClosedError,
+    TaskOperation,
+    TaskQueueFullError,
+    TaskSupervisor,
+    TaskSupervisorError,
+)
 from .planning import (
     ApiPlanningAdapter,
     BatchPlanningAdapter,
@@ -41,6 +50,13 @@ __all__ = [
     "plan_from_nlp",
     "plan_from_results",
     "plan_text",
+    "JobAlreadyActiveError",
+    "JobService",
+    "SupervisorClosedError",
+    "TaskOperation",
+    "TaskQueueFullError",
+    "TaskSupervisor",
+    "TaskSupervisorError",
     "RetryPolicy",
     "SynthesisFailure",
     "SynthesisRequest",

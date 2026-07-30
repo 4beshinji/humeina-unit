@@ -1,20 +1,27 @@
 """FastAPI server — HEMS Bridge + REST API."""
 
 import asyncio
+import inspect
 import io
 import json
 from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from loguru import logger
 from pydantic import BaseModel
 
+from .adapters.persistence.sqlite import SQLiteJobRepository
 from .api.hooks import EventHooks
 from .api.metrics import MetricsCollector
 from .api.profile_resolver import resolve_voice_profile
+from .application.jobs import TaskSupervisor
 from .batch.job_manager import BatchJobManager
 from .config import get_tts_config, load_config
+from .core.identity import new_job_id
+from .core.jobs import Job
 from .nlp.ollama_client import OllamaClient
 from .nlp.scene_analyzer import SceneAnalyzer
 from .nlp.splitter import TextSplitter
@@ -30,6 +37,9 @@ _job_manager: BatchJobManager | None = None
 _hooks: EventHooks | None = None
 _metrics: MetricsCollector | None = None
 _config: dict = {}
+_job_repository: SQLiteJobRepository | None = None
+_supervisor: TaskSupervisor | None = None
+_compat_tasks: set[asyncio.Task] = set()
 
 
 def _create_engine(config: dict) -> ReadingEngine:
@@ -86,9 +96,80 @@ def _create_engine(config: dict) -> ReadingEngine:
     )
 
 
+def _job_database_path(config: dict) -> Path:
+    """raw configから単一ホストJob DBの保存先を解決する。"""
+
+    storage = config.get("storage", {})
+    if not isinstance(storage, dict):
+        storage = {}
+    configured = storage.get("sqlite_path") or storage.get("job_db_path")
+    if configured:
+        return Path(str(configured)).expanduser().resolve()
+    data_dir = storage.get("data_dir") or config.get("data_dir") or (Path.cwd() / "data")
+    return (Path(str(data_dir)).expanduser() / "jobs.sqlite3").resolve()
+
+
+def _compat_task_done(task: asyncio.Task[Any]) -> None:
+    """lifespan外の旧テスト/adapter経路でもtask例外を未回収にしない。"""
+
+    _compat_tasks.discard(task)
+    if task.cancelled():
+        return
+    try:
+        error = task.exception()
+    except asyncio.CancelledError:
+        return
+    if error is not None:
+        logger.error("Background compatibility task failed: {}", error)
+
+
+async def _submit_background_job(job: Job, operation: Any) -> Job:
+    """Supervisor経由でJobを投入し、lifespan外では追跡付き互換taskを使う。"""
+
+    if _supervisor is not None:
+        return await _supervisor.submit(job, operation)
+    task = asyncio.create_task(operation(job), name=f"yomiage-compat-job-{job.id}")
+    _compat_tasks.add(task)
+    task.add_done_callback(_compat_task_done)
+    return job
+
+
+async def _close_engine_resources(engine: ReadingEngine) -> None:
+    """Readerの再生workerとProvider sessionを順序付きで閉じる。"""
+
+    if engine.is_running:
+        engine.stop()
+    tts = getattr(engine, "tts", None)
+    if tts is None:
+        return
+    stop = getattr(tts, "stop", None)
+    if callable(stop):
+        try:
+            result = stop()
+            if inspect.isawaitable(result):
+                await result
+        except Exception as exc:  # pragma: no cover - provider-specific cleanup
+            logger.warning("TTS worker cleanup failed: {}", exc)
+    providers = [getattr(tts, "primary", None), getattr(tts, "fallback", None)]
+    seen: set[int] = set()
+    for provider in providers:
+        if provider is None or id(provider) in seen:
+            continue
+        seen.add(id(provider))
+        close = getattr(provider, "close", None)
+        if not callable(close):
+            continue
+        try:
+            result = close()
+            if inspect.isawaitable(result):
+                await result
+        except Exception as exc:  # pragma: no cover - provider-specific cleanup
+            logger.warning("TTS provider cleanup failed: {}", exc)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _engine, _job_manager, _hooks, _metrics, _config
+    global _engine, _job_manager, _hooks, _metrics, _config, _job_repository, _supervisor
     from dotenv import load_dotenv
 
     load_dotenv()
@@ -102,11 +183,49 @@ async def lifespan(app: FastAPI):
         hooks=_hooks,
         metrics=_metrics,
     )
+    server_config = _config.get("server", {})
+    if not isinstance(server_config, dict):
+        server_config = {}
+    _job_repository = SQLiteJobRepository(_job_database_path(_config))
+    _supervisor = TaskSupervisor(
+        _job_repository,
+        max_concurrency=int(server_config.get("max_concurrent_jobs", 1)),
+        queue_size=int(server_config.get("job_queue_size", 64)),
+        shutdown_grace_period=float(server_config.get("shutdown_grace_period", 5.0)),
+    )
+    try:
+        recovered = await _supervisor.start()
+    except BaseException:
+        await _supervisor.close()
+        _job_repository.close()
+        _supervisor = None
+        _job_repository = None
+        raise
+    app.state.job_repository = _job_repository
+    app.state.task_supervisor = _supervisor
+    if recovered:
+        logger.warning(
+            "Recovered {} jobs after restart: {}",
+            len(recovered),
+            ", ".join(job.id for job in recovered),
+        )
     logger.info("Yomiage server started")
-    yield
-    if _engine and _engine.is_running:
-        _engine.stop()
-    logger.info("Yomiage server stopped")
+    try:
+        yield
+    finally:
+        # Stop admission first; active callbacks receive cancellation and are awaited by the
+        # supervisor before provider/session resources are closed.
+        if _supervisor:
+            await _supervisor.shutdown()
+        if _engine:
+            await _close_engine_resources(_engine)
+        if _job_repository:
+            _job_repository.close()
+        app.state.task_supervisor = None
+        app.state.job_repository = None
+        _supervisor = None
+        _job_repository = None
+        logger.info("Yomiage server stopped")
 
 
 app = FastAPI(title="Yomiage Server", version="0.1.0", lifespan=lifespan)
@@ -160,8 +279,14 @@ async def read(req: ReadRequest):
         raise HTTPException(503, "Engine not initialized")
     if _engine.is_running:
         raise HTTPException(409, "Already reading")
-    asyncio.create_task(_engine.read_url(req.url))
-    return {"status": "started", "url": req.url}
+    engine = _engine
+    job = Job(id=new_job_id(), options={"kind": "read"})
+
+    async def operation(_job: Job) -> None:
+        await engine.read_url(req.url)
+
+    await _submit_background_job(job, operation)
+    return {"status": "started", "url": req.url, "job_id": job.id}
 
 
 @app.post("/api/yomiage/pause")
@@ -258,15 +383,33 @@ async def synthesize_batch(req: BatchSynthesizeRequest):
         style=req.style,
         allow_partial=req.allow_partial,
     )
-    asyncio.create_task(
-        _job_manager.run_job(
+    manager = _job_manager
+    core_job = Job(
+        id=job.id,
+        options={
+            "kind": "batch",
+            "mode": req.mode,
+            "output_format": req.output_format,
+            "video": req.video,
+            "allow_partial": req.allow_partial,
+        },
+    )
+
+    async def operation(_job: Job) -> dict[str, Any]:
+        await manager.run_job(
             job.id,
             output_format=req.output_format,
             video=req.video,
             style=req.style,
             allow_partial=req.allow_partial,
         )
-    )
+        final = manager.get_job(job.id)
+        return {
+            "status": final.status if final else "completed",
+            "error": final.error if final else None,
+        }
+
+    await _submit_background_job(core_job, operation)
     return {"job_id": job.id, "status": job.status}
 
 

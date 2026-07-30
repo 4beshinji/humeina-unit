@@ -262,8 +262,14 @@ class BatchEngine:
         synthesizer: BatchSynthesizer | None,
         work_dir: Path,
         manifest: BatchManifest,
+        service: SynthesisService | Any | None = None,
     ) -> SynthesisRequest:
-        """Utteranceと旧manifestのparameter情報を1つのservice requestへ束ねる。"""
+        """Utteranceと旧manifestのparameter情報を1つのservice requestへ束ねる。
+
+        Canonical runs use the configured service primary and its fallback chain.  Older
+        callers that do not provide a service retain the explicit mode pin so the legacy
+        parameter-builder path remains unchanged.
+        """
 
         params = self._entry_params(entry, character_db, synthesizer)
         speed = params.get("speed", utterance.voice_intent.speaking_rate)
@@ -307,11 +313,15 @@ class BatchEngine:
             character = character_db.characters.get(entry.speaker)
             if character and character.voice_id and "voice_id" not in metadata:
                 metadata["voice_id"] = character.voice_id
+        provider_name: str | None = self.mode
+        primary_name = getattr(getattr(service, "primary_provider", None), "name", None)
+        if primary_name == self.mode:
+            provider_name = None
         return SynthesisRequest(
             text=utterance.text,
             voice_intent=intent,
             utterance_id=str(entry.index),
-            provider=self.mode,
+            provider=provider_name,
             work_id=manifest.work_id if manifest.run_id else None,
             run_id=manifest.run_id,
             destination=f"{entry.index:04d}.wav",
@@ -680,6 +690,7 @@ class BatchEngine:
                         synthesizer=synthesizer,
                         work_dir=work_dir,
                         manifest=manifest,
+                        service=service,
                     )
                     raw_result = await service.synthesize(request)
                     result_status = str(getattr(raw_result, "status", "synthesized"))
