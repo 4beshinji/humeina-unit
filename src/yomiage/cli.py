@@ -1035,7 +1035,7 @@ def _is_loopback_host(host: str) -> bool:
 
 
 def _validate_server_bind(host: str, api_token: str | None) -> None:
-    """安全なbind既定値と、未実装認証境界を検証する."""
+    """安全なbind既定値と外部公開時の認証境界を検証する."""
     if _is_loopback_host(host):
         return
     if not api_token:
@@ -1044,10 +1044,9 @@ def _validate_server_bind(host: str, api_token: str | None) -> None:
             " --api-tokenまたはYOMIAGE_API_TOKENを設定してください。",
             param_hint="--host",
         )
-    raise typer.BadParameter(
-        "非loopback bindは現在未対応です（API-002の認証実装後に利用可能になります）。",
-        param_hint="--host",
-    )
+    # API-002 provides Bearer authentication in the app factory.  A token is
+    # therefore sufficient to opt into a non-loopback bind; its value is never
+    # included in diagnostics or startup logs.
 
 
 @app.command()
@@ -1058,7 +1057,7 @@ def serve(
         None,
         "--api-token",
         envvar="YOMIAGE_API_TOKEN",
-        help="外部bind用API token（認証実装前は外部bindを拒否）",
+        help="外部bind用API token",
         show_default=False,
     ),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
@@ -1066,11 +1065,19 @@ def serve(
     """FastAPIサーバー起動."""
     _validate_server_bind(host, api_token)
     _setup_logging(verbose)
-    logger.info("Server bind mode: loopback ({host}:{port})", host=host, port=port)
+    mode = "loopback" if _is_loopback_host(host) else "authenticated external"
+    logger.info("Server bind mode: {mode} ({host}:{port})", mode=mode, host=host, port=port)
     import uvicorn
 
+    from .server import create_app
+
+    config = _load_config()
+    server_config = config.setdefault("server", {})
+    server_config["host"] = host
+    if api_token:
+        server_config["api_token"] = api_token
     uvicorn.run(
-        "yomiage.server:app",
+        create_app(config),
         host=host,
         port=port,
         log_level="debug" if verbose else "info",

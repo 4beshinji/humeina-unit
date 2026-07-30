@@ -327,6 +327,20 @@ class ServerSettings(BaseModel):
     api_token: SecretStr | None = None
     max_request_chars: StrictInt = Field(default=100_000, ge=1, le=10_000_000)
     max_concurrent_jobs: StrictInt = Field(default=1, ge=1, le=256)
+    # API-002 admission-control settings.  The aliases retain the names used by
+    # older raw YAML while exposing explicit limits to typed callers.
+    max_body_bytes: StrictInt = Field(default=1_048_576, ge=1, le=100_000_000)
+    max_text_chars: StrictInt = Field(
+        default=100_000,
+        ge=1,
+        le=10_000_000,
+        validation_alias=AliasChoices("max_text_chars", "max_request_chars"),
+    )
+    max_url_response_bytes: StrictInt = Field(default=10 * 1024 * 1024, ge=1, le=500_000_000)
+    job_queue_size: StrictInt = Field(default=64, ge=1, le=100_000)
+    max_active_jobs: StrictInt | None = Field(default=None, ge=1, le=100_000)
+    client_rate_limit: StrictInt = Field(default=60, ge=1, le=1_000_000)
+    client_rate_window_seconds: StrictFloat = Field(default=60.0, gt=0.0, le=86_400.0)
 
     _validate_token = field_validator("api_token", mode="before")(_as_secret)
 

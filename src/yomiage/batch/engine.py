@@ -19,6 +19,7 @@ from ..core.models import Utterance, VoiceIntent
 from ..nlp.ollama_client import OllamaClient
 from ..nlp.text_processor import TextProcessor
 from ..ports.artifacts import ArtifactRef, ArtifactStore, ArtifactValidationError
+from ..ports.sources import URLPolicy
 from ..reader.character_db import CharacterDB
 from ..reader.param_mapper import ParamMapper
 from .analyzer import BatchAnalyzer
@@ -39,6 +40,7 @@ class BatchEngine:
         cleanup: bool = False,
         artifact_store: ArtifactStore | None = None,
         synthesis_service: SynthesisService | Any | None = None,
+        url_policy: URLPolicy | None = None,
     ):
         self.config = config
         self.mode = mode
@@ -53,6 +55,7 @@ class BatchEngine:
         # service directly; in that case no BatchSynthesizer/provider is constructed here.
         self.synthesis_service = synthesis_service
         self._owns_synthesis_service = synthesis_service is None
+        self.url_policy = url_policy
 
         ollama_cfg = config.get("ollama", {})
         batch_cfg = config.get("batch", {})
@@ -341,6 +344,7 @@ class BatchEngine:
             analysis_window_chars=self.analysis_window_chars,
             analysis_window_sentences=self.analysis_window_sentences,
             voice_profile=self.voice_profile,
+            url_policy=self.url_policy,
         )
         return await analyzer.analyze(
             url,

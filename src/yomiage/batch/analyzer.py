@@ -12,6 +12,7 @@ from ..nlp.ollama_client import OllamaClient
 from ..nlp.speaker import SpeakerExtractor
 from ..nlp.splitter import TextSplitter
 from ..nlp.text_processor import TextProcessor
+from ..ports.sources import URLPolicy
 from ..reader.character_db import CharacterDB
 from ..sources import registry
 from ..sources.base import ChapterInfo
@@ -89,6 +90,7 @@ class BatchAnalyzer:
         analysis_window_chars: int = 3000,
         analysis_window_sentences: int = 25,
         voice_profile: Any = None,
+        url_policy: URLPolicy | None = None,
     ):
         self.ollama = ollama
         self.processor = text_processor or TextProcessor()
@@ -97,6 +99,7 @@ class BatchAnalyzer:
         self.window_chars = analysis_window_chars
         self.window_sentences = analysis_window_sentences
         self.voice_profile = voice_profile
+        self.url_policy = url_policy
 
     async def analyze(
         self,
@@ -108,7 +111,7 @@ class BatchAnalyzer:
         """URL → 全文分析 → BatchManifest を生成."""
         from pathlib import Path
 
-        source = registry.resolve(url)
+        source = registry.resolve(url, policy=self.url_policy)
         source_kind = type(source).__name__.removesuffix("Source").lower() or "url"
         identity = build_identity(
             url,

@@ -12,6 +12,7 @@ from loguru import logger
 from ..api.hooks import EventHooks
 from ..api.metrics import MetricsCollector
 from ..core.identity import new_job_id
+from ..ports.sources import URLPolicy
 from .engine import BatchEngine
 from .manifest import BatchManifest
 
@@ -68,12 +69,14 @@ class BatchJobManager:
         output_dir: str = "output",
         hooks: EventHooks | None = None,
         metrics: MetricsCollector | None = None,
+        url_policy: URLPolicy | None = None,
     ):
         self.config = config
         self.output_dir = output_dir
         self._jobs: dict[str, BatchJob] = {}
         self._hooks = hooks
         self._metrics = metrics
+        self.url_policy = url_policy
 
     def create_job(
         self,
@@ -138,6 +141,7 @@ class BatchJobManager:
             output_dir=self.output_dir,
             output_format=output_format,
             cleanup=cleanup,
+            url_policy=self.url_policy,
         )
 
         async def progress_callback(status: str, percent: float, message: str) -> None:

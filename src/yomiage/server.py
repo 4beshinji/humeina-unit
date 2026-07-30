@@ -9,9 +9,14 @@ explicitly; this makes two ASGI applications safe to host in one process.
 from __future__ import annotations
 
 import asyncio
+import hmac
 import inspect
 import io
+import ipaddress
 import json
+import secrets
+import time
+from collections import deque
 from collections.abc import Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -19,14 +24,14 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from loguru import logger
 from pydantic import BaseModel
 
 from .adapters.persistence.sqlite import SQLiteJobRepository
 from .api.hooks import EventHooks
 from .api.metrics import MetricsCollector
-from .application.jobs import TaskSupervisor
+from .application.jobs import SupervisorClosedError, TaskQueueFullError, TaskSupervisor
 from .batch.job_manager import BatchJobManager
 from .bootstrap import create_reading_engine
 from .config import load_config
@@ -34,6 +39,275 @@ from .core.identity import new_job_id
 from .core.jobs import Job
 from .nlp.ollama_client import OllamaClient
 from .ports.repositories import JobRepository
+from .ports.sources import DNSResolutionError, URLPolicy, URLPolicyError, URLTarget
+
+
+class _AdmissionRejected(Exception):
+    """Internal signal carrying a quota rejection code."""
+
+    def __init__(self, code: str, message: str) -> None:
+        self.code = code
+        self.message = message
+        super().__init__(message)
+
+
+@dataclass(frozen=True, slots=True)
+class _SecurityConfig:
+    """Resolved API security and admission limits for one application."""
+
+    host: str = "127.0.0.1"
+    api_token: str | None = None
+    max_body_bytes: int = 1_048_576
+    max_text_chars: int = 100_000
+    max_url_response_bytes: int = 10 * 1024 * 1024
+    max_queue_size: int = 64
+    max_active_jobs: int = 65
+    client_rate_limit: int = 60
+    client_rate_window_seconds: float = 60.0
+
+
+@dataclass(slots=True)
+class _AdmissionController:
+    """Single-loop admission gate for jobs and per-client request rates."""
+
+    max_active_jobs: int
+    max_queue_size: int
+    rate_limit: int
+    rate_window_seconds: float
+    _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    _leases: dict[str, str] = field(default_factory=dict)
+    _requests: dict[str, list[float]] = field(default_factory=dict)
+
+    async def check_rate(self, client_id: str) -> None:
+        """Record one request and reject only when its client rate is exhausted."""
+
+        now = time.monotonic()
+        async with self._lock:
+            requests = self._requests.setdefault(client_id, [])
+            cutoff = now - self.rate_window_seconds
+            while requests and requests[0] <= cutoff:
+                requests.pop(0)
+            if len(requests) >= self.rate_limit:
+                raise _AdmissionRejected(
+                    "rate_limited", "client request rate limit exceeded"
+                )
+            requests.append(now)
+
+    async def reserve(
+        self,
+        client_id: str,
+        *,
+        active_jobs: int = 0,
+        queue_depth: int = 0,
+    ) -> str:
+        """Reserve one admission slot before a Job or temporary artifact exists."""
+
+        async with self._lock:
+            reserved = len(self._leases)
+            if queue_depth + reserved >= self.max_queue_size:
+                raise _AdmissionRejected("queue_full", "job queue limit exceeded")
+            if active_jobs + queue_depth + reserved >= self.max_active_jobs:
+                raise _AdmissionRejected("active_jobs_limit", "active job limit exceeded")
+            lease = secrets.token_urlsafe(16)
+            self._leases[lease] = client_id
+            return lease
+
+    async def release(self, lease: str | None) -> None:
+        if lease is None:
+            return
+        async with self._lock:
+            self._leases.pop(lease, None)
+
+    @property
+    def active_leases(self) -> int:
+        return len(self._leases)
+
+
+def _error_response(
+    status_code: int,
+    code: str,
+    message: str,
+    *,
+    headers: Mapping[str, str] | None = None,
+) -> JSONResponse:
+    """Return the API's stable, secret-free error DTO."""
+
+    return JSONResponse(
+        status_code=status_code,
+        content={"error": {"code": code, "message": message}},
+        headers=dict(headers or {}),
+    )
+
+
+def _is_loopback_host(host: str) -> bool:
+    normalized = str(host or "").strip().lower().rstrip(".")
+    if normalized == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(normalized).is_loopback
+    except ValueError:
+        return False
+
+
+def _server_security(config: Mapping[str, Any]) -> _SecurityConfig:
+    raw = config.get("server", {})
+    if not isinstance(raw, Mapping):
+        raw = {}
+    token = raw.get("api_token")
+    if hasattr(token, "get_secret_value"):
+        token = token.get_secret_value()
+    if token is not None:
+        token = str(token).strip() or None
+    max_text = int(
+        raw.get(
+            "max_text_chars",
+            raw.get("text_max_chars", raw.get("max_request_chars", 100_000)),
+        )
+    )
+    max_queue = int(
+        raw.get("job_queue_size", raw.get("max_queue_length", raw.get("queue_size", 64)))
+    )
+    max_concurrent = int(raw.get("max_concurrent_jobs", 1))
+    max_active_raw = raw.get("max_active_jobs", raw.get("active_job_limit"))
+    max_active = int(max_active_raw) if max_active_raw is not None else max_queue + max_concurrent
+    max_body = int(raw.get("max_body_bytes", raw.get("max_request_body_bytes", 1_048_576)))
+    max_url_bytes = int(
+        raw.get("max_url_response_bytes", raw.get("max_fetch_bytes", 10 * 1024 * 1024))
+    )
+    rate_limit = int(raw.get("client_rate_limit", raw.get("rate_limit_per_minute", 60)))
+    rate_window = float(
+        raw.get("client_rate_window_seconds", raw.get("rate_limit_window_seconds", 60.0))
+    )
+    if min(max_text, max_queue, max_active, max_body, max_url_bytes, rate_limit) <= 0:
+        raise ValueError("API limits must be positive")
+    if rate_window <= 0:
+        raise ValueError("client rate window must be positive")
+    return _SecurityConfig(
+        host=str(raw.get("host", "127.0.0.1")),
+        api_token=token,
+        max_body_bytes=max_body,
+        max_text_chars=max_text,
+        max_url_response_bytes=max_url_bytes,
+        max_queue_size=max_queue,
+        max_active_jobs=max_active,
+        client_rate_limit=rate_limit,
+        client_rate_window_seconds=rate_window,
+    )
+
+
+def _client_id(scope: Mapping[str, Any]) -> str:
+    """Use the direct ASGI peer only; X-Forwarded-For is deliberately ignored."""
+
+    client = scope.get("client")
+    if isinstance(client, (tuple, list)) and client:
+        return str(client[0])
+    return "unknown"
+
+
+class _APISecurityMiddleware:
+    """ASGI auth/body/rate gate that runs before FastAPI parses request bodies."""
+
+    _PUBLIC_PATHS = frozenset({"/health"})
+
+    def __init__(self, app: Any, *, application: FastAPI) -> None:
+        self.app = app
+        self.application = application
+
+    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+        runtime = getattr(self.application.state, "runtime", None)
+        security = getattr(runtime, "security", None)
+        if security is None:
+            # The compatibility app can receive requests without lifespan. Build the same
+            # conservative loopback/no-token defaults instead of consulting module globals.
+            security = _server_security(getattr(runtime, "config", {}) if runtime else {})
+
+        path = str(scope.get("path", ""))
+        headers = {
+            key.decode("latin-1").lower(): value.decode("latin-1")
+            for key, value in scope.get("headers", ())
+        }
+        protected = path not in self._PUBLIC_PATHS
+        if protected and security.api_token:
+            authorization = headers.get("authorization", "")
+            if not authorization.startswith("Bearer "):
+                await self._send_error(
+                    scope,
+                    send,
+                    _error_response(
+                        401,
+                        "authentication_required",
+                        "Bearer authentication is required",
+                        headers={"WWW-Authenticate": "Bearer"},
+                    ),
+                )
+                return
+            supplied = authorization[7:]
+            if not supplied or not hmac.compare_digest(supplied, security.api_token):
+                await self._send_error(
+                    scope,
+                    send,
+                    _error_response(403, "authentication_forbidden", "Bearer token is invalid"),
+                )
+                return
+
+        content_length = headers.get("content-length")
+        if content_length:
+            try:
+                declared = int(content_length)
+            except ValueError:
+                declared = security.max_body_bytes + 1
+            if declared > security.max_body_bytes:
+                await self._send_error(
+                    scope,
+                    send,
+                    _error_response(413, "request_body_too_large", "request body is too large"),
+                )
+                return
+
+        # Rate limiting is intentionally keyed by the direct peer address. It does not trust
+        # proxy headers, and a failed admission never creates a Job or artifact.
+        admission = getattr(runtime, "admission", None)
+        if protected and admission is not None:
+            try:
+                await admission.check_rate(_client_id(scope))
+            except _AdmissionRejected as exc:
+                status = 429
+                await self._send_error(scope, send, _error_response(status, exc.code, exc.message))
+                return
+
+        # Buffer only up to the configured cap before FastAPI/Pydantic sees the request. This
+        # avoids turning an oversized chunked body into Starlette's generic 400 parser error and
+        # guarantees a stable 413 response before any route-side object is constructed.
+        buffered: deque[dict[str, Any]] = deque()
+        received = 0
+        while True:
+            message = await receive()
+            buffered.append(message)
+            if message.get("type") == "http.request":
+                received += len(message.get("body", b""))
+                if received > security.max_body_bytes:
+                    await self._send_error(
+                        scope,
+                        send,
+                        _error_response(413, "request_body_too_large", "request body is too large"),
+                    )
+                    return
+            if not message.get("more_body", False):
+                break
+
+        async def limited_receive() -> dict[str, Any]:
+            if buffered:
+                return buffered.popleft()
+            return {"type": "http.disconnect"}
+
+        await self.app(scope, limited_receive, send)
+
+    @staticmethod
+    async def _send_error(scope: Mapping[str, Any], send: Any, response: JSONResponse) -> None:
+        await response(scope=dict(scope), receive=None, send=send)
 
 # These names are intentionally retained for old callers/tests that imported
 # them.  Factory-created applications never read them.  The compatibility app
@@ -115,6 +389,8 @@ class ServerDependencies:
     repository_factory: Callable[..., Any] | None = None
     supervisor: TaskSupervisor | None = None
     supervisor_factory: Callable[..., Any] | None = None
+    url_policy: URLPolicy | None = None
+    url_policy_factory: Callable[..., Any] | None = None
     close_engine: bool = True
     close_job_manager: bool = True
     close_repository: bool = True
@@ -131,6 +407,10 @@ class _Runtime:
     metrics: MetricsCollector | None
     repository: JobRepository | None
     supervisor: TaskSupervisor | None
+    security: _SecurityConfig | None = None
+    admission: _AdmissionController | None = None
+    url_policy: URLPolicy | None = None
+    url_policy_explicit: bool = False
     compat_tasks: set[asyncio.Task[Any]] = field(default_factory=set)
     close_engine: bool = True
     close_job_manager: bool = True
@@ -243,6 +523,9 @@ async def _close_engine_resources(engine: Any) -> None:
 
 async def _build_runtime(settings: Any, dependencies: ServerDependencies) -> _Runtime:
     config = await _resolve_settings(settings, dependencies)
+    security = _server_security(config)
+    if not _is_loopback_host(security.host) and not security.api_token:
+        raise ValueError("non-loopback API bind requires an API token")
     hooks = dependencies.hooks
     if hooks is None and dependencies.hooks_factory is not None:
         hooks = await _resolve_factory(dependencies.hooks_factory, config=config)
@@ -263,6 +546,13 @@ async def _build_runtime(settings: Any, dependencies: ServerDependencies) -> _Ru
         close_job_manager=dependencies.close_job_manager,
         close_repository=dependencies.close_repository,
         close_supervisor=dependencies.close_supervisor,
+        security=security,
+        admission=_AdmissionController(
+            max_active_jobs=security.max_active_jobs,
+            max_queue_size=security.max_queue_size,
+            rate_limit=security.client_rate_limit,
+            rate_window_seconds=security.client_rate_window_seconds,
+        ),
     )
     try:
         values = {"config": config, "settings": config, "hooks": hooks, "metrics": metrics}
@@ -299,6 +589,45 @@ async def _build_runtime(settings: Any, dependencies: ServerDependencies) -> _Ru
             )
         if runtime.repository is None:
             runtime.repository = SQLiteJobRepository(_job_database_path(config))
+
+        if dependencies.url_policy is not None:
+            runtime.url_policy = dependencies.url_policy
+            runtime.url_policy_explicit = True
+        elif dependencies.url_policy_factory is not None:
+            runtime.url_policy = await _resolve_factory(
+                dependencies.url_policy_factory, config=config
+            )
+            runtime.url_policy_explicit = True
+        else:
+            policy_config = config.get("url_policy", {})
+            if not isinstance(policy_config, Mapping):
+                policy_config = {}
+            server_policy = config.get("server", {})
+            if isinstance(server_policy, Mapping) and isinstance(
+                server_policy.get("url_policy"), Mapping
+            ):
+                policy_config = {**policy_config, **server_policy["url_policy"]}
+            allowlist = policy_config.get("allowlist", ())
+            if isinstance(allowlist, str):
+                allowlist = (allowlist,)
+            runtime.url_policy = URLPolicy(
+                max_response_bytes=int(
+                    policy_config.get("max_response_bytes", security.max_url_response_bytes)
+                ),
+                max_redirects=int(policy_config.get("max_redirects", 5)),
+                timeout_seconds=float(policy_config.get("timeout_seconds", 30.0)),
+                allowlist=frozenset(allowlist),
+                allow_private_network=bool(policy_config.get("allow_private_network", False)),
+            )
+        # Propagate the validated policy into concrete source-consuming engines.  This keeps the
+        # response-size/redirect limits identical between API admission and the eventual fetch.
+        for owner in (runtime.engine, runtime.job_manager):
+            if owner is None:
+                continue
+            try:
+                setattr(owner, "url_policy", runtime.url_policy)
+            except AttributeError:  # pragma: no cover - slotted third-party dependency
+                pass
 
         runtime.supervisor = dependencies.supervisor
         if runtime.supervisor is None and dependencies.supervisor_factory is not None:
@@ -433,6 +762,14 @@ def _legacy_ephemeral_runtime() -> _Runtime:
         metrics=_metrics,
         repository=_job_repository,
         supervisor=_supervisor,
+        security=_server_security(_config or {}),
+        admission=_AdmissionController(
+            max_active_jobs=_server_security(_config or {}).max_active_jobs,
+            max_queue_size=_server_security(_config or {}).max_queue_size,
+            rate_limit=_server_security(_config or {}).client_rate_limit,
+            rate_window_seconds=_server_security(_config or {}).client_rate_window_seconds,
+        ),
+        url_policy=URLPolicy(),
         compat_tasks=_compat_tasks,
         close_engine=False,
         close_job_manager=False,
@@ -451,13 +788,90 @@ def _runtime(request: Request) -> _Runtime:
     raise HTTPException(503, "Application runtime not initialized")
 
 
-async def _submit_background_job(runtime: _Runtime, job: Job, operation: Any) -> Job:
+async def _submit_background_job(
+    runtime: _Runtime,
+    job: Job,
+    operation: Any,
+    *,
+    lease: str | None = None,
+) -> Job:
+    async def guarded_operation(item: Job) -> Any:
+        try:
+            return await operation(item)
+        finally:
+            if runtime.admission is not None:
+                await runtime.admission.release(lease)
+
     if runtime.supervisor is not None:
-        return await runtime.supervisor.submit(job, operation)
-    task = asyncio.create_task(operation(job), name=f"yomiage-compat-job-{job.id}")
+        try:
+            result = await runtime.supervisor.submit(job, guarded_operation)
+            # The supervisor's queue/active registry owns capacity after submit.  Release the
+            # pre-submit lease immediately so a queued cancellation cannot strand an admission
+            # slot (the guarded callback also releases idempotently when it runs).
+            if runtime.admission is not None:
+                await runtime.admission.release(lease)
+            return result
+        except (TaskQueueFullError, SupervisorClosedError) as exc:
+            if runtime.admission is not None:
+                await runtime.admission.release(lease)
+            code = "queue_full" if isinstance(exc, TaskQueueFullError) else "admission_closed"
+            raise HTTPException(
+                429,
+                detail={"code": code, "message": "job admission limit exceeded"},
+            ) from exc
+        except BaseException:
+            if runtime.admission is not None:
+                await runtime.admission.release(lease)
+            raise
+    task = asyncio.create_task(guarded_operation(job), name=f"yomiage-compat-job-{job.id}")
     runtime.compat_tasks.add(task)
     task.add_done_callback(runtime.compat_tasks.discard)
     return job
+
+
+def _supervisor_counts(runtime: _Runtime) -> tuple[int, int]:
+    supervisor = runtime.supervisor
+    if supervisor is None:
+        return 0, 0
+    active = len(getattr(supervisor, "active_job_ids", ()))
+    queue = int(getattr(supervisor, "queue_depth", 0))
+    return active, queue
+
+
+async def _reserve_job(runtime: _Runtime, request: Request) -> str | None:
+    admission = runtime.admission
+    if admission is None:
+        return None
+    active, queue = _supervisor_counts(runtime)
+    try:
+        return await admission.reserve(
+            _client_id(request.scope), active_jobs=active, queue_depth=queue
+        )
+    except _AdmissionRejected as exc:
+        raise HTTPException(429, detail={"code": exc.code, "message": exc.message}) from exc
+
+
+async def _validate_url(runtime: _Runtime, url: str) -> URLTarget:
+    policy = runtime.url_policy or URLPolicy()
+    try:
+        # Resolve and validate every hostname before admission.  This closes the DNS-rebinding
+        # and private-network path before a Job or temporary artifact exists.  Test callers can
+        # inject a deterministic resolver through ``ServerDependencies.url_policy``.
+        return await policy.validate(url)
+    except (URLPolicyError, DNSResolutionError) as exc:
+        raise HTTPException(
+            400,
+            detail={"code": "url_not_allowed", "message": "URL is not allowed"},
+        ) from exc
+
+
+async def _reserve_text_job(runtime: _Runtime, request: Request, text: str) -> str | None:
+    if len(text) > (runtime.security.max_text_chars if runtime.security else 100_000):
+        raise HTTPException(
+            413,
+            detail={"code": "text_too_large", "message": "text exceeds the configured limit"},
+        )
+    return await _reserve_job(runtime, request)
 
 
 class ReadRequest(BaseModel):
@@ -530,6 +944,9 @@ def create_app(
         application.state.metrics = runtime.metrics
         application.state.job_repository = runtime.repository
         application.state.task_supervisor = runtime.supervisor
+        application.state.security = runtime.security
+        application.state.admission = runtime.admission
+        application.state.url_policy = runtime.url_policy
         if deps.legacy_global_mirror:
             global _engine, _job_manager, _hooks, _metrics, _config, _job_repository, _supervisor
             _engine = runtime.engine
@@ -555,6 +972,9 @@ def create_app(
                 "metrics",
                 "job_repository",
                 "task_supervisor",
+                "security",
+                "admission",
+                "url_policy",
             ):
                 setattr(application.state, name, None)
             if deps.legacy_global_mirror:
@@ -568,6 +988,27 @@ def create_app(
 
     application = FastAPI(title="Yomiage Server", version="0.1.0", lifespan=app_lifespan)
     application.state.legacy_compat = deps.legacy_global_mirror
+    application.add_middleware(_APISecurityMiddleware, application=application)
+
+    @application.exception_handler(HTTPException)
+    async def _http_error_handler(_request: Request, exc: HTTPException) -> JSONResponse:
+        status = int(exc.status_code)
+        detail = exc.detail
+        if isinstance(detail, Mapping):
+            code = str(detail.get("code", f"http_{status}"))
+            message = str(detail.get("message", "request failed"))
+        else:
+            code = {
+                401: "authentication_required",
+                403: "authentication_forbidden",
+                413: "request_body_too_large",
+                429: "rate_limited",
+            }.get(status, f"http_{status}")
+            message = str(detail or "request failed")
+        headers = dict(exc.headers or {})
+        if status == 401:
+            headers.setdefault("WWW-Authenticate", "Bearer")
+        return _error_response(status, code, message, headers=headers)
 
     @application.get("/health")
     async def health(request: Request):
@@ -590,13 +1031,20 @@ def create_app(
             raise HTTPException(503, "Engine not initialized")
         if engine.is_running:
             raise HTTPException(409, "Already reading")
+        target = await _validate_url(runtime, req.url)
+        lease = await _reserve_job(runtime, request)
         job = Job(id=new_job_id(), options={"kind": "read"})
 
         async def operation(_job: Job) -> None:
-            await engine.read_url(req.url)
+            await engine.read_url(target.url)
 
-        await _submit_background_job(runtime, job, operation)
-        return {"status": "started", "url": req.url, "job_id": job.id}
+        try:
+            await _submit_background_job(runtime, job, operation, lease=lease)
+        except BaseException:
+            if runtime.admission is not None:
+                await runtime.admission.release(lease)
+            raise
+        return {"status": "started", "url": target.url, "job_id": job.id}
 
     @application.post("/api/yomiage/pause")
     async def pause(request: Request):
@@ -624,9 +1072,11 @@ def create_app(
 
     @application.post("/api/yomiage/synthesize")
     async def synthesize(req: SynthesizeRequest, request: Request):
-        engine = _runtime(request).engine
+        runtime = _runtime(request)
+        engine = runtime.engine
         if engine is None:
             raise HTTPException(503, "Engine not initialized")
+        lease = await _reserve_text_job(runtime, request, req.text)
         from .tts.base import TTSParams
 
         params = TTSParams(
@@ -639,17 +1089,21 @@ def create_app(
             emotion=req.emotion,
             intensity=req.intensity,
         )
-        result = await engine.tts.synthesize_immediate(req.text, params)
-        if req.output_format != "wav":
-            result = result.convert(req.output_format)
-        return StreamingResponse(
-            io.BytesIO(result.audio_data),
-            media_type=f"audio/{req.output_format}",
-            headers={
-                "X-Audio-Duration": str(result.duration or 0.0),
-                "X-Audio-Format": result.format,
-            },
-        )
+        try:
+            result = await engine.tts.synthesize_immediate(req.text, params)
+            if req.output_format != "wav":
+                result = result.convert(req.output_format)
+            return StreamingResponse(
+                io.BytesIO(result.audio_data),
+                media_type=f"audio/{req.output_format}",
+                headers={
+                    "X-Audio-Duration": str(result.duration or 0.0),
+                    "X-Audio-Format": result.format,
+                },
+            )
+        finally:
+            if runtime.admission is not None:
+                await runtime.admission.release(lease)
 
     @application.get("/api/yomiage/voices")
     async def list_voices(request: Request, provider: str | None = Query(None)):
@@ -676,14 +1130,21 @@ def create_app(
         manager = runtime.job_manager
         if manager is None:
             raise HTTPException(503, "Job manager not initialized")
-        job = manager.create_job(
-            url=req.url,
-            mode=req.mode,
-            output_format=req.output_format,
-            video=req.video,
-            style=req.style,
-            allow_partial=req.allow_partial,
-        )
+        target = await _validate_url(runtime, req.url)
+        lease = await _reserve_job(runtime, request)
+        try:
+            job = manager.create_job(
+                url=target.url,
+                mode=req.mode,
+                output_format=req.output_format,
+                video=req.video,
+                style=req.style,
+                allow_partial=req.allow_partial,
+            )
+        except BaseException:
+            if runtime.admission is not None:
+                await runtime.admission.release(lease)
+            raise
         core_job = Job(
             id=job.id,
             options={
@@ -709,7 +1170,17 @@ def create_app(
                 "error": final.error if final else None,
             }
 
-        await _submit_background_job(runtime, core_job, operation)
+        try:
+            await _submit_background_job(runtime, core_job, operation, lease=lease)
+        except BaseException:
+            if runtime.admission is not None:
+                await runtime.admission.release(lease)
+            # Admission was checked before creating the in-memory BatchJob.  Remove it if a
+            # concurrent submit still loses a race with the finite supervisor queue.
+            jobs = getattr(manager, "_jobs", None)
+            if isinstance(jobs, dict):
+                jobs.pop(job.id, None)
+            raise
         return {"job_id": job.id, "status": job.status}
 
     @application.get("/api/yomiage/synthesize/batch/{job_id}")

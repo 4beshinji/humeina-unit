@@ -24,6 +24,7 @@ from ..nlp.scene_analyzer import AnalyzedSegment, SceneAnalyzer
 from ..nlp.speaker import SpeakerExtractor
 from ..nlp.splitter import Chunk, TextSplitter
 from ..nlp.text_processor import TextProcessor
+from ..ports.sources import URLPolicy
 from ..sources import registry
 from ..sources.base import Chapter, ContentSource
 from ..tts.audio_utils import concat_wav_files
@@ -63,6 +64,7 @@ class ReadingEngine:
         synthesis_service: SynthesisService | None = None,
         planning_adapter: ReaderPlanningAdapter | None = None,
         playback_queue: UtterancePlaybackQueue | None = None,
+        url_policy: URLPolicy | None = None,
     ):
         self.tts = tts_manager
         self.processor = text_processor or TextProcessor()
@@ -83,6 +85,7 @@ class ReadingEngine:
         self._planning_adapter = planning_adapter
         self._playback_queue = playback_queue
         self._owns_playback_queue = False
+        self.url_policy = url_policy
 
         self._nlp_analyzer = NLPAnalyzer(
             max_chunk_chars=self.splitter.max_chars,
@@ -149,7 +152,7 @@ class ReadingEngine:
 
         try:
             self._ensure_synthesis_service()
-            source = registry.resolve(url)
+            source = registry.resolve(url, policy=self.url_policy)
             self._current_source = source
             await self._read_from_source(
                 source,

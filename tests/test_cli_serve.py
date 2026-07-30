@@ -36,13 +36,20 @@ def test_serve_rejects_non_loopback_without_token(monkeypatch) -> None:
     assert "uvicorn" not in result.output.lower()
 
 
-def test_serve_rejects_non_loopback_even_with_token(monkeypatch) -> None:
-    """認証未実装のため、token設定だけで外部bindを有効化しない."""
+def test_serve_allows_non_loopback_with_token(monkeypatch) -> None:
+    """API tokenを伴う非loopback bindはAPI-002で許可される."""
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        "uvicorn.run",
+        lambda *args, **kwargs: calls.append({"args": args, **kwargs}),
+    )
     result = CliRunner().invoke(
         app,
         ["serve", "--host", "0.0.0.0", "--api-token", "do-not-log-this"],
     )
 
-    assert result.exit_code != 0
-    assert "API-002" in result.output
+    assert result.exit_code == 0, result.output
+    assert calls
+    assert calls[0]["host"] == "0.0.0.0"
+    assert "authenticated external" in result.output
     assert "do-not-log-this" not in result.output

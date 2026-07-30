@@ -11,7 +11,13 @@ from fastapi.testclient import TestClient
 
 from yomiage.adapters.persistence.sqlite import SQLiteJobRepository
 from yomiage.core.jobs import Job, JobState
+from yomiage.ports.sources import URLPolicy
 from yomiage.server import ServerDependencies, create_app
+
+
+class _PublicResolver:
+    async def resolve(self, _hostname: str) -> tuple[str, ...]:
+        return ("93.184.216.34",)
 
 
 class _Provider:
@@ -69,7 +75,7 @@ def test_lifespan_recovers_running_job_and_closes_repository_and_tts(tmp_path: P
     engine = _Engine(closed)
     application = create_app(
         _config(path, tmp_path / "output"),
-        ServerDependencies(engine=engine),
+        ServerDependencies(engine=engine, url_policy=URLPolicy(resolver=_PublicResolver())),
     )
 
     with TestClient(application) as client:
@@ -93,7 +99,7 @@ def test_read_endpoint_uses_lifespan_supervisor_task_registry(tmp_path: Path) ->
     engine = _Engine(closed)
     application = create_app(
         _config(path, tmp_path / "output"),
-        ServerDependencies(engine=engine),
+        ServerDependencies(engine=engine, url_policy=URLPolicy(resolver=_PublicResolver())),
     )
 
     with TestClient(application) as client:
@@ -121,7 +127,7 @@ def test_batch_failure_status_is_persisted_as_failed_job(
     engine = _Engine(closed)
     application = create_app(
         _config(path, tmp_path / "output"),
-        ServerDependencies(engine=engine),
+        ServerDependencies(engine=engine, url_policy=URLPolicy(resolver=_PublicResolver())),
     )
 
     with TestClient(application) as client:

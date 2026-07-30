@@ -9,7 +9,13 @@ import pytest
 from fastapi.testclient import TestClient
 
 from yomiage.batch.job_manager import BatchJobManager
+from yomiage.ports.sources import URLPolicy
 from yomiage.server import ServerDependencies, create_app
+
+
+class _PublicResolver:
+    async def resolve(self, _hostname: str) -> tuple[str, ...]:
+        return ("93.184.216.34",)
 
 
 @pytest.fixture
@@ -25,7 +31,11 @@ def client(tmp_path):
 
     application = create_app(
         {"storage": {"sqlite_path": str(tmp_path / "jobs.sqlite3")}},
-        ServerDependencies(engine=mock_engine, job_manager=manager),
+        ServerDependencies(
+            engine=mock_engine,
+            job_manager=manager,
+            url_policy=URLPolicy(resolver=_PublicResolver()),
+        ),
     )
 
     with TestClient(application) as test_client:

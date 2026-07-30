@@ -284,7 +284,11 @@ async def test_read_url_uses_plan_path_for_multiple_speakers(monkeypatch, tmp_pa
         async def get_next_chapter_url(self, _url: str) -> str | None:
             return None
 
-    monkeypatch.setattr(engine_module.registry, "resolve", lambda _url: Source())
+    monkeypatch.setattr(
+        engine_module.registry,
+        "resolve",
+        lambda _url, **_kwargs: Source(),
+    )
     original_character_db = engine_module.CharacterDB
     monkeypatch.setattr(
         engine_module,

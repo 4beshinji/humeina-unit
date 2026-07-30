@@ -228,7 +228,24 @@ def _environment_overrides(env: Mapping[str, str]) -> dict[str, Any]:
     put("server", "host", "YOMIAGE_SERVER_HOST")
     put("server", "port", "YOMIAGE_SERVER_PORT", cast=int)
     put("server", "max_request_chars", "YOMIAGE_SERVER_MAX_REQUEST_CHARS", cast=int)
+    put("server", "max_body_bytes", "YOMIAGE_SERVER_MAX_BODY_BYTES", cast=int)
+    put("server", "max_text_chars", "YOMIAGE_SERVER_MAX_TEXT_CHARS", cast=int)
+    put(
+        "server",
+        "max_url_response_bytes",
+        "YOMIAGE_SERVER_MAX_URL_RESPONSE_BYTES",
+        cast=int,
+    )
     put("server", "max_concurrent_jobs", "YOMIAGE_SERVER_MAX_CONCURRENT_JOBS", cast=int)
+    put("server", "job_queue_size", "YOMIAGE_SERVER_JOB_QUEUE_SIZE", cast=int)
+    put("server", "max_active_jobs", "YOMIAGE_SERVER_MAX_ACTIVE_JOBS", cast=int)
+    put("server", "client_rate_limit", "YOMIAGE_SERVER_CLIENT_RATE_LIMIT", cast=int)
+    put(
+        "server",
+        "client_rate_window_seconds",
+        "YOMIAGE_SERVER_CLIENT_RATE_WINDOW_SECONDS",
+        cast=float,
+    )
     put("server", "api_token", "YOMIAGE_API_TOKEN")
     put("storage", "packaged_config_dir", "YOMIAGE_PACKAGED_CONFIG_DIR")
     put("storage", "user_config_dir", "YOMIAGE_USER_CONFIG_DIR")
