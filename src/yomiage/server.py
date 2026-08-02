@@ -302,7 +302,10 @@ class _APISecurityMiddleware:
         async def limited_receive() -> dict[str, Any]:
             if buffered:
                 return buffered.popleft()
-            return {"type": "http.disconnect"}
+            # Streaming responses keep listening for client disconnects while the response
+            # body is sent. Returning a synthetic disconnect here cancels those responses
+            # immediately after the request body is consumed.
+            return await receive()
 
         await self.app(scope, limited_receive, send)
 

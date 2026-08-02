@@ -103,6 +103,22 @@ def test_bearer_auth_has_distinct_missing_and_invalid_semantics(tmp_path) -> Non
         assert accepted.status_code == 200
 
 
+def test_synthesize_stream_preserves_audio_body_after_request_buffering(tmp_path) -> None:
+    app, _, _ = _app(tmp_path, client_rate_limit=100)
+    auth = {"Authorization": "Bearer correct-token"}
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/yomiage/synthesize",
+            headers=auth,
+            json={"text": "ストリーミング本文の回帰テスト"},
+        )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("audio/wav")
+    assert response.content == b"RIFF"
+
+
 def test_url_policy_is_propagated_to_source_consuming_dependencies(tmp_path) -> None:
     app, manager, _ = _app(tmp_path)
     with TestClient(app):
