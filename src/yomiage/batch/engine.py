@@ -69,7 +69,7 @@ class BatchEngine:
 
         self.ollama = OllamaClient(
             url=ollama_cfg.get("url", "http://localhost:11434"),
-            model=ollama_cfg.get("batch_model") or ollama_cfg.get("model", "qwen3.5:3b"),
+            model=ollama_cfg.get("batch_model") or ollama_cfg.get("model", "qwen3.5:9b"),
         )
 
         scene_params = config.get("scene_params")

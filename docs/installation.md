@@ -31,24 +31,23 @@ cp .env.example .env
 
 ### Ollama（必須）
 
-NLP分析のSLMバックエンド。標準設定のデフォルトは `qwen3:8b`。軽量運用なら `qwen3.5:3b`
-程度でも動作する。要約用に別モデルを指定することも可能。
+NLP分析のSLMバックエンド。標準設定は分析に `qwen3.5:9b`、要約に `gemma4:12b` を使用する。
+要約用モデルは `OLLAMA_SUMMARY_MODEL` で変更できる。
 
 ```bash
 # インストール
 curl -fsSL https://ollama.ai/install.sh | sh
 
 # モデルダウンロード（例）
-ollama pull qwen3:8b              # 分析用（デフォルト）
-ollama pull qwen3.5:3b            # 軽量分析用
-ollama pull qwen3:14b             # 要約用（高品質、オプション）
+ollama pull qwen3.5:9b            # 分析用（デフォルト）
+ollama pull gemma4:12b            # 要約用（デフォルト）
 ```
 
 `.env` に設定:
 ```
 OLLAMA_URL=http://localhost:11434
-OLLAMA_MODEL=qwen3:8b
-OLLAMA_SUMMARY_MODEL=qwen3:14b
+OLLAMA_MODEL=qwen3.5:9b
+OLLAMA_SUMMARY_MODEL=gemma4:12b
 ```
 
 ### Gemini API（オプション、Ollamaフォールバック）

@@ -16,7 +16,7 @@
 
 | # | ファイル | 行 | 用途 | クライアント | エンドポイント | モデル |
 |---|---|---|---|---|---|---|
-| 1 | `src/yomiage/nlp/ollama_client.py` | 全体 | Ollama 直接クライアント | `aiohttp` | `POST /api/chat`, `GET /api/tags` | `qwen3.5:3b` |
+| 1 | `src/yomiage/nlp/ollama_client.py` | 全体 | Ollama 直接クライアント | `aiohttp` | `POST /api/chat`, `GET /api/tags` | `qwen3.5:9b` |
 | 2 | `src/yomiage/nlp/llm_backend.py` | 71–113, 274–304 | `OllamaBackend` + factory | — | 上を委譲 | — |
 | 3 | `src/yomiage/nlp/scene_analyzer.py` | 57–109 | シーン/感情解析（バッチ） | LLMBackend or OllamaClient | — | — |
 | 4 | `src/yomiage/news/summarizer.py` | 89–137 | ニュース要約 | OllamaClient 直接 | `/api/chat` | — |
@@ -28,9 +28,9 @@
 | 10 | `src/yomiage/api/analyzer.py` | 41–109 | TextAnalyzer (LLMBackend factory) | — | — | デフォルト `"ollama"` |
 | 11 | `src/yomiage/api/config.py` | 42–117 | LLMConfig (`backend="ollama"` デフォ) | — | — | — |
 | 12 | `src/yomiage/api/pipeline.py` | 54–65 | バックエンド構築 | — | — | — |
-| 13 | `src/yomiage/cli.py` | 54–106 | CLI 起動時 OllamaClient 生成 | — | — | `qwen3.5:3b` |
-| 14 | `src/yomiage/server.py` | 25–65 | FastAPI 起動時 OllamaClient 生成 | — | — | `qwen3.5:3b` |
-| 15 | `config/default.yaml` | 24–27 | `ollama:` 設定セクション | — | `${OLLAMA_URL}` | `qwen3:8b` |
+| 13 | `src/yomiage/cli.py` | 54–106 | CLI 起動時 OllamaClient 生成 | — | — | `qwen3.5:9b` |
+| 14 | `src/yomiage/server.py` | 25–65 | FastAPI 起動時 OllamaClient 生成 | — | — | `qwen3.5:9b` |
+| 15 | `config/default.yaml` | 24–27 | `ollama:` 設定セクション | — | `${OLLAMA_URL}` | `qwen3.5:9b` / `gemma4:12b` |
 | 16 | `.env.example` | 全体 | 環境変数 | — | `OLLAMA_URL`, `OLLAMA_MODEL`, `OLLAMA_SUMMARY_MODEL` | — |
 | 17 | `infra/docker-compose.yml` | 全体 | VOICEVOX のみ（Ollama 定義なし） | — | — | — |
 | 18 | `docs/installation.md`, `architecture.md`, `configuration.md`, `README.md` | 各所 | セットアップ・設定説明 | — | — | — |
@@ -42,7 +42,7 @@
 - Docker Compose 上に Ollama サービスは無い（**ホストの Ollama を呼ぶ前提**）。これは llama.cpp 移行でも同様にホスト稼働 or compose 追加の選択肢あり。
 - `LLMBackend` 抽象（`OllamaBackend` / `OpenAIBackend` / `AnthropicBackend`）は既にあり、`OpenAIBackend` は llama.cpp の `/v1/chat/completions` をそのまま叩ける構造。
 - 一方で **多くのコンポーネント（news / batch / slack / cli / server）が `OllamaClient` を直接型付けで受けている**ため、llama.cpp 切替には型のリファクタが必要。
-- `config/default.yaml` のデフォルト (`qwen3:8b`) と `OllamaClient` のデフォルト (`qwen3.5:3b`) で表記揺れあり。
+- 分析用のデフォルトは `qwen3.5:9b`、要約用のデフォルトは `gemma4:12b` に統一する。
 
 ---
 
@@ -205,7 +205,7 @@ def create_llm_backend(backend="llamacpp", *, url=None, api_key=None, model=None
     if backend == "ollama":
         return OllamaBackend(
             url=url or "http://localhost:11434",
-            model=model or "qwen3.5:3b",
+            model=model or "qwen3.5:9b",
         )
     if backend == "anthropic":
         return AnthropicBackend(api_key=api_key, model=model)
@@ -231,7 +231,7 @@ YAML ローダ（108–117 行）も `llamacpp:` セクションを優先で読�
 ```diff
 - ollama:
 -   url: ${OLLAMA_URL:-http://localhost:11434}
--   model: ${OLLAMA_MODEL:-qwen3:8b}
+-   model: ${OLLAMA_MODEL:-qwen3.5:9b}
 -   summary_model: ${OLLAMA_SUMMARY_MODEL}
 + llamacpp:
 +   url: ${LLM_API_URL:-http://localhost:8080/v1}
@@ -243,8 +243,8 @@ YAML ローダ（108–117 行）も `llamacpp:` セクションを優先で読�
 
 ```diff
 - OLLAMA_URL=http://localhost:11434
-- OLLAMA_MODEL=qwen3.5:3b
-- OLLAMA_SUMMARY_MODEL=qwen3:14b
+- OLLAMA_MODEL=qwen3.5:9b
+- OLLAMA_SUMMARY_MODEL=gemma4:12b
 + LLM_API_URL=http://localhost:8080/v1
 + LLM_MODEL=qwen2.5-7b-instruct
 + LLM_SUMMARY_MODEL=qwen2.5-14b-instruct
@@ -369,7 +369,7 @@ huggingface-cli download bartowski/Qwen2.5-14B-Instruct-GGUF \
 | `romanize` のクオリティ差 | qwen2.5 系で同等以上の出力か検証 |
 | `OLLAMA_SUMMARY_MODEL` の役割 | 別モデル常駐サービス (`llm-summary`) として併設可 |
 | ホスト稼働 → docker-compose 統合の運用変化 | `docs/installation.md` で両パスを案内 |
-| デフォルトモデル名の表記揺れ | `qwen3.5:3b` / `qwen3:8b` を `qwen2.5-7b-instruct` で統一 |
+| デフォルトモデル名の表記揺れ | 分析用 `qwen3.5:9b` / 要約用 `gemma4:12b` で統一 |
 
 検証：
 

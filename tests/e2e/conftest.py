@@ -44,7 +44,7 @@ def _service_available(config: dict, name: str) -> bool:
         return _run(
             OllamaClient(
                 url=cfg.get("url", "http://localhost:11434"),
-                model=cfg.get("model", "qwen3:8b"),
+                model=cfg.get("model", "qwen3.5:9b"),
             ).is_available()
         )
     raise ValueError(f"Unknown service: {name}")

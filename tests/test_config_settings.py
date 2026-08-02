@@ -62,6 +62,13 @@ def test_required_voisona_secrets_are_checked_only_when_active() -> None:
     assert cloud.llm.backend == "openai"
 
 
+def test_local_llm_defaults_use_analysis_and_summary_models() -> None:
+    settings = Settings.from_dict(_voicevox_config())
+
+    assert settings.llm.model == "qwen3.5:9b"
+    assert settings.llm.summary_model == "gemma4:12b"
+
+
 def test_voicepeak_executable_is_checked_only_when_active(tmp_path: Path) -> None:
     missing = tmp_path / "missing-voicepeak"
     Settings.from_dict(

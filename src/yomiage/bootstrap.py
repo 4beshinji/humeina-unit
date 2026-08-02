@@ -115,7 +115,7 @@ def create_reading_engine(
         ollama_cfg = {}
     ollama = OllamaClient(
         url=str(ollama_cfg.get("url", "http://localhost:11434")),
-        model=str(ollama_cfg.get("model", "qwen3.5:3b")),
+        model=str(ollama_cfg.get("model", "qwen3.5:9b")),
     )
     scene_params = config.get("scene_params")
     param_mapper = (

@@ -58,7 +58,7 @@ def create_reading_engine(
     ollama_cfg = config.get("ollama", {})
     ollama = OllamaClient(
         url=ollama_cfg.get("url", "http://localhost:11434"),
-        model=ollama_cfg.get("model", "qwen3.5:3b"),
+        model=ollama_cfg.get("model", "qwen3.5:9b"),
     )
 
     scene_params = config.get("scene_params")
@@ -80,7 +80,7 @@ def create_reading_engine(
         catalog = load_catalog(wav_dir)
         backend = OllamaBackend(
             url=ollama_cfg.get("url", "http://localhost:11434"),
-            model=ollama_cfg.get("model", "qwen3.5:3b"),
+            model=ollama_cfg.get("model", "qwen3.5:9b"),
         )
         selector = ExVoiceSelector(backend, catalog)
         ex_voice_manager = ExVoiceManager(
@@ -220,7 +220,7 @@ def create_news_scheduler(
 
     ollama = OllamaClient(
         url=ollama_cfg.get("url", "http://localhost:11434"),
-        model=ollama_cfg.get("summary_model") or ollama_cfg.get("model", "qwen3.5:3b"),
+        model=ollama_cfg.get("summary_model") or "gemma4:12b",
         fallback=fallback,
     )
     news_cfg = config.get("news", {})
@@ -250,7 +250,7 @@ def create_slack_components(config: dict):
     ollama_cfg = config.get("ollama", {})
     ollama = OllamaClient(
         url=ollama_cfg.get("url", "http://localhost:11434"),
-        model=ollama_cfg.get("model", "qwen3.5:3b"),
+        model=ollama_cfg.get("model", "qwen3.5:9b"),
     )
     scorer = ImportanceScorer(
         ollama=ollama,

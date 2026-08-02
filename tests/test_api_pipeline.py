@@ -116,7 +116,7 @@ class TestPipelineConfig:
         raw = {
             "tts": {"primary_provider": "voicevox", "lookahead_chunks": 5},
             "voicevox": {"url": "http://localhost:50021", "default_speaker": "47"},
-            "ollama": {"url": "http://localhost:11434", "model": "qwen3.5:3b"},
+            "ollama": {"url": "http://localhost:11434", "model": "qwen3.5:9b"},
         }
         config = PipelineConfig.from_dict(raw)
         assert config.tts.engine == "voicevox"

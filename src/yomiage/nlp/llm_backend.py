@@ -66,7 +66,7 @@ class OllamaBackend(LLMBackend):
     def __init__(
         self,
         url: str = "http://localhost:11434",
-        model: str = "qwen3.5:3b",
+        model: str = "qwen3.5:9b",
     ):
         self._client = OllamaClient(url=url, model=model)
 
@@ -275,7 +275,7 @@ def create_llm_backend(
     if backend == "ollama":
         return OllamaBackend(
             url=url or "http://localhost:11434",
-            model=model or "qwen3.5:3b",
+            model=model or "qwen3.5:9b",
         )
     elif backend == "openai":
         if not api_key:

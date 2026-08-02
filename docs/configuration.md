@@ -68,8 +68,8 @@ VOICEPEAK の executable path など必要値を起動前に検証します。�
 ```yaml
 ollama:
   url: ${OLLAMA_URL:-http://localhost:11434}
-  model: ${OLLAMA_MODEL:-qwen3:8b}
-  summary_model: ${OLLAMA_SUMMARY_MODEL}
+  model: ${OLLAMA_MODEL:-qwen3.5:9b}
+  summary_model: ${OLLAMA_SUMMARY_MODEL:-gemma4:12b}
 
 news:
   urgency_threshold: 0.8

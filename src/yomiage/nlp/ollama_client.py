@@ -19,7 +19,7 @@ class OllamaClient:
     def __init__(
         self,
         url: str = "http://localhost:11434",
-        model: str = "qwen3.5:3b",
+        model: str = "qwen3.5:9b",
         fallback: GeminiClient | None = None,
     ):
         self.url = url.rstrip("/")

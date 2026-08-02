@@ -62,7 +62,7 @@ class LLMConfig(BaseModel):
     backend: str = "ollama"  # "ollama" | "openai" | "anthropic"
     url: str | None = None
     api_key: str | None = None
-    model: str | None = None
+    model: str | None = "qwen3.5:9b"
 
 
 class AnalyzerConfig(BaseModel):
@@ -150,7 +150,7 @@ class PipelineConfig(BaseModel):
         llm = LLMConfig(
             backend="ollama",
             url=ollama_cfg.get("url"),
-            model=ollama_cfg.get("model"),
+            model=ollama_cfg.get("model") or "qwen3.5:9b",
         )
         analyzer = AnalyzerConfig(
             llm=llm,

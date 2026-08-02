@@ -86,7 +86,7 @@ cp .env.example .env
 
 外部サービスの準備:
 
-- Ollama（必須）: `ollama pull qwen3:8b` など
+- Ollama（必須）: `ollama pull qwen3.5:9b` および `ollama pull gemma4:12b`
 - VOICEVOX: `cd infra && docker compose up -d`
 - VoiSona Talk: Windows VM 上で API サーバーを起動
 - VOICEPEAK: ローカル CLI バイナリを設置し `config/default.yaml` の `voicepeak.path` を設定

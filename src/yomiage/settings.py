@@ -260,8 +260,8 @@ class LLMSettings(BaseModel):
     backend: LLMBackendName = "ollama"
     url: StrictStr | None = "http://localhost:11434"
     api_key: SecretStr | None = None
-    model: StrictStr | None = "qwen3:8b"
-    summary_model: StrictStr | None = None
+    model: StrictStr | None = "qwen3.5:9b"
+    summary_model: StrictStr | None = "gemma4:12b"
 
     _validate_url = field_validator("url", mode="before")(_http_url)
     _validate_api_key = field_validator("api_key", mode="before")(_as_secret)

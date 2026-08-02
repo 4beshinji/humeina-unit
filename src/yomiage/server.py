@@ -1379,7 +1379,7 @@ def create_app(
             ollama_cfg = {}
         ollama = OllamaClient(
             url=str(ollama_cfg.get("url", "http://localhost:11434")),
-            model=str(ollama_cfg.get("summary_model") or ollama_cfg.get("model", "qwen3.5:3b")),
+            model=str(ollama_cfg.get("summary_model") or "gemma4:12b"),
         )
         news_cfg = runtime.config.get("news", {})
         if not isinstance(news_cfg, Mapping):
