@@ -3,12 +3,13 @@
 import re
 from urllib.parse import urldefrag
 
-import aiohttp
 from bs4 import BeautifulSoup, NavigableString, Tag
 from loguru import logger
 
 from ..nlp.math_processor import MathProcessor
+from ..ports.sources import URLPolicy
 from .base import Chapter, ContentSource
+from .http import HTTPFetcher
 
 _CODE_BLOCK_PLACEHOLDER = "コードブロック省略。"
 
@@ -63,7 +64,13 @@ class GenericWebSource(ContentSource):
     マッチしなかった場合にのみ使われる。
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        fetcher: HTTPFetcher | None = None,
+        *,
+        policy: URLPolicy | None = None,
+    ) -> None:
+        super().__init__(fetcher, policy=policy)
         self._math = MathProcessor()
 
     @classmethod
@@ -195,14 +202,13 @@ class GenericWebSource(ContentSource):
         return title, text
 
     async def _fetch_html(self, url: str) -> str:
-        async with aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=30),
+        response = await self._fetcher.fetch(
+            url,
             headers={"User-Agent": "humeina-unit/0.1"},
-        ) as session:
-            async with session.get(url) as resp:
-                if resp.status != 200:
-                    raise RuntimeError(f"Web fetch failed: {resp.status} for {url}")
-                return await resp.text()
+        )
+        if response.status != 200:
+            raise RuntimeError(f"Web fetch failed: {response.status} for {url}")
+        return response.text()
 
     def _extract_title(self, soup: BeautifulSoup) -> str:
         # og:title → h1 → <title> の優先順

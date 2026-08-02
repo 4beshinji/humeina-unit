@@ -2,9 +2,11 @@
 
 from loguru import logger
 
+from ..ports.sources import URLPolicy
 from .aozora import AozoraSource
 from .base import ContentSource
 from .generic_web import GenericWebSource
+from .http import HTTPFetcher
 from .kakuyomu import KakuyomuSource
 from .narou import NarouSource
 
@@ -22,10 +24,15 @@ def register_source(source_cls: type[ContentSource]) -> None:
         _SOURCES.append(source_cls)
 
 
-def resolve(url: str) -> ContentSource:
+def resolve(
+    url: str,
+    *,
+    fetcher: HTTPFetcher | None = None,
+    policy: URLPolicy | None = None,
+) -> ContentSource:
     """Resolve a URL to a content source instance."""
     for source_cls in _SOURCES:
         if source_cls.can_handle(url):
             logger.debug(f"Resolved {url} → {source_cls.__name__}")
-            return source_cls()
+            return source_cls(fetcher=fetcher, policy=policy)
     raise ValueError(f"No content source can handle URL: {url}")

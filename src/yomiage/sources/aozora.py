@@ -2,11 +2,12 @@
 
 import re
 
-import aiohttp
 from bs4 import BeautifulSoup
 from loguru import logger
 
+from ..ports.sources import URLPolicy
 from .base import Chapter, ContentSource
+from .http import HTTPFetcher
 
 
 class AozoraSource(ContentSource):
@@ -16,22 +17,26 @@ class AozoraSource(ContentSource):
     - https://www.aozora.gr.jp/cards/NNNNNN/files/NNNN_NNNNN.html
     """
 
+    def __init__(
+        self,
+        fetcher: HTTPFetcher | None = None,
+        *,
+        policy: URLPolicy | None = None,
+    ) -> None:
+        super().__init__(fetcher, policy=policy)
+
     @classmethod
     def can_handle(cls, url: str) -> bool:
-        return "aozora.gr.jp" in url
+        return _is_host(url, {"aozora.gr.jp", "www.aozora.gr.jp"})
 
     async def fetch_chapter(self, url: str) -> Chapter:
         logger.info(f"Fetching from Aozora: {url}")
 
-        async with aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=30)
-        ) as session:
-            async with session.get(url) as resp:
-                if resp.status != 200:
-                    raise RuntimeError(f"Aozora fetch failed: {resp.status}")
-                # 青空文庫はShift-JIS or UTF-8
-                raw_bytes = await resp.read()
-                raw_html = self._decode(raw_bytes)
+        response = await self._fetcher.fetch(url, headers={"User-Agent": "humeina-unit/0.1"})
+        if response.status != 200:
+            raise RuntimeError(f"Aozora fetch failed: {response.status}")
+        # 青空文庫はShift-JIS or UTF-8
+        raw_html = self._decode(response.body)
 
         title, text = self._parse(raw_html)
         logger.info(f"Fetched: {title} ({len(text)} chars)")
@@ -90,3 +95,13 @@ class AozoraSource(ContentSource):
         text = text.strip()
 
         return title, text
+
+
+def _is_host(url: str, hosts: set[str]) -> bool:
+    from urllib.parse import urlsplit
+
+    try:
+        hostname = (urlsplit(url).hostname or "").lower().rstrip(".")
+    except ValueError:
+        return False
+    return hostname in hosts

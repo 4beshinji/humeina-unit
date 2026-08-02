@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from loguru import logger
 
+from ..application.synthesis import SynthesisService
 from ..nlp.llm_backend import create_llm_backend
 from ..nlp.pipeline import NLPAnalyzer
 from ..reader.character_db import CharacterDB
@@ -34,11 +35,20 @@ class Pipeline:
         chunks = await pipeline.process("テキスト...")
     """
 
-    def __init__(self, config: PipelineConfig):
+    def __init__(
+        self,
+        config: PipelineConfig,
+        *,
+        synthesis_service: SynthesisService | None = None,
+    ):
         self._config = config
 
         # TTS Bridge
-        self._bridge = TTSBridge.from_config(config.tts, config.tts_fallback)
+        if synthesis_service is None:
+            self._bridge = TTSBridge.from_config(config.tts, config.tts_fallback)
+        else:
+            self._bridge = TTSBridge(synthesis_service)
+        self._synthesis_service = self._bridge.service
 
         # LLM-based scene analyzer (optional)
         llm_cfg = config.analyzer.llm
@@ -89,6 +99,7 @@ class Pipeline:
         """
         from .config import PipelineConfig, TTSEngineConfig
 
+        synthesis_service = kwargs.pop("synthesis_service", None)
         tts_kwargs = {}
         for k in ("url", "username", "password", "default_voice"):
             if k in kwargs:
@@ -96,7 +107,13 @@ class Pipeline:
 
         tts = TTSEngineConfig(engine=engine, **tts_kwargs)  # type: ignore[arg-type]
         config = PipelineConfig(tts=tts, **kwargs)  # type: ignore[arg-type]
-        return cls(config)
+        return cls(config, synthesis_service=synthesis_service)  # type: ignore[arg-type]
+
+    @property
+    def synthesis_service(self) -> SynthesisService:
+        """Pipelineが共有する合成serviceを返す。"""
+
+        return self._synthesis_service
 
     async def process(
         self,
@@ -207,6 +224,17 @@ class Pipeline:
     ) -> list[PipelineChunk]:
         """process の同期版."""
         return asyncio.run(self.process(text, **kwargs))
+
+    async def close(self) -> None:
+        """内部で生成したSDK service/providerを解放する。"""
+
+        await self._bridge.close()
+
+    async def __aenter__(self) -> "Pipeline":
+        return self
+
+    async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
+        await self.close()
 
 
 def _params_to_dict(params: TTSParams) -> dict:

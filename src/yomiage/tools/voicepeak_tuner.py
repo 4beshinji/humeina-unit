@@ -17,7 +17,7 @@ from typing import Any
 
 from loguru import logger
 
-from ..tts.voicepeak import VoicepeakProvider
+from ..bootstrap import create_tts_provider
 from .voice_profile import PresetConfig
 from .voicepeak_profile import (
     VOICEPEAK_API_LIMITS,
@@ -44,7 +44,9 @@ class VoicepeakTuner:
         output_dir: Path = DEFAULT_TUNER_DIR,
     ):
         self.profile = profile
-        self.provider = VoicepeakProvider({"path": voicepeak_path})
+        self.provider = create_tts_provider(
+            {"voicepeak": {"path": voicepeak_path}}, "voicepeak"
+        )
         self.test_text = test_text
         self.output_dir = output_dir
         self.output_dir.mkdir(parents=True, exist_ok=True)

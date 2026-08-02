@@ -70,12 +70,17 @@ class SpeakerExtractor:
             # 前の地の文から話者を探す
             if i > 0 and segments[i - 1].type == SegmentType.NARRATION:
                 prev_text = segments[i - 1].text
-                m = self._before_pattern.search(prev_text)
-                if m:
-                    candidates.append(m.group(1))
+                # 一つの分類セグメントに複数の発話導入（「空は青かった。太郎は…」）が
+                # 含まれることがある。最初の主語を採用すると古い文脈の話者へ戻るため、
+                # dialogue に最も近い最後の候補を優先する。
+                for m in reversed(list(self._before_pattern.finditer(prev_text))):
+                    name = self._clean_candidate(m.group(1))
+                    if name:
+                        candidates.append(name)
+                        break
                 m = self._direct_pattern.search(prev_text + seg.text)
                 if m:
-                    name = m.group(1)
+                    name = self._clean_candidate(m.group(1))
                     if name not in candidates:
                         candidates.append(name)
 
@@ -84,7 +89,7 @@ class SpeakerExtractor:
                 next_text = segments[i + 1].text
                 m = self._after_pattern.search(next_text)
                 if m:
-                    name = m.group(1)
+                    name = self._clean_candidate(m.group(1))
                     if name not in candidates:
                         candidates.append(name)
 
@@ -93,3 +98,15 @@ class SpeakerExtractor:
                 logger.debug(f"Speaker candidates for [{seg.text[:20]}...]: {candidates}")
 
         return segments
+
+    @staticmethod
+    def _clean_candidate(value: str) -> str:
+        """文脈込みでマッチした候補から直近の名前部分を取り出す."""
+
+        # ``\u3000-\u9fff`` の範囲には句読点も含まれるため、正規表現のマッチが
+        # ``と言った。花子`` のように複数文を含む場合がある。
+        pieces = re.split(r"[。．、，！？!?\n\r\t ]+", value.strip())
+        return next(
+            (piece.strip("「」『』()（）") for piece in reversed(pieces) if piece.strip()),
+            "",
+        )

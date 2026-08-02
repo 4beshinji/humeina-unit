@@ -139,7 +139,8 @@ voicepeak --narrator "<name>" --text "<text>" --out <wav> [--emotion ...] [--pit
 
 ### プロファイル
 
-`config/voicepeak_profiles/<narrator>.yaml` でナレーターごとのプリセット・感情パラメータを管理。`yomiage vp-tune` 系コマンドで生成・更新する。
+チューニングCLIのプロファイルは checkout の `config/voice_profiles/` または
+`config/voicepeak_profiles/` に保存されます。Batchで別ディレクトリを使う場合は設定で明示します。
 
 ## TTSManager (`manager.py`)
 
@@ -169,7 +170,7 @@ enqueue(text, params) → _queue → _synth_loop → _audio_queue → _play_loop
 ### VoisonaBatchSynthesizer
 
 - `destination: "file"` で直接WAV出力
-- virtiofs のパスマッピング: `Z:\{work_id}\NNNN.wav` → `output/{work_id}/NNNN.wav`
+- virtiofs のパスマッピング: `Z:\{work_id}\NNNN.wav` → canonical run の検証済み artifact
 - キャラ別パラメータ + シーン + 感情の組み合わせでパラメータ構築
 - `batch.synth_concurrency` で同時合成ジョブ数を制御
 

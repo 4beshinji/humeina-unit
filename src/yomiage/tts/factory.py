@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from .base import TTSProvider
-from .session import get_default_session_manager
 
 if TYPE_CHECKING:
     from ..api.config import TTSEngineConfig
@@ -33,5 +32,4 @@ def create_provider_from_dict(engine: str, cfg: dict) -> TTSProvider:
     else:
         raise ValueError(f"Unknown TTS engine: {engine}")
 
-    provider.set_session(get_default_session_manager().acquire())
     return provider

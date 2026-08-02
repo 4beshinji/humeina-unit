@@ -1,20 +1,23 @@
 """TTSBridge — unified interface to multiple TTS engines."""
 
 import asyncio
-import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from loguru import logger
-
+from ..application.synthesis import SynthesisFailure, SynthesisRequest, SynthesisService
+from ..bootstrap import create_synthesis_service, create_tts_provider
+from ..core.models import VoiceIntent
 from ..tts.base import AudioResult, TTSParams, TTSProvider
 from ..tts.cache import TTSCache
-from ..tts.factory import create_provider
-from ..tts.retry import RetryConfig, with_retry
+from ..tts.retry import RetryConfig
 from .hooks import EventHooks
 from .long_text import LongTextOptions, synthesize_long_text
 from .metrics import MetricsCollector
 from .models import SynthesisResult, VoiceInfo
+
+# Backwards-compatible patch point for callers/tests that used to monkeypatch the bridge
+# factory.  The implementation itself now lives in the composition root.
+create_provider = create_tts_provider
 
 if TYPE_CHECKING:
     from ..tools.voice_profile import VoiceProfile
@@ -35,13 +38,15 @@ class TTSBridge:
 
     def __init__(
         self,
-        provider: TTSProvider,
+        provider: TTSProvider | SynthesisService,
         fallback: TTSProvider | None = None,
         retry_config: RetryConfig | None = None,
         cache: TTSCache | None = None,
         voice_profile: "VoiceProfile | None" = None,
         hooks: EventHooks | None = None,
         metrics: MetricsCollector | None = None,
+        *,
+        service: SynthesisService | None = None,
     ):
         self._provider = provider
         self._fallback = fallback
@@ -50,6 +55,55 @@ class TTSBridge:
         self._voice_profile = voice_profile
         self._hooks = hooks
         self._metrics = metrics
+        if service is not None:
+            self._service = service
+            self._owns_service = False
+            self._attach_metrics(service)
+            if isinstance(provider, SynthesisService):
+                self._provider = provider.primary_provider
+                self._fallback = provider.fallback_provider
+        elif isinstance(provider, SynthesisService):
+            self._service = provider
+            self._owns_service = False
+            self._attach_metrics(provider)
+            self._provider = provider.primary_provider
+            self._fallback = provider.fallback_provider
+        else:
+            providers: dict[str, object] = {provider.name: provider}
+            if fallback is not None:
+                providers[fallback.name] = fallback
+            self._service = create_synthesis_service(
+                providers,
+                primary=provider.name,
+                fallback=fallback.name if fallback is not None else None,
+                cache=cache,
+                retry_policy=retry_config,
+                metrics=metrics,
+            )
+            self._owns_service = True
+
+    def _attach_metrics(self, service: SynthesisService) -> None:
+        """Attach the facade metrics port only when the service has none.
+
+        ``SynthesisService`` is the single synthesis observability boundary.  A service
+        supplied by a composition root may already own a collector; replacing it here
+        would either disconnect the root collector or make ownership ambiguous.
+        """
+
+        if self._metrics is None or getattr(service, "metrics", None) is not None:
+            return
+        try:
+            service.metrics = self._metrics
+        except (AttributeError, TypeError):
+            # Third-party service implementations may expose a read-only metrics port.
+            # Hooks remain available even when metrics cannot be attached.
+            return
+
+    @property
+    def service(self) -> SynthesisService:
+        """共有application serviceを返す（SDK factory/統合入口向け）。"""
+
+        return self._service
 
     @classmethod
     def create(
@@ -131,10 +185,28 @@ class TTSBridge:
             metrics=metrics,
         )
 
+    @classmethod
+    def from_service(
+        cls,
+        service: SynthesisService,
+        *,
+        voice_profile: "VoiceProfile | None" = None,
+        hooks: EventHooks | None = None,
+        metrics: MetricsCollector | None = None,
+    ) -> "TTSBridge":
+        """既にcomposition rootで生成したserviceをSDK facadeへ接続する。"""
+
+        return cls(
+            service,
+            voice_profile=voice_profile,
+            hooks=hooks,
+            metrics=metrics,
+        )
+
     @property
     def engine_name(self) -> str:
         """現在のプライマリエンジン名."""
-        return self._provider.name
+        return self._service.primary_provider.name
 
     async def synthesize(
         self,
@@ -171,70 +243,58 @@ class TTSBridge:
             intensity=intensity,
             **kwargs,
         )
+        _add_intent_kwargs(synth_kwargs, preset=preset, emotion=emotion, intensity=intensity)
+        if params is not None:
+            _add_intent_kwargs(
+                synth_kwargs,
+                preset=params.preset,
+                emotion=params.emotion,
+                intensity=params.intensity,
+            )
 
-        engine_name = self._provider.name
+        engine_name = self.engine_name
         if self._hooks:
             self._hooks.emit_synthesis_start(text, engine_name, synth_kwargs)
 
         start = asyncio.get_event_loop().time()
         try:
-            # キャッシュヒット確認
-            if self._cache:
-                cached = self._cache.get(engine_name, text, **synth_kwargs)
-                if cached:
-                    if self._hooks:
-                        self._hooks.emit_cache_hit(text, engine_name, synth_kwargs)
-                    if self._metrics:
-                        duration_ms = (
-                            asyncio.get_event_loop().time() - start
-                        ) * 1000
-                        self._metrics.record_synthesis(
-                            duration_ms=duration_ms,
-                            cache_hit=True,
-                            text=text,
-                        )
-                    return SynthesisResult(
-                        audio_data=cached,
-                        format="wav",
-                        sample_rate=None,
-                        duration=None,
-                    )
+            result = await self._service.synthesize(
+                SynthesisRequest(
+                    text=text,
+                    voice_intent=_voice_intent_from_kwargs(synth_kwargs),
+                    metadata=synth_kwargs,
+                )
+            )
 
-            result = await self._synthesize_with_fallback(text, synth_kwargs)
-
-            # audio_data が空の場合（VoiSona等）はファイル経由で取得
-            if not result.audio_data:
-                result = await self._synthesize_via_file(text, synth_kwargs)
-
-            # キャッシュ保存
-            if self._cache and result.audio_data:
-                self._cache.put(result.audio_data, engine_name, text, **synth_kwargs)
+            cache_hit = result.cache_hit
+            if cache_hit and self._hooks:
+                self._hooks.emit_cache_hit(text, engine_name, synth_kwargs)
 
             duration_ms = (asyncio.get_event_loop().time() - start) * 1000
             if self._hooks:
                 self._hooks.emit_synthesis_end(
-                    text, engine_name, synth_kwargs, duration_ms, cache_hit=False
-                )
-            if self._metrics:
-                self._metrics.record_synthesis(
-                    duration_ms=duration_ms,
-                    cache_hit=False,
-                    text=text,
+                    text, engine_name, synth_kwargs, duration_ms, cache_hit=cache_hit
                 )
 
-            return _to_synthesis_result(result)
+            return _to_api_synthesis_result(result)
+        except SynthesisFailure as exc:
+            # The legacy facade historically exposed the provider's actionable message.  Keep
+            # that behavior while retaining the typed failure (and metadata) internally.
+            message = str(exc)
+            errors = exc.metadata.get("errors")
+            if isinstance(errors, list) and errors:
+                last = errors[-1]
+                if isinstance(last, dict) and last.get("message"):
+                    message = str(last["message"])
+            if self._hooks:
+                self._hooks.emit_synthesis_error(
+                    text, engine_name, synth_kwargs, message
+                )
+            raise RuntimeError(message) from exc
         except Exception as exc:
-            duration_ms = (asyncio.get_event_loop().time() - start) * 1000
             if self._hooks:
                 self._hooks.emit_synthesis_error(
                     text, engine_name, synth_kwargs, str(exc)
-                )
-            if self._metrics:
-                self._metrics.record_synthesis(
-                    duration_ms=duration_ms,
-                    error=True,
-                    cache_hit=False,
-                    text=text,
                 )
             raise
 
@@ -264,28 +324,32 @@ class TTSBridge:
             intensity=intensity,
             **kwargs,
         )
-        provider = self._provider
-        if hasattr(provider, "synthesize_to_file"):
-            result = await provider.synthesize_to_file(
-                text, str(path), **synth_kwargs
+        _add_intent_kwargs(synth_kwargs, preset=preset, emotion=emotion, intensity=intensity)
+        if params is not None:
+            _add_intent_kwargs(
+                synth_kwargs,
+                preset=params.preset,
+                emotion=params.emotion,
+                intensity=params.intensity,
             )
-        else:
-            result = await provider.synthesize(text, **synth_kwargs)
-            Path(path).write_bytes(result.audio_data)
-
-        # ファイルから読み取ってaudio_dataを埋める
-        audio_data = result.audio_data
-        if not audio_data:
-            file_path = Path(path)
-            if file_path.exists():
-                audio_data = file_path.read_bytes()
-
-        return SynthesisResult(
-            audio_data=audio_data,
-            format=result.format,
-            sample_rate=result.sample_rate,
-            duration=result.duration,
-        )
+        try:
+            result = await self._service.synthesize(
+                SynthesisRequest(
+                    text=text,
+                    voice_intent=_voice_intent_from_kwargs(synth_kwargs),
+                    destination=str(path),
+                    metadata=synth_kwargs,
+                )
+            )
+        except SynthesisFailure as exc:
+            message = str(exc)
+            errors = exc.metadata.get("errors")
+            if isinstance(errors, list) and errors:
+                last = errors[-1]
+                if isinstance(last, dict) and last.get("message"):
+                    message = str(last["message"])
+            raise RuntimeError(message) from exc
+        return _to_api_synthesis_result(result)
 
     async def synthesize_long(
         self,
@@ -313,18 +377,18 @@ class TTSBridge:
 
     async def list_voices(self) -> list[VoiceInfo]:
         """利用可能なボイス一覧を返す."""
-        raw_voices = await self._provider.list_voices()
+        raw_voices = await self._service.list_voices()
         return [
             VoiceInfo(
-                id=str(v.get("id", "")),
-                name=v.get("label", v.get("name", "")),
-                engine=self._provider.name,
-                gender=v.get("gender"),
-                age_group=v.get("age_group"),
+                id=v.id,
+                name=v.name,
+                engine=v.provider or self.engine_name,
+                gender=v.metadata.get("gender"),
+                age_group=v.metadata.get("age_group"),
                 extra={
-                    k: v2
-                    for k, v2 in v.items()
-                    if k not in ("id", "label", "name", "gender", "age_group")
+                    key: value
+                    for key, value in v.metadata.items()
+                    if key not in {"gender", "age_group"}
                 },
             )
             for v in raw_voices
@@ -332,7 +396,19 @@ class TTSBridge:
 
     async def is_available(self) -> bool:
         """プロバイダーが利用可能か確認."""
-        return await self._provider.is_available()
+        return (await self._service.health()).healthy
+
+    async def close(self) -> None:
+        """Bridgeが所有するservice/providerを解放する。"""
+
+        if self._owns_service:
+            await self._service.close()
+
+    async def __aenter__(self) -> "TTSBridge":
+        return self
+
+    async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
+        await self.close()
 
     # --- sync ラッパー ---
 
@@ -347,70 +423,6 @@ class TTSBridge:
     def is_available_sync(self) -> bool:
         """is_available の同期版."""
         return asyncio.run(self.is_available())
-
-    # --- internal ---
-
-    async def _synthesize_with_fallback(
-        self, text: str, synth_kwargs: dict
-    ) -> AudioResult:
-        """primary で合成を試み、失敗時に fallback へ.
-
-        リトライ設定があれば primary/fallback それぞれでリトライする。
-        """
-        async def _try_primary() -> AudioResult:
-            return await self._provider.synthesize(text, **synth_kwargs)
-
-        try:
-            if self._retry_config:
-                return await with_retry(
-                    _try_primary,
-                    self._retry_config,
-                    operation_name=f"TTS ({self._provider.name})",
-                )
-            return await _try_primary()
-        except Exception as e:
-            if self._fallback:
-                logger.warning(
-                    f"Primary TTS ({self._provider.name}) failed: {e}, "
-                    f"trying fallback ({self._fallback.name})"
-                )
-                async def _try_fallback() -> AudioResult:
-                    return await self._fallback.synthesize(text, **synth_kwargs)
-
-                if self._retry_config:
-                    return await with_retry(
-                        _try_fallback,
-                        self._retry_config,
-                        operation_name=f"TTS fallback ({self._fallback.name})",
-                    )
-                return await _try_fallback()
-            raise
-
-    async def _synthesize_via_file(
-        self, text: str, synth_kwargs: dict
-    ) -> AudioResult:
-        """一時ファイル経由で音声データを取得（VoiSona等向け）."""
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-            tmp_path = Path(f.name)
-
-        try:
-            provider = self._provider
-            if hasattr(provider, "synthesize_to_file"):
-                result = await provider.synthesize_to_file(
-                    text, str(tmp_path), **synth_kwargs
-                )
-                audio_data = tmp_path.read_bytes() if tmp_path.exists() else b""
-                return AudioResult(
-                    audio_data=audio_data,
-                    format=result.format,
-                    sample_rate=result.sample_rate,
-                    duration=result.duration,
-                )
-            # synthesize_to_file がない場合はそのまま返す
-            return await provider.synthesize(text, **synth_kwargs)
-        finally:
-            tmp_path.unlink(missing_ok=True)
-
 
 def _build_synth_kwargs(
     *,
@@ -481,4 +493,57 @@ def _to_synthesis_result(result: AudioResult) -> SynthesisResult:
         format=result.format,
         sample_rate=result.sample_rate,
         duration=result.duration,
+    )
+
+
+def _voice_intent_from_kwargs(kwargs: dict[str, object]) -> VoiceIntent:
+    """legacy SDK kwargsをprovider非依存のVoiceIntentへ変換する。"""
+
+    emotion = kwargs.get("emotion", "neutral")
+    intensity = kwargs.get("intensity", 0.5)
+    try:
+        intensity_value = float(intensity)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        intensity_value = 0.5
+    # Provider-specific voice IDs stay in request metadata; they never become a VoiceIntent.
+    values = {
+        "speaking_rate": float(kwargs.get("speed", 1.0)),
+        "pitch": float(kwargs.get("pitch", 0.0)),
+        "volume": float(kwargs.get("volume", 0.0)),
+        "intonation": float(kwargs.get("intonation", 1.0)),
+        "emotion": str(emotion),
+        "intensity": max(0.0, min(1.0, intensity_value)),
+        "preferred_voice_profile": (
+            str(kwargs["preset"]) if kwargs.get("preset") is not None else None
+        ),
+    }
+    try:
+        return VoiceIntent(**values)
+    except (TypeError, ValueError):
+        values["emotion"] = "neutral"
+        return VoiceIntent(**values)
+
+
+def _add_intent_kwargs(
+    kwargs: dict[str, object], *, preset: str | None, emotion: str, intensity: float
+) -> None:
+    """明示指定された感情意図をlegacy kwargsへ補う。"""
+
+    if preset is not None:
+        kwargs.setdefault("preset", preset)
+    if emotion != "neutral":
+        kwargs["emotion"] = emotion
+    if intensity != 0.5:
+        kwargs["intensity"] = intensity
+
+
+def _to_api_synthesis_result(result: object) -> SynthesisResult:
+    """application SynthesisResultを既存APIのresult DTOへ変換する。"""
+
+    audio_data = getattr(result, "audio_data", None)
+    return SynthesisResult(
+        audio_data=audio_data or b"",
+        format=str(getattr(result, "format", "wav")),
+        sample_rate=getattr(result, "sample_rate", None),
+        duration=getattr(result, "duration", None),
     )

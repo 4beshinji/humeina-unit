@@ -110,6 +110,46 @@ class TextAnalyzer:
         """analyze の同期版."""
         return asyncio.run(self.analyze(text, **kwargs))
 
+    async def plan(
+        self,
+        text: str,
+        *,
+        source: str | None = None,
+        config: object = None,
+        known_characters: list[str] | None = None,
+    ):
+        """解析結果を共通 ``UtterancePlan`` へ変換する API adapter.
+
+        分析経路はこの ``TextAnalyzer`` が保持する NLPAnalyzer を再利用するため、
+        Reader と同じ TextProcessor/classifier/speaker/scene 境界になる。
+        """
+
+        from ..application.planning import UtterancePlanner
+
+        return await UtterancePlanner(self._analyzer).from_text(
+            text,
+            source=source,
+            config=config,
+            known_characters=known_characters,
+        )
+
+    async def create_plan(self, text: str, **kwargs: object):
+        """``plan`` の説明的 alias."""
+
+        return await self.plan(text, **kwargs)
+
+    def plan_results(self, results: object, **kwargs: object):
+        """旧 ``analyze`` 結果を共通UtterancePlanへ変換する互換adapter."""
+
+        from ..application.planning import ApiPlanningAdapter
+
+        return ApiPlanningAdapter().from_results(results, **kwargs)
+
+    def plan_sync(self, text: str, **kwargs: object):
+        """plan の同期版."""
+
+        return asyncio.run(self.plan(text, **kwargs))
+
 
 def _to_analysis_result(seg: AnalyzedSegment) -> AnalysisResult:
     """内部AnalyzedSegmentを公開AnalysisResultに変換."""

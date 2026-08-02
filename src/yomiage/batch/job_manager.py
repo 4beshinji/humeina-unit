@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import asyncio
-import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from loguru import logger
 
 from ..api.hooks import EventHooks
 from ..api.metrics import MetricsCollector
+from ..core.identity import new_job_id
+from ..ports.sources import URLPolicy
 from .engine import BatchEngine
+from .manifest import BatchManifest
 
 
 @dataclass
@@ -30,6 +33,10 @@ class BatchJob:
     error: str | None = None
     output_path: str | None = None
     work_id: str | None = None
+    plan_id: str | None = None
+    run_id: str | None = None
+    allow_partial: bool = False
+    completion_status: str | None = None
     _queues: set[asyncio.Queue[dict]] = field(default_factory=set)
 
     def to_dict(self) -> dict[str, Any]:
@@ -46,6 +53,10 @@ class BatchJob:
             "error": self.error,
             "output_path": self.output_path,
             "work_id": self.work_id,
+            "plan_id": self.plan_id,
+            "run_id": self.run_id,
+            "allow_partial": self.allow_partial,
+            "completion_status": self.completion_status,
         }
 
 
@@ -58,12 +69,14 @@ class BatchJobManager:
         output_dir: str = "output",
         hooks: EventHooks | None = None,
         metrics: MetricsCollector | None = None,
+        url_policy: URLPolicy | None = None,
     ):
         self.config = config
         self.output_dir = output_dir
         self._jobs: dict[str, BatchJob] = {}
         self._hooks = hooks
         self._metrics = metrics
+        self.url_policy = url_policy
 
     def create_job(
         self,
@@ -72,15 +85,17 @@ class BatchJobManager:
         output_format: str = "wav",
         video: bool = False,
         style: str | None = None,
+        allow_partial: bool = False,
     ) -> BatchJob:
         """新規ジョブを作成して返す."""
-        job_id = uuid.uuid4().hex[:12]
+        job_id = new_job_id()
         job = BatchJob(
             id=job_id,
             url=url,
             mode=mode,
             status="pending",
             message="ジョブを作成しました",
+            allow_partial=allow_partial,
         )
         self._jobs[job_id] = job
         return job
@@ -112,15 +127,22 @@ class BatchJobManager:
         video: bool = False,
         style: str | None = None,
         cleanup: bool = False,
+        allow_partial: bool | None = None,
     ) -> None:
         """ジョブを非同期で実行する."""
         job = self._get_or_raise(job_id)
+        if allow_partial is None:
+            allow_partial = job.allow_partial
+        else:
+            job.allow_partial = allow_partial
         engine = BatchEngine(
             self.config,
             mode=job.mode,
             output_dir=self.output_dir,
             output_format=output_format,
             cleanup=cleanup,
+            url_policy=self.url_policy,
+            metrics=self._metrics,
         )
 
         async def progress_callback(status: str, percent: float, message: str) -> None:
@@ -130,34 +152,79 @@ class BatchJobManager:
             await self._notify(job, "analyzing", 5.0, "テキストを分析中です")
             manifest = await engine.analyze(job.url)
             job.work_id = manifest.work_id
+            job.plan_id = _string_identity(manifest, "plan_id")
+            job.run_id = _string_identity(manifest, "run_id")
+            # The manager's ID is the externally tracked job identity.  Analyzer-generated IDs are
+            # retained for direct engine usage, but API jobs must remain correlated to this job.
+            if hasattr(manifest, "job_id"):
+                manifest.job_id = job.id
+                if job.run_id and hasattr(manifest, "save"):
+                    manifest.save(Path(self.output_dir))
             await self._notify(job, "analyzing", 30.0, "分析が完了しました")
 
             await self._notify(job, "synthesizing", 35.0, "音声を合成中です")
-            await engine.synthesize(
-                manifest.work_id,
-                progress_callback=progress_callback,
-            )
+            synth_kwargs = {"progress_callback": progress_callback}
+            if job.run_id:
+                synth_kwargs["run_id"] = job.run_id
+            manifest = await engine.synthesize(manifest.work_id, **synth_kwargs)
+            # A mocked/legacy engine may return a fresh manifest object.  Keep the externally
+            # assigned IDs on the job even when that object has no RUN-001 fields.
+            job.plan_id = job.plan_id or _string_identity(manifest, "plan_id")
+            job.run_id = job.run_id or _string_identity(manifest, "run_id")
             await self._notify(job, "synthesizing", 90.0, "音声合成が完了しました")
 
-            await self._notify(job, "concatenating", 92.0, "音声ファイルを結合中です")
-            output_path = engine.concat(manifest.work_id)
+            completion_status = _manifest_completion_status(
+                manifest, self.output_dir
+            )
+            job.completion_status = completion_status
+            if completion_status in {"partial", "failed"} and not allow_partial:
+                job.result = _job_result(manifest, None, completion_status)
+                job.error = (
+                    "音声合成が完全ではないため、部分成果物の結合を拒否しました"
+                )
+                await self._notify(job, "failed", 90.0, job.error)
+                return
+            if completion_status == "failed":
+                job.result = _job_result(manifest, None, completion_status)
+                job.error = "利用可能な音声成果物がありません"
+                await self._notify(job, "failed", 90.0, job.error)
+                return
 
-            if video:
+            await self._notify(job, "concatenating", 92.0, "音声ファイルを結合中です")
+            concat_kwargs = {"allow_partial": bool(allow_partial)}
+            if job.run_id:
+                concat_kwargs["run_id"] = job.run_id
+            output_path = engine.concat(manifest.work_id, **concat_kwargs)
+
+            if output_path is None:
+                job.result = _job_result(manifest, None, completion_status)
+                job.error = "音声成果物を生成できませんでした"
+                await self._notify(job, "failed", 92.0, job.error)
+                return
+
+            if video and completion_status != "partial":
                 await self._notify(job, "concatenating", 95.0, "動画を生成中です")
-                video_path = engine.video(manifest.work_id, style=style)
+                video_kwargs = {"style": style}
+                if job.run_id:
+                    video_kwargs["run_id"] = job.run_id
+                video_path = engine.video(manifest.work_id, **video_kwargs)
                 if video_path:
                     output_path = video_path
 
             final_path = str(output_path) if output_path else None
             job.output_path = final_path
-            job.result = {
-                "work_id": manifest.work_id,
-                "work_title": manifest.work_title,
-                "chapters": len(manifest.chapters),
-                "sentences": manifest.total_count,
-                "output_path": final_path,
-            }
-            await self._notify(job, "completed", 100.0, "完了しました")
+            job.result = _job_result(manifest, final_path, completion_status)
+            terminal_status = {
+                "complete": "completed",
+                "complete_with_warnings": "complete_with_warnings",
+                "partial": "partial",
+            }.get(completion_status, "failed")
+            terminal_message = (
+                "部分成果物で完了しました"
+                if terminal_status == "partial"
+                else "完了しました"
+            )
+            await self._notify(job, terminal_status, 100.0, terminal_message)
         except Exception as exc:  # pragma: no cover - エラーハンドリング網羅のため
             logger.exception(f"Batch job {job_id} failed")
             job.error = str(exc)
@@ -190,8 +257,30 @@ class BatchJobManager:
                 output_path=job.output_path,
                 error=job.error,
             )
-        if self._metrics and status in ("completed", "failed"):
-            self._metrics.record_batch_job(status)
+        terminal_statuses = (
+            "completed",
+            "complete_with_warnings",
+            "partial",
+            "failed",
+        )
+        if self._metrics and status in terminal_statuses:
+            self._metrics.record_batch_job(status, job_id=job.id)
+        elif self._metrics:
+            self._metrics.record_job_state(status, job_id=job.id)
+        if self._metrics:
+            active = sum(
+                1
+                for item in self._jobs.values()
+                if item.status
+                not in {
+                    "completed",
+                    "complete_with_warnings",
+                    "partial",
+                    "failed",
+                    "cancelled",
+                }
+            )
+            self._metrics.set_queue_depth(max(0, active - 1), active_jobs=active)
 
     def _event(self, job: BatchJob, status: str, percent: float, message: str) -> dict:
         return {
@@ -200,8 +289,12 @@ class BatchJobManager:
             "percent": percent,
             "message": message,
             "work_id": job.work_id,
+            "plan_id": job.plan_id,
+            "run_id": job.run_id,
             "output_path": job.output_path,
             "error": job.error,
+            "completion_status": job.completion_status,
+            "allow_partial": job.allow_partial,
         }
 
     def _get_or_raise(self, job_id: str) -> BatchJob:
@@ -209,3 +302,42 @@ class BatchJobManager:
         if not job:
             raise KeyError(f"Job not found: {job_id}")
         return job
+
+
+def _manifest_completion_status(manifest: Any, output_dir: str) -> str:
+    """実manifestの完全性を判定する（既存テストのmockも許容）."""
+    if isinstance(manifest, BatchManifest):
+        return manifest.refresh_completion_status(Path(output_dir))
+
+    status = getattr(manifest, "completion_status", None)
+    if isinstance(status, str) and status in {
+        "complete",
+        "complete_with_warnings",
+        "partial",
+        "failed",
+    }:
+        return status
+    return "complete" if getattr(manifest, "synthesis_complete", True) is not False else "partial"
+
+
+def _string_identity(manifest: Any, name: str) -> str | None:
+    """Read identity fields from real manifests while tolerating old mocks/adapters."""
+
+    value = getattr(manifest, name, None)
+    return value if isinstance(value, str) and value else None
+
+
+def _job_result(
+    manifest: Any, output_path: str | None, completion_status: str
+) -> dict[str, Any]:
+    """APIへ返すバッチ成果物メタデータを統一する."""
+    return {
+        "work_id": manifest.work_id,
+        "plan_id": _string_identity(manifest, "plan_id"),
+        "run_id": _string_identity(manifest, "run_id"),
+        "work_title": manifest.work_title,
+        "chapters": len(manifest.chapters),
+        "sentences": manifest.total_count,
+        "output_path": output_path,
+        "status": completion_status,
+    }

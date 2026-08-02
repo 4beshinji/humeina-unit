@@ -1,0 +1,115 @@
+# シーン種別 → TTSパラメータ修飾子
+# ベースパラメータに加算/乗算される
+scenes:
+  daily:
+    speed: 1.0
+    volume: 0
+    intonation: 1.0
+
+  battle:
+    speed: 1.1
+    volume: 2
+    intonation: 1.3
+
+  romance:
+    speed: 0.9
+    volume: 0
+    intonation: 0.8
+
+  tense:
+    speed: 1.05
+    volume: 1
+    intonation: 1.1
+
+  comedy:
+    speed: 1.0
+    volume: 0
+    intonation: 1.2
+
+  sad:
+    speed: 0.85
+    volume: -1
+    intonation: 0.7
+
+  horror:
+    speed: 0.9
+    volume: -1
+    intonation: 0.6
+
+# 感情 → スタイルウェイト（VoiSona用）
+# [Normal, Happy, Angry, Sad, Smol]
+emotion_styles:
+  neutral: [1.0, 0.0, 0.0, 0.0, 0.0]
+  happy: [0.3, 0.7, 0.0, 0.0, 0.0]
+  angry: [0.2, 0.0, 0.8, 0.0, 0.0]
+  sad: [0.2, 0.0, 0.0, 0.8, 0.0]
+  surprised: [0.5, 0.3, 0.0, 0.0, 0.2]
+  scared: [0.3, 0.0, 0.2, 0.5, 0.0]
+  gentle: [0.4, 0.3, 0.0, 0.0, 0.3]
+
+# 感情 → VOICEVOX用（スタイルID切替 + パラメータオフセット）
+# VoiceProfileが無い場合のフォールバック
+voicevox_emotion_styles:
+  neutral:
+    style_id: 47
+    intensity_threshold: 0.5
+  happy:
+    style_id: 47
+    param_offsets:
+      pitch: 0.02
+      speed: 1.05
+    intensity_threshold: 0.5
+  angry:
+    style_id: 47
+    param_offsets:
+      pitch: -0.03
+      speed: 1.1
+      volume: 1.0
+    intensity_threshold: 0.5
+  sad:
+    style_id: 47
+    param_offsets:
+      pitch: -0.01
+      speed: 0.9
+      volume: -1.0
+    intensity_threshold: 0.5
+  surprised:
+    style_id: 47
+    param_offsets:
+      pitch: 0.04
+      speed: 1.1
+    intensity_threshold: 0.5
+  scared:
+    style_id: 48
+    param_offsets:
+      speed: 1.1
+    intensity_threshold: 0.4
+  gentle:
+    style_id: 49
+    param_offsets:
+      speed: 0.95
+      volume: -1.0
+    intensity_threshold: 0.4
+
+# 感情 → VOICEPEAK用（感情軸 + パラメータオフセット）
+# VoiceProfileが無い場合のフォールバック
+voicepeak_emotion_styles:
+  neutral:
+    emotions: {}
+  happy:
+    emotions: {happy: 80, fun: 40}
+    param_offsets: {speed: 5}
+  angry:
+    emotions: {angry: 80}
+    param_offsets: {speed: 10}
+  sad:
+    emotions: {sad: 80}
+    param_offsets: {speed: -10}
+  surprised:
+    emotions: {happy: 30, fun: 60}
+    param_offsets: {speed: 10}
+  scared:
+    emotions: {angry: 20, sad: 50}
+  gentle:
+    emotions: {happy: 40, fun: 30}
+    param_offsets: {speed: -5}

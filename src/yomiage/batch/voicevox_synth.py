@@ -5,10 +5,11 @@ from typing import Any
 
 from loguru import logger
 
+from ..application.synthesis import SynthesisService
+from ..core.models import VoiceIntent
 from ..reader.character_db import CharacterDB
 from ..reader.param_mapper import ParamMapper
 from ..tts.audio_utils import write_silence_wav
-from ..tts.voicevox import VoicevoxProvider
 from .manifest import SentenceEntry
 from .synthesizer import BatchSynthesizer
 
@@ -22,8 +23,18 @@ class VoicevoxBatchSynthesizer(BatchSynthesizer):
         param_mapper: ParamMapper,
         character_db: CharacterDB | None = None,
         voice_profile: Any = None,
+        provider: Any | None = None,
+        synthesis_service: SynthesisService | None = None,
     ):
-        self.provider = VoicevoxProvider(config)
+        # Provider construction belongs to bootstrap.  ``provider`` is optional only so the
+        # class remains import-compatible for callers that use it as a parameter builder.
+        if provider is None:
+            from ..bootstrap import create_tts_provider
+
+            provider = create_tts_provider({"voicevox": config}, "voicevox")
+        self.provider = provider
+        self.synthesis_service = synthesis_service
+        self.config = dict(config or {})
         self.param_mapper = param_mapper
         self.character_db = character_db
         self.voice_profile = voice_profile
@@ -36,19 +47,27 @@ class VoicevoxBatchSynthesizer(BatchSynthesizer):
 
         params = self._build_params(entry)
 
-        speaker_id = params.pop("speaker_id", self.provider.default_speaker)
+        speaker_id = params.pop("speaker_id", getattr(self.provider, "default_speaker", 47))
 
         try:
-            result = await self.provider.synthesize(
-                entry.text,
-                voice="neutral",
-                speed=params.get("speed", 1.0),
-                voice_id=str(speaker_id),
-                pitch=params.get("pitch", 0.0),
-                intonation=params.get("intonation", 0.0),
-                volume=params.get("volume", 0.0),
+            intent = VoiceIntent(
+                speaking_rate=float(params.get("speed", 1.0)),
+                pitch=float(params.get("pitch", 0.0)),
+                volume=float(params.get("volume", 0.0)),
+                intonation=float(params.get("intonation", 1.0)),
+                emotion=entry.emotion,
+                intensity=entry.intensity,
             )
-            output_path.write_bytes(result.audio_data)
+            result = await self._synthesize_request(
+                text=entry.text,
+                destination=output_path,
+                intent=intent,
+                metadata={"voice_id": str(speaker_id), **params},
+            )
+            if result.audio_data and not output_path.exists():
+                output_path.write_bytes(result.audio_data)
+            if not output_path.exists():
+                raise RuntimeError("SynthesisService returned no VOICEVOX artifact")
             logger.debug(f"VOICEVOX synthesized: {filename}")
             return filename
         except Exception as e:
@@ -59,7 +78,7 @@ class VoicevoxBatchSynthesizer(BatchSynthesizer):
         write_silence_wav(output_path, duration)
 
     async def is_available(self) -> bool:
-        return await self.provider.is_available()
+        return (await self._ensure_synthesis_service().health()).healthy
 
     def _build_params(self, entry: SentenceEntry) -> dict:
         """SentenceEntryからTTSパラメータを構築."""
@@ -143,7 +162,7 @@ class VoicevoxBatchSynthesizer(BatchSynthesizer):
 
         # Set default speaker_id if not set
         if "speaker_id" not in params:
-            params["speaker_id"] = self.provider.default_speaker
+            params["speaker_id"] = getattr(self.provider, "default_speaker", 47)
 
         if entry.tts_params:
             params.update(entry.tts_params)

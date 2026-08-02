@@ -1,10 +1,12 @@
 """Parameter mapper — character × scene → TTS parameters."""
 
+from importlib.resources.abc import Traversable
 from pathlib import Path
 
 import yaml
 
 from ..nlp.scene_analyzer import AnalyzedSegment
+from ..resource_loader import packaged_config_resource
 from ..tts.base import TTSParams
 from .character_db import CharacterDB, CharacterProfile
 
@@ -24,12 +26,21 @@ class ParamMapper:
             self.voicepeak_emotion_styles = scene_config.get("voicepeak_emotion_styles", {})
 
     @classmethod
-    def from_config_file(cls, path: Path) -> "ParamMapper":
-        if path.exists():
-            with open(path) as f:
-                data = yaml.safe_load(f) or {}
-            return cls(data)
-        return cls()
+    def from_config_file(cls, path: Path | Traversable | None = None) -> "ParamMapper":
+        """Load scene parameters from a path or the packaged standard resource."""
+
+        source = path or packaged_config_resource("scene_params.yaml")
+        if isinstance(source, Path):
+            if not source.exists():
+                return cls()
+            with source.open(encoding="utf-8") as file:
+                data = yaml.safe_load(file) or {}
+        else:
+            if not source.is_file():
+                return cls()
+            with source.open("r", encoding="utf-8") as file:
+                data = yaml.safe_load(file) or {}
+        return cls(data)
 
     def map(
         self,

@@ -1,0 +1,142 @@
+{
+  "name": "long_dialogue_boundaries",
+  "source": "fixture://plans/long",
+  "text": "太郎は「長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長」と言った。",
+  "config": {
+    "analysis": {
+      "model": "fixture-rule-based",
+      "window": 200
+    }
+  },
+  "max_chunk_chars": 32,
+  "expected_plan": {
+    "schema_version": 1,
+    "plan_id": "plan_c3f59cfce725f1ec7483",
+    "source_fingerprint": "d35163c36da7fd50f8988f1d8064632d09a5643516d6d40bdf6d88be9fc24d86",
+    "config_fingerprint": "13eb892a5e545277fb0e5bfdbb025a5002a9db4824b08dda5b1de818e5bc1f4b",
+    "utterances": [
+      {
+        "id": "u-0000",
+        "order": 0,
+        "text": "太郎は",
+        "segment_type": "narration",
+        "speaker_id": null,
+        "scene": "daily",
+        "emotion": "neutral",
+        "intensity": 0.5,
+        "voice_intent": {
+          "archetype": null,
+          "gender": null,
+          "age_group": null,
+          "speaking_rate": 1,
+          "pitch": 0,
+          "volume": 0,
+          "intonation": 1,
+          "emotion": "neutral",
+          "intensity": 0.5,
+          "preferred_voice_profile": null
+        },
+        "source_ref": {
+          "url": "fixture://plans/long",
+          "chapter": null,
+          "start": null,
+          "end": null,
+          "locator": null
+        }
+      },
+      {
+        "id": "u-0001",
+        "order": 1,
+        "text": "「長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長」",
+        "segment_type": "dialogue",
+        "speaker_id": "太郎",
+        "scene": "daily",
+        "emotion": "neutral",
+        "intensity": 0.5,
+        "voice_intent": {
+          "archetype": null,
+          "gender": null,
+          "age_group": null,
+          "speaking_rate": 1,
+          "pitch": 0,
+          "volume": 0,
+          "intonation": 1,
+          "emotion": "neutral",
+          "intensity": 0.5,
+          "preferred_voice_profile": null
+        },
+        "source_ref": {
+          "url": "fixture://plans/long",
+          "chapter": null,
+          "start": null,
+          "end": null,
+          "locator": null
+        }
+      },
+      {
+        "id": "u-0002",
+        "order": 2,
+        "text": "と言った。",
+        "segment_type": "narration",
+        "speaker_id": null,
+        "scene": "daily",
+        "emotion": "neutral",
+        "intensity": 0.5,
+        "voice_intent": {
+          "archetype": null,
+          "gender": null,
+          "age_group": null,
+          "speaking_rate": 1,
+          "pitch": 0,
+          "volume": 0,
+          "intonation": 1,
+          "emotion": "neutral",
+          "intensity": 0.5,
+          "preferred_voice_profile": null
+        },
+        "source_ref": {
+          "url": "fixture://plans/long",
+          "chapter": null,
+          "start": null,
+          "end": null,
+          "locator": null
+        }
+      }
+    ],
+    "warnings": [
+      {
+        "code": "NLP_FALLBACK",
+        "message": "LLM scene analysis unavailable; rule-based values were used",
+        "severity": "info",
+        "utterance_id": null
+      }
+    ]
+  },
+  "batch_manifest": {
+    "work_id": "fixture-long",
+    "work_title": "long fixture",
+    "source_url": "fixture://plans/long",
+    "mode": "voicevox",
+    "sentences": [
+      {
+        "index": 0,
+        "text": "太郎は",
+        "chapter_index": null,
+        "segment_type": "narration"
+      },
+      {
+        "index": 1,
+        "text": "「長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長長」",
+        "chapter_index": null,
+        "segment_type": "dialogue",
+        "speaker": "太郎"
+      },
+      {
+        "index": 2,
+        "text": "と言った。",
+        "chapter_index": null,
+        "segment_type": "narration"
+      }
+    ]
+  }
+}

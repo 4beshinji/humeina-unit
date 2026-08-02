@@ -1,184 +1,129 @@
-# バッチ合成パイプライン
+# Batch パイプライン
 
-WEB小説の全文を事前分析し、連番WAVファイルとして合成・結合する非リアルタイムパイプライン。
+Batch は URL から発話計画を作り、Provider ごとの音声を検証済み artifact として公開し、
+必要なら結合・字幕・動画まで実行します。外部 API の allow_partial を除き、CLI と REST で
+同じ completion semantics を使います。
 
-## 概要
+## フェーズ
 
-3〜4フェーズの逐次パイプライン（Phase D は任意）:
+```text
+Phase A: analyze
+  URL → URLPolicy/ContentSource → NLP → UtterancePlan
+  → output/works/{work_id}/plans/{plan_id}.json
 
-```
-Phase A: 全文分析       Phase B: バッチ合成      Phase C: 結合       Phase D: 動画
-┌──────────────┐      ┌──────────────┐      ┌──────────────┐    ┌──────────────┐
-│ Pass 1: キャラ │      │ manifest.json │      │ ffmpeg concat│    │ Composer +   │
-│  クター発見    │ ───► │  ↓            │ ───► │  ↓           │ ─► │ ffmpeg       │
-│ Pass 2: 詳細  │      │ 文ごとに合成   │      │ chapter_N.wav│    │  ↓           │
-│  分析         │      │  → NNNN.wav    │      │ full.wav     │    │ full.mp4     │
-└──────────────┘      └──────────────┘      └──────────────┘    └──────────────┘
-```
+Phase B: synthesize
+  plan + run_id → Provider/SynthesisService
+  → atomic publish + WAV validation
+  → output/works/{work_id}/runs/{run_id}/artifact-manifest.json
 
-## Phase A: 2段階LLM全文分析
+Phase C: concat
+  verified utterance artifacts → chapter/full output
 
-### Pass 1: キャラクター発見
-
-全チャプターを取得し、ウィンドウ分割（デフォルト3000文字）でSLMに投げる。
-
-- 登場人物の抽出（名前、性別、年齢層、性格、役割）
-- 名前の揺れ（エイリアス）の統合
-- 既知キャラリストを毎回プロンプトに含め重複防止
-- VoiSonaモード: キャラごとのパラメータプロファイル自動生成
-
-### Pass 2: 章ごと詳細分析
-
-1. 文単位に分割
-2. ルールベースパイプライン適用（TextClassifier → SpeakerExtractor）
-3. ウィンドウ単位（デフォルト25文）でSLMに投げ、以下を判定:
-   - 話者確定
-   - シーン分類（daily/battle/romance/tense/comedy/sad/horror）
-   - 感情分析（neutral/happy/angry/sad/surprised/scared/gentle）
-   - 感情強度（0.0〜1.0）
-   - 地の文の視点キャラクター
-
-### 出力
-
-`output/{work_id}/manifest.json`:
-
-```json
-{
-  "work_id": "c8113c64b0dc",
-  "work_title": "羅生門",
-  "source_url": "https://...",
-  "mode": "voisona",
-  "chapters": [...],
-  "characters": {
-    "下人": {"name": "下人", "gender": "male", "base_params": {"pitch": -100, ...}},
-    "老婆": {"name": "老婆", "gender": "female", "base_params": {"pitch": 50, ...}}
-  },
-  "sentences": [
-    {
-      "index": 0,
-      "text": "ある日の暮方の事である。",
-      "chapter_index": 0,
-      "segment_type": "narration",
-      "speaker": null,
-      "scene": "daily",
-      "emotion": "neutral",
-      "intensity": 0.5,
-      "duration": null,
-      "status": "pending"
-    },
-    ...
-  ]
-}
+Phase D (任意)
+  complete run の manifest + audio + assets → subtitle/video
 ```
 
-## Phase B: バッチ合成
+Phase A では TextProcessor、classifier、speaker extractor、SceneAnalyzer（LLM が利用できない
+場合は rule-based fallback）を使います。TTS の文字数制限による分割でも話者と VoiceIntent を
+継承します。
 
-### VoiSonaモード
+## Identity と保存レイアウト
 
-VoiSona Talk APIの `destination: "file"` を使用し、virtiofs経由でホスト側に直接WAV出力する。
-
+```text
+output/
+├── works/{work_id}/
+│   ├── plans/{plan_id}.json       # Provider 非依存、再利用可能
+│   └── runs/{run_id}/             # 1回の実行
+│       ├── manifest.json          # Batch 状態/文章/identity
+│       ├── artifact-manifest.json # checksum/duration/provider/verified
+│       ├── chapter_001.wav
+│       ├── full.wav (または .mp3/.flac)
+│       └── full.mp4 (任意)
+└── {legacy_work_id}/manifest.json # 旧 layout（read-only compatibility）
 ```
-API POST → VoiSona VM → Z:\{work_id}\NNNN.wav → virtiofs → output/{work_id}/NNNN.wav
-```
 
-パラメータ決定:
-1. キャラクターの `base_params`（pitch, huskiness, alp, speed）
-2. シーン修飾子（speed乗算, volume加算）
-3. 感情 → style_weights（intensity補間）
-4. 地の文は視点キャラのパラメータを0.3倍で控えめ適用
+work_id は作品 identity、plan_id は source/config fingerprint、run_id は Provider/format ごとの
+実行、job_id は CLI/API の受付 identity です。同一 URL を並列に実行しても run directory は共有
+しません。plan は音声パス・Provider 固有 ID・duration を持ちません。
 
-### VOICEVOXモード
-
-VOICEVOX Engine APIで合成し、WAVバイトをファイルに書き出す。
-
-キャラクターごとに異なるスピーカーID（voice_id）を割当。
-
-### VOICEPEAKモード
-
-ローカルにインストールされた VOICEPEAK CLI を逐次呼び出して WAV を出力する。長文は `voicepeak.max_chars` で分割して結合。
-
-ナレーター・感情・ピッチ等のパラメータは `config/voicepeak_profiles/<narrator>.yaml` のプリセットから決定される（`yomiage vp-tune` で作成）。
-
-### 共通仕様
-
-- **レジューム対応**: `status` フィールド（pending/synthesized/failed）でリカバリ
-- **シーンブレーク**: 1.5秒の無音WAVを連番に挿入
-- **記号スキップ**: 括弧のみ等の発話不可テキストは自動スキップ
-- **アルファベット変換**: 合成直前に1文単位でLLMによるカタカナ変換
-- **進捗保存**: 10文ごとにマニフェストを保存
-
-## Phase C: 音声結合
-
-ffmpegの concat demuxer を使用。
-
-- チャプター単位: `output/{work_id}/chapter_001.wav`
-- 作品全体: `output/{work_id}/full.wav`
-- 出力フォーマット: wav / mp3 / flac
-- `--cleanup` で個別WAVファイルを削除可能
-
-## Phase D: 動画生成（任意）
-
-`yomiage batch run --video` または `yomiage batch video <work_id>` で起動。
-
-- `--style subtitle`: 単色背景 + 字幕（最も軽量）
-- `--style portrait`: 立ち絵差し替え + 字幕
-
-`config/default.yaml` の `video` セクションで解像度・フレームレート・字幕色・立ち絵配置・BGM/SE等を制御。立ち絵や背景は `assets/` 以下から `AssetManager` が解決する。
-
-字幕のみを書き出す場合は `yomiage batch subtitle <work_id> --format ass|srt` を使う。
-
-## 使い方
+## Phase A: analyze
 
 ```bash
-# フルパイプライン
-yomiage batch run "https://ncode.syosetu.com/n1234ab/" --mode voisona
-
-# 動画まで生成
-yomiage batch run "https://..." --mode voicepeak --video --style portrait
-
-# フェーズ個別実行
-yomiage batch analyze "https://..." --chapters 1-5
-yomiage batch synthesize abc123def456 --mode voisona
-yomiage batch concat abc123def456 --format mp3
-yomiage batch subtitle abc123def456 --format ass
-yomiage batch video abc123def456 --style subtitle
-
-# 進捗確認
-yomiage batch status abc123def456
-
-# 失敗リトライ
-yomiage batch retry abc123def456
+yomiage batch analyze "https://ncode.syosetu.com/n1234ab/" --mode voicevox --chapters 1-5
 ```
 
-## ディレクトリ構造
+分析が成功すると run manifest と immutable plan が保存されます。旧 manifest からの明示 import
+は [移行手順](migration.md) を使用し、既存ファイルを上書きしません。
 
-```
-output/
-└── c8113c64b0dc/           # work_id（URLのMD5先頭12文字）
-    ├── manifest.json        # マニフェスト（全状態管理）
-    ├── 0000.wav             # 文0の音声
-    ├── 0001.wav             # 文1の音声
-    ├── ...
-    ├── chapter_001.wav      # チャプター1結合
-    ├── chapter_002.wav      # チャプター2結合
-    └── full.wav             # 全体結合
+## Phase B: synthesize
+
+```bash
+yomiage batch synthesize c8113c64b0dc --mode voicevox
+yomiage batch retry c8113c64b0dc --mode voicevox
 ```
 
-## 設定
+Provider は SynthesisService 経由で retry/fallback/cache/metrics を適用します。音声ファイルは
+同一ディレクトリの一時ファイルへ書き、WAV 検証・checksum 計算後に replace() で公開します。
+artifact manifest の final entry は verified=true かつ terminal state のものだけです。
 
-`config/default.yaml`:
+## Phase C: concat
 
-```yaml
-batch:
-  output_dir: output                          # 出力ベースディレクトリ
-  default_mode: voisona                       # デフォルトTTSモード
-  analysis_window_chars: 3000                 # Pass 1 ウィンドウサイズ（文字）
-  analysis_window_sentences: 25               # Pass 2 ウィンドウサイズ（文数）
-  manifest_save_interval: 10                  # マニフェスト保存間隔（文数）
-  silence_duration: 1.5                       # シーンブレーク無音秒数
-  concat_format: wav                          # デフォルト出力フォーマット
-  cleanup_after_concat: false                 # 結合後に個別ファイル削除
-  voisona_vm_mount: "Z:"                      # VM内のvirtiofsマウントポイント
-  voice_profile_dir: config/voice_profiles    # ボイスプロファイル探索先
-  synth_concurrency: 1                        # VoiSona同時合成ジョブ数
+```bash
+yomiage batch concat c8113c64b0dc --format wav
+yomiage batch concat c8113c64b0dc --format mp3 --cleanup
 ```
+
+ffmpeg concat は検証済み artifact の順序だけを入力にします。--cleanup は concat 成功後に
+個別ファイルを削除するため、実行前に backup を取ってください。
+
+## Completion / partial semantics
+
+BatchManifest.refresh_completion_status() が文の状態とファイル実体を一元判定します。
+
+| 状態 | 条件 | CLI/API の扱い |
+| --- | --- | --- |
+| complete | 全文が synthesized、全 artifact が存在/検証済み | completed、concat/video 可 |
+| complete_with_warnings | 明示 skip のみ | 成功だが warning を保持 |
+| partial | synthesized と unresolved（pending/failed/欠損）が混在 | allow_partial=true のみ部分 concat。video は不可 |
+| failed | unresolved、かつ利用可能な音声がない | concat を拒否し失敗終了 |
+
+REST POST /api/yomiage/synthesize/batch の allow_partial は既定 false です。false の場合は
+partial/failed manifest を completed と報告せず、通常の full.wav を生成しません。true の場合だけ
+部分成果物を生成し、job、SSE、manifest、result に partial を残します。CLI に partial を
+暗黙許可するオプションはありません。
+
+## Phase D: subtitle / video
+
+```bash
+yomiage batch subtitle c8113c64b0dc --format ass
+yomiage batch video c8113c64b0dc --style subtitle
+yomiage batch run "https://example.com/story" --video --style portrait
+```
+
+subtitle|portrait と ASS/SRT を選択できます。partial run は字幕生成後でも動画生成を行いません。
+背景、立ち絵、字幕、BGM/SE は video 設定と assets/ から解決し、動画生成には ffmpeg が必要です。
+
+## 進捗確認
+
+```bash
+yomiage batch status c8113c64b0dc
+```
+
+REST では GET /api/yomiage/synthesize/batch/{job_id} と /progress (SSE) を使います。終端 status
+は completed、complete_with_warnings、partial、failed、cancelled です。
+
+## Provider 固有の補足
+
+- VoiSona: destination=file と VM mount（既定 Z:）を使う場合は [virtiofs setup](virtiofs-setup.md)。
+- VOICEVOX: HTTP Engine から WAV bytes を受け、artifact store が公開します。
+- VOICEPEAK: ローカル executable を呼び出し、max_chars で長文を分割します。
+
+## 失敗時の保全
+
+分析・合成を中断しても atomic write により最後に検証済みの manifest/artifact は残ります。
+run directory の一時ファイルや未検証ファイルは final artifact manifest に列挙されません。
+既存 run を再利用する場合は status/artifact-manifest.json を確認してから retry を実行し、
+Provider/format を変える場合は新しい run を作成してください。
+
+旧 layout の backup、read-only import、検証、切り替え、rollback は [migration.md](migration.md) に
+固定手順があります。

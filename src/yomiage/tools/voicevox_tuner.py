@@ -21,7 +21,7 @@ from typing import Any
 
 from loguru import logger
 
-from ..tts.voicevox import VoicevoxProvider
+from ..bootstrap import create_tts_provider
 from .voice_profile import PresetConfig
 from .voicevox_profile import (
     VOICEVOX_API_LIMITS,
@@ -47,7 +47,9 @@ class VoicevoxTuner:
         output_dir: Path = DEFAULT_TUNER_DIR,
     ):
         self.profile = profile
-        self.provider = VoicevoxProvider({"url": voicevox_url})
+        self.provider = create_tts_provider(
+            {"voicevox": {"url": voicevox_url}}, "voicevox"
+        )
         self.test_text = test_text
         self.output_dir = output_dir
         self.output_dir.mkdir(parents=True, exist_ok=True)

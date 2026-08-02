@@ -8,11 +8,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 from yomiage.api.metrics import MetricsCollector
-from yomiage.server import app
+from yomiage.server import ServerDependencies, create_app
 
 
 @pytest.fixture
-def client(monkeypatch):
+def client(tmp_path):
     mock_engine = MagicMock()
     mock_engine.is_running = False
     mock_engine.current_status = {}
@@ -22,10 +22,13 @@ def client(monkeypatch):
     metrics.record_synthesis(duration_ms=120.0, text="hello")
     metrics.record_batch_job("completed")
 
-    monkeypatch.setattr("yomiage.server._engine", mock_engine)
-    monkeypatch.setattr("yomiage.server._metrics", metrics)
+    application = create_app(
+        {"storage": {"sqlite_path": str(tmp_path / "jobs.sqlite3")}},
+        ServerDependencies(engine=mock_engine, metrics=metrics),
+    )
 
-    return TestClient(app)
+    with TestClient(application) as test_client:
+        yield test_client
 
 
 class TestMetricsEndpoint:
@@ -37,10 +40,12 @@ class TestMetricsEndpoint:
         assert data["synthesis"]["average_duration_ms"] == 120.0
         assert data["batch_jobs"]["completed"] == 1
 
-    def test_get_metrics_not_initialized(self, monkeypatch):
-        monkeypatch.setattr("yomiage.server._engine", MagicMock())
-        monkeypatch.setattr("yomiage.server._metrics", None)
-
-        client = TestClient(app)
-        response = client.get("/api/yomiage/metrics")
-        assert response.status_code == 503
+    def test_get_metrics_is_initialized_per_app(self, tmp_path):
+        application = create_app(
+            {"storage": {"sqlite_path": str(tmp_path / "jobs.sqlite3")}},
+            ServerDependencies(engine=MagicMock()),
+        )
+        with TestClient(application) as client:
+            response = client.get("/api/yomiage/metrics")
+        assert response.status_code == 200
+        assert response.json()["synthesis"]["total"] == 0

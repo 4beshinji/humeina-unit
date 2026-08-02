@@ -1,0 +1,131 @@
+tts:
+  primary_provider: voisona
+  fallback_provider: voicevox
+  lookahead_chunks: 5
+  max_chunk_chars: 200
+
+voisona:
+  url: ${VOISONA_URL:-http://localhost:32766}
+  username: ${VOISONA_USERNAME}
+  password: ${VOISONA_PASSWORD}
+  default_voice: nurse-robot-type-t_ja_JP
+  language: ja_JP
+
+voicevox:
+  url: ${VOICEVOX_URL:-http://localhost:50021}
+  default_speaker: 47
+
+voicepeak:
+  path: null
+  default_narrator: "Otomachi Una"
+  max_chars: 140
+  pitch_scale: 300
+
+ollama:
+  url: ${OLLAMA_URL:-http://localhost:11434}
+  model: ${OLLAMA_MODEL:-qwen3:8b}
+  summary_model: ${OLLAMA_SUMMARY_MODEL}
+
+news:
+  daily_schedule: "08:00"
+  poll_interval_minutes: 5
+  urgency_threshold: 0.8
+  foreign_language: translate
+  sources:
+    - nhk_main
+    - bbc_world
+    - guardian_world
+  tts:
+    speed: 1.1
+
+slack:
+  enabled: false
+  channels: []
+  mention_boost: 0.5
+  importance_threshold: 0.6
+
+reader:
+  auto_advance: true
+  bookmark_auto_save: true
+
+video:
+  enabled: false
+  resolution: [1920, 1080]
+  fps: 24
+  codec: libx264
+  crf: 23
+  preset: medium
+  subtitle:
+    font_size: 48
+    font_name: "Noto Sans JP"
+    outline_size: 3
+    margin_bottom: 60
+    max_chars_per_line: 20
+    speaker_colors:
+      _narrator: "#FFFFFF"
+      _dialogue: "#FFFF00"
+      _thought: "#87CEEB"
+  background:
+    transition: fade
+    transition_duration: 1.0
+    ken_burns_enabled: false
+    ken_burns_zoom: 1.2
+    scene_colors:
+      daily: "#2C3E50"
+      battle: "#8B0000"
+      romance: "#FF69B4"
+      tense: "#1C1C1C"
+      comedy: "#FFD700"
+      sad: "#4A4A8A"
+      horror: "#0D0D0D"
+  portrait:
+    enabled: true
+    position: bottom_right
+    max_height_ratio: 0.7
+    fade_duration: 0.3
+    margin_x: 50
+    margin_y: 20
+  audio:
+    bgm_enabled: false
+    bgm_volume: 0.15
+    bgm_idle_volume: 0.3
+    se_enabled: false
+    se_volume: 0.5
+    ducking_fade: 0.5
+  title_card:
+    enabled: false
+    duration: 3.0
+    font_size: 72
+    subtitle_font_size: 36
+  assets_dir: assets
+
+ex_voice:
+  enabled: false
+  wav_dir: ${EX_VOICE_WAV_DIR:-}
+  cooldown_chunks: 10
+  max_per_chapter: 8
+  llm_max_insertions: 2
+
+studio:
+  default_format: ymm4
+  default_pause: 0.3
+  max_slug_chars: 15
+  default_provider: voicevox
+  cache_enabled: true
+
+batch:
+  output_dir: output
+  default_mode: voisona
+  analysis_window_chars: 3000
+  analysis_window_sentences: 25
+  manifest_save_interval: 10
+  silence_duration: 1.5
+  concat_format: wav
+  cleanup_after_concat: false
+  voisona_vm_mount: ${VOISONA_VM_MOUNT:-Z:}
+  voice_profile_dir: ${YOMIAGE_USER_CONFIG_DIR:-~/.config/humeina-unit}/voice_profiles
+  voicevox_profile_dir: ${YOMIAGE_USER_CONFIG_DIR:-~/.config/humeina-unit}/voicevox_profiles
+  voicepeak_profile_dir: ${YOMIAGE_USER_CONFIG_DIR:-~/.config/humeina-unit}/voicepeak_profiles
+  # VoiSona側の同時処理ジョブ数上限（流量制御）
+  # 1=同時接続1本のみ（VoiSona推奨）、増やすと並列合成で高速になるがキューが増える
+  synth_concurrency: 1

@@ -167,6 +167,55 @@ class NLPAnalyzer:
             results.append(ChunkAnalysis(chunk=chunk, segments=analyzed))
         return results
 
+    async def analyze_for_plan(
+        self,
+        text: str,
+        *,
+        known_characters: list[str] | None = None,
+        character_db: CharacterDB | None = None,
+    ) -> list[AnalyzedSegment]:
+        """発話計画用に、TTS文字数分割を行わず全文を分析する.
+
+        ``analyze_text`` は既存の Reader/CLI の互換性のため、TTSへ渡すチャンクへ先に
+        分割する。この順序で長い ``「...」`` を渡すと引用符の途中で切れ、後続チャンクが
+        地の文として分類されるため、発話者境界を復元できない。UtterancePlan はTTS実行
+        より前の契約なので、ここでは TextProcessor → classifier → speaker → scene の
+        論理セグメントだけを作り、文字数制限は後段へ委ねる。
+
+        LLMへ渡す単位は論理セグメントであり、``TextSplitter.max_chars`` には依存しない。
+        空のscene breakも結果へ残すので、planning adapterが警告として記録できる。
+        """
+
+        if not isinstance(text, str):
+            raise TypeError("text must be a string")
+        clean = self._processor.process(text)
+        if not clean:
+            return []
+
+        segments = self._classifier.classify(clean)
+        segments = self._speaker_extractor.extract(segments)
+        if self._scene_analyzer:
+            analyzed = await self._scene_analyzer.analyze_batch(
+                segments,
+                known_characters=known_characters,
+            )
+            if character_db is not None:
+                self._update_character_db(character_db, analyzed)
+            return analyzed
+
+        return [
+            AnalyzedSegment.from_segment(
+                seg,
+                speaker=seg.speaker_candidates[0] if seg.speaker_candidates else None,
+            )
+            for seg in segments
+        ]
+
+    # Descriptive aliases keep the migration boundary discoverable to callers that do not know
+    # whether the input is a Reader chunk stream or a plan-level analysis.
+    analyze_unsplit = analyze_for_plan
+    analyze_plan = analyze_for_plan
+
     @staticmethod
     def _update_character_db(
         character_db: CharacterDB,
