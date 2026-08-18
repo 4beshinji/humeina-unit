@@ -56,11 +56,10 @@ agent typeを指定する。
 
 WIP上限1の場合の推奨順:
 
-1. `API-002`
-2. `OBS-001`
+1. `OPS-001`
 
-`API-002` と `OBS-001` は変更領域が近いため、先にP0の `API-002` を統合してから
-`OBS-001` へ進む。
+`OPS-001` の依存タスクはすべて完了済み。Provider実機、GPU、VoiSona VM、
+VOICEPEAKライセンスなど利用可能な外部環境を確認してから実行証跡を取得する。
 
 ## 3. タスク一覧
 
@@ -93,7 +92,7 @@ WIP上限1の場合の推奨順:
 | CLN-001 | R5 | P2 | L | done | TST-002, API-002 | A | worker | worker | 2026-07-30 | 2026-07-30 |
 | CLN-002 | R5 | P2 | M | done | API-001, CLN-001 | C | worker | worker | 2026-07-30 | 2026-07-30 |
 | DOC-001 | R5 | P1 | M | done | CLN-001, CLN-002, OBS-001 | D | worker | worker | 2026-07-30 | 2026-07-30 |
-| OPS-001 | R5 | P1 | M | backlog | DOC-001, TST-002, OBS-001 | D | worker | — | — | — |
+| OPS-001 | R5 | P1 | M | ready | DOC-001, TST-002, OBS-001 | D | worker | — | — | — |
 
 ## 4. タスクカード
 
