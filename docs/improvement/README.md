@@ -10,6 +10,12 @@
   目標アーキテクチャ、移行原則、互換性方針
 - [work-ledger.md](work-ledger.md):
   タスクID、依存関係、受入条件、推奨担当、作業状況
+- [runtime-findings-consolidated.md](runtime-findings-consolidated.md):
+  2026-08-30時点の実装で再検証した、優先順位・分類・根拠・最小回帰テストの正本
+- [runtime-refactoring-guide.md](runtime-refactoring-guide.md):
+  上記findingを修正するための契約、変更面、作業パッケージ、実環境ゲート
+- [runtime-refactoring-goal-prompt.md](runtime-refactoring-goal-prompt.md):
+  2文書を正本として後続修正を `/goal` で自走させるための貼り付け用プロンプト
 
 ## 1. 改善の目的
 
