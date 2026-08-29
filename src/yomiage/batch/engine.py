@@ -15,7 +15,8 @@ from ..application.synthesis import SynthesisRequest, SynthesisService
 from ..config import get_tts_config
 from ..core.identity import new_job_id, new_run_id
 from ..core.models import Utterance, VoiceIntent
-from ..nlp.ollama_client import OllamaClient
+from ..llm import LLMBackend
+from ..llm.factory import create_llm_service, normalize_llm_config
 from ..nlp.text_processor import TextProcessor
 from ..ports.artifacts import ArtifactRef, ArtifactStore, ArtifactValidationError
 from ..ports.sources import URLPolicy
@@ -41,6 +42,7 @@ class BatchEngine:
         synthesis_service: SynthesisService | Any | None = None,
         url_policy: URLPolicy | None = None,
         metrics: Any | None = None,
+        llm: LLMBackend | None = None,
     ):
         self.config = config
         self.mode = mode
@@ -64,13 +66,13 @@ class BatchEngine:
         self._owns_synthesis_service = synthesis_service is None
         self.url_policy = url_policy
 
-        ollama_cfg = config.get("ollama", {})
         batch_cfg = config.get("batch", {})
-
-        self.ollama = OllamaClient(
-            url=ollama_cfg.get("url", "http://localhost:11434"),
-            model=ollama_cfg.get("batch_model") or ollama_cfg.get("model", "qwen3.5:9b"),
-        )
+        self.llm = llm or create_llm_service(config, metrics=metrics)
+        self._owns_llm = llm is None
+        llm_cfg = normalize_llm_config(config)
+        providers = llm_cfg.get("providers", {})
+        local = providers.get("local", {}) if isinstance(providers, Mapping) else {}
+        limits = llm_cfg.get("limits", {})
 
         scene_params = config.get("scene_params")
         self.param_mapper = (
@@ -84,6 +86,9 @@ class BatchEngine:
         self.vm_mount = batch_cfg.get("voisona_vm_mount", "Z:")
         self.analysis_window_chars = batch_cfg.get("analysis_window_chars", 3000)
         self.analysis_window_sentences = batch_cfg.get("analysis_window_sentences", 25)
+        self.llm_context_tokens = int(local.get("context_tokens", 32768))
+        self.llm_context_safety_ratio = float(limits.get("context_safety_ratio", 0.8))
+        self.analysis_strategy = str(batch_cfg.get("analysis_strategy", "single_pass"))
 
         # Load VoiceProfile if available
         self.voice_profile = None
@@ -342,9 +347,12 @@ class BatchEngine:
     ) -> BatchManifest:
         """Phase A: 全文分析してマニフェスト生成."""
         analyzer = BatchAnalyzer(
-            ollama=self.ollama,
+            llm=self.llm,
             analysis_window_chars=self.analysis_window_chars,
             analysis_window_sentences=self.analysis_window_sentences,
+            context_tokens=self.llm_context_tokens,
+            context_safety_ratio=self.llm_context_safety_ratio,
+            analysis_strategy=self.analysis_strategy,
             voice_profile=self.voice_profile,
             url_policy=self.url_policy,
         )
@@ -445,6 +453,7 @@ class BatchEngine:
 
         total = len(targets) or 1
         count = 0
+        await self._romanize_entries(targets)
         for entry in targets:
             # シーンブレーク
             if entry.segment_type == "scene_break":
@@ -478,9 +487,6 @@ class BatchEngine:
                     entry.status = "synthesized"
                 count += 1
             elif _has_speakable_text(entry.text):
-                # アルファベット→カタカナ変換（1文単位）
-                if TextProcessor.has_alphabet(entry.text):
-                    entry.text = await self.ollama.romanize(entry.text)
                 result = await synth.synthesize_sentence(entry, work_dir)
                 if result:
                     source_path = work_dir / result
@@ -628,6 +634,10 @@ class BatchEngine:
             )
             self._restore_artifact_entries(manifest, work_dir)
 
+        await self._romanize_entries(
+            manifest.failed_sentences if retry_failed else manifest.pending_sentences
+        )
+
         # merge_adjacent=False is intentional: the old Batch manifest is already sentence
         # segmented, and resume/retry needs a stable 1:1 entry↔utterance↔artifact mapping.
         plan = manifest.to_utterance_plan(config=self.config, merge_adjacent=False)
@@ -675,20 +685,6 @@ class BatchEngine:
                     utterance = utterance_by_index.get(entry.index)
                     if utterance is None:
                         raise RuntimeError(f"no UtterancePlan item for sentence {entry.index}")
-                    if TextProcessor.has_alphabet(entry.text):
-                        entry.text = await self.ollama.romanize(entry.text)
-                        utterance = Utterance(
-                            id=utterance.id,
-                            order=utterance.order,
-                            text=entry.text,
-                            segment_type=utterance.segment_type,
-                            speaker_id=utterance.speaker_id,
-                            scene=utterance.scene,
-                            emotion=utterance.emotion,
-                            intensity=utterance.intensity,
-                            voice_intent=utterance.voice_intent,
-                            source_ref=utterance.source_ref,
-                        )
                     request = self._request_for_entry(
                         entry,
                         utterance,
@@ -1135,6 +1131,27 @@ class BatchEngine:
                 return video_output
 
         return audio_output
+
+    async def _romanize_entries(self, entries: list[SentenceEntry]) -> None:
+        """英字を含む全対象文を一回の重複排除済みbatchで変換する。"""
+
+        targets = [
+            entry
+            for entry in entries
+            if _has_speakable_text(entry.text) and TextProcessor.has_alphabet(entry.text)
+        ]
+        if not targets:
+            return
+        converted = await self.llm.romanize_many([entry.text for entry in targets])
+        for entry, text in zip(targets, converted, strict=True):
+            entry.text = text
+
+    async def close(self) -> None:
+        """このengineが所有するLLM資源を閉じる。"""
+
+        if self._owns_llm:
+            await self.llm.close()
+            self._owns_llm = False
 
     # --- Status ---
 

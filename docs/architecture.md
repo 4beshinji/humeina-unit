@@ -64,6 +64,9 @@ src/yomiage/
 │   ├── classifier.py, gemini_client.py, legacy.py, llm_backend.py, llm_utils.py
 │   ├── math_processor.py, ollama_client.py, pipeline.py, scene_analyzer.py
 │   ├── speaker.py, splitter.py, text_processor.py
+├── llm/                      # provider非依存LLM service / token budget / cache
+│   ├── models.py, protocols.py, service.py, budgeting.py, cache.py, catalog.py
+│   └── transports/           # Chat Completions / Responses / Messages / legacy adapters
 ├── reader/                   # realtime engine and local persistence
 │   ├── engine.py, bookmark.py, character_db.py, param_mapper.py, playback.py
 ├── tts/                      # provider clients and shared manager
@@ -146,7 +149,9 @@ provider、検証済み path を保持します。未検証 WAV は final artifa
 | VoiSona Talk | 音声合成 | `http://localhost:32766` | Windows VM の場合あり。Basic 認証/virtiofs は任意 |
 | VOICEVOX Engine | 音声合成 | `http://localhost:50021` | Docker または別プロセス |
 | VOICEPEAK | 音声合成 | ローカル executable | ライセンスと path が必要 |
-| Ollama | 分析/要約 | `http://localhost:11434` | ルールベースのみなら省略可能 |
+| llama.cpp | 標準の分析/要約 | `http://127.0.0.1:8080/v1` | ROCmではGPU indexを必ず明示 |
+| OpenCode Go | 任意のcloud LLM | API key指定時のみ | task routeで明示的にopt-in |
+| Ollama | 旧設定のrollback | `http://localhost:11434` | 互換Adapterのみ |
 | Gemini API | LLM fallback | API key 指定時のみ | `news` の `--gemini-key` または env |
 | ffmpeg | concat/video/format | executable `ffmpeg` | Batch 結合・動画時に必要 |
 | Slack API | 任意監視 | token 指定時のみ | `slack-sdk` extra が必要 |

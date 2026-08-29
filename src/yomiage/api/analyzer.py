@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
-from ..nlp.llm_backend import LLMBackend, create_llm_backend
+from ..llm import LLMBackend
+from ..nlp.llm_backend import create_llm_backend
 from ..nlp.pipeline import NLPAnalyzer
 from ..nlp.scene_analyzer import AnalyzedSegment, SceneAnalyzer
 from .models import AnalysisResult
@@ -19,7 +20,7 @@ class TextAnalyzer:
 
     Usage::
 
-        analyzer = TextAnalyzer.create("ollama", url="http://localhost:11434")
+        analyzer = TextAnalyzer.create("llama_cpp", url="http://127.0.0.1:8080/v1")
         segments = await analyzer.analyze("太郎は「おはよう」と言った。")
     """
 
@@ -39,11 +40,11 @@ class TextAnalyzer:
         return self._analyzer.scene_analyzer
 
     @classmethod
-    def create(cls, llm_backend: str = "ollama", **kwargs: object) -> TextAnalyzer:
+    def create(cls, llm_backend: str = "llama_cpp", **kwargs: object) -> TextAnalyzer:
         """ファクトリ: バックエンド名+パラメータで作成.
 
         Args:
-            llm_backend: "ollama", "openai", or "anthropic"
+            llm_backend: "llama_cpp", "opencode_go", or a legacy backend
             **kwargs: url, api_key, model etc.
         """
         backend = create_llm_backend(llm_backend, **kwargs)
@@ -57,6 +58,7 @@ class TextAnalyzer:
             url=config.llm.url,
             api_key=config.llm.api_key,
             model=config.llm.model,
+            protocol=config.llm.protocol,
         )
         return cls(llm=llm, max_chunk_chars=config.max_chunk_chars)
 

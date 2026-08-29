@@ -16,7 +16,7 @@ from .api.metrics import MetricsCollector
 from .api.profile_resolver import resolve_voice_profile
 from .application.synthesis import RetryPolicy, SynthesisService
 from .config import get_tts_config
-from .nlp.ollama_client import OllamaClient
+from .llm.factory import create_llm_service
 from .nlp.scene_analyzer import SceneAnalyzer
 from .nlp.splitter import TextSplitter
 from .reader.engine import ReadingEngine
@@ -110,13 +110,7 @@ def create_reading_engine(
         hooks=hooks,
         metrics=metrics,
     )
-    ollama_cfg = config.get("ollama", {})
-    if not isinstance(ollama_cfg, Mapping):
-        ollama_cfg = {}
-    ollama = OllamaClient(
-        url=str(ollama_cfg.get("url", "http://localhost:11434")),
-        model=str(ollama_cfg.get("model", "qwen3.5:9b")),
-    )
+    llm = create_llm_service(config, metrics=metrics)
     scene_params = config.get("scene_params")
     param_mapper = (
         ParamMapper(dict(scene_params))
@@ -126,16 +120,18 @@ def create_reading_engine(
     reader_cfg = config.get("reader", {})
     if not isinstance(reader_cfg, Mapping):
         reader_cfg = {}
-    return ReadingEngine(
+    engine = ReadingEngine(
         tts_manager=tts_manager,
         splitter=TextSplitter(max_chars=int(tts_cfg.get("max_chunk_chars", 200))),
-        scene_analyzer=SceneAnalyzer(ollama),
+        scene_analyzer=SceneAnalyzer(llm),
         param_mapper=param_mapper,
         auto_advance=bool(reader_cfg.get("auto_advance", True)),
         lookahead_chunks=int(tts_cfg.get("lookahead_chunks", 5)),
         synthesis_service=tts_manager.service,
         metrics=metrics,
     )
+    engine._owns_llm = True
+    return engine
 
 
 def create_studio_providers(

@@ -63,13 +63,31 @@ voicepeak:
 VOICEPEAK の executable path など必要値を起動前に検証します。無効な fallback の secret は要求
 されません。
 
-### `ollama`/`llm` とニュース
+### `llm` とニュース
 
 ```yaml
-ollama:
-  url: ${OLLAMA_URL:-http://localhost:11434}
-  model: ${OLLAMA_MODEL:-qwen3.5:9b}
-  summary_model: ${OLLAMA_SUMMARY_MODEL:-gemma4:12b}
+llm:
+  providers:
+    local:
+      type: llama_cpp
+      base_url: ${LLAMA_CPP_URL:-http://127.0.0.1:8080/v1}
+      model: ${LLAMA_CPP_MODEL:-Qwen3.8-27B}
+      protocol: chat_completions
+      context_tokens: 32768
+      timeout_seconds: 600
+    opencode_go:
+      type: opencode_go
+      base_url: https://opencode.ai/zen/go/v1
+      api_key: ${OPENCODE_GO_API_KEY:-}
+      model: ${OPENCODE_GO_MODEL:-qwen3.8-flash}
+      protocol: auto
+      enabled: false
+  routes:
+    scene_analysis: {provider: local, max_output_tokens: 4096}
+    news_summary: {provider: local, max_output_tokens: 2048}
+  fallback:
+    order: [local]
+    "on": [unavailable, timeout, rate_limit]
 
 news:
   urgency_threshold: 0.8
@@ -77,9 +95,13 @@ news:
   tts: {speed: 1.1}
 ```
 
-`Settings` では `llm.backend: ollama|openai|anthropic` に正規化します。OpenAI/Anthropic を
-有効にする場合だけ API key が必須です。Gemini fallback は `news` の `--gemini-key` または
-`GEMINI_API_KEY` で明示的に有効化します。
+Provider（接続先）とProtocol（`chat_completions` / `responses` / `messages`）は独立しています。
+OpenCode Go はopt-inで、API keyは環境変数だけから渡します。本文、完全URL、API keyはmetrics、
+manifest、Job DBへ保存されません。旧`ollama:`は`ollama_legacy`へ自動変換され、deprecation
+warningを出します。
+
+OpenCode Goへ小説、ニュース、Slack本文を送る前に、利用モデルのprivacy条件を確認してください。
+標準fallbackはローカルだけで、有料Providerへ暗黙に切り替わりません。
 
 ### `batch`
 
@@ -89,6 +111,7 @@ batch:
   default_mode: voisona
   analysis_window_chars: 3000
   analysis_window_sentences: 25
+  analysis_strategy: single_pass
   manifest_save_interval: 10
   silence_duration: 1.5
   concat_format: wav
@@ -100,7 +123,10 @@ batch:
   synth_concurrency: 1
 ```
 
-`output/works/{work_id}/plans/{plan_id}.json` と `runs/{run_id}/` が新しい保存形式です。
+`analysis_window_sentences`はモデルcontextではなく1batchの最大項目数です。実際の分割は
+`context_tokens`、出力token予算、安全率から決まり、`analysis_strategy: exhaustive`だけが品質比較用の
+旧2-pass相当動作を有効にします。`output/works/{work_id}/plans/{plan_id}.json` と `runs/{run_id}/` が
+新しい保存形式です。
 旧 manifest は読み取り互換ですが、既存ファイルを上書きして移行しません。`synth_concurrency`
 は 1 以上 256 以下です。
 
@@ -140,7 +166,9 @@ Provider/LLM の接続先は従来の変数も受け付けます。パス・運�
 | `VOISONA_URL`, `VOISONA_USERNAME`, `VOISONA_PASSWORD` | VoiSona 接続/認証 |
 | `VOICEVOX_URL` | VOICEVOX 接続 |
 | `VOICEPEAK_PATH` | VOICEPEAK executable |
-| `OLLAMA_URL`, `OLLAMA_MODEL`, `OLLAMA_SUMMARY_MODEL` | LLM 接続/モデル |
+| `LLAMA_CPP_URL`, `LLAMA_CPP_MODEL` | 標準llama.cpp接続/model alias |
+| `YOMIAGE_LLM_GPU_DEVICE`, `LLAMA_MODEL_PATH` | ROCm GPU選択/server起動 |
+| `OLLAMA_URL`, `OLLAMA_MODEL`, `OLLAMA_SUMMARY_MODEL` | 旧Ollama rollback |
 | `GEMINI_API_KEY` | ニュース用 Gemini fallback |
 | `YOMIAGE_USER_CONFIG_DIR` | ユーザー設定/プロファイル root |
 | `YOMIAGE_DATA_DIR`, `YOMIAGE_OUTPUT_DIR`, `YOMIAGE_ASSETS_DIR` | data/output/assets |

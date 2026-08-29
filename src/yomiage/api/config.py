@@ -59,10 +59,11 @@ class TTSEngineConfig(BaseModel):
 class LLMConfig(BaseModel):
     """LLMバックエンド設定."""
 
-    backend: str = "ollama"  # "ollama" | "openai" | "anthropic"
+    backend: str = "llama_cpp"
     url: str | None = None
     api_key: str | None = None
-    model: str | None = "qwen3.5:9b"
+    model: str | None = "Qwen3.8-27B"
+    protocol: str | None = "chat_completions"
 
 
 class AnalyzerConfig(BaseModel):
@@ -146,12 +147,24 @@ class PipelineConfig(BaseModel):
                 ),
             )
 
-        ollama_cfg = data.get("ollama", {})
-        llm = LLMConfig(
-            backend="ollama",
-            url=ollama_cfg.get("url"),
-            model=ollama_cfg.get("model") or "qwen3.5:9b",
-        )
+        legacy_ollama = data.get("ollama")
+        if isinstance(legacy_ollama, dict):
+            llm = LLMConfig(
+                backend="ollama",
+                url=legacy_ollama.get("url"),
+                model=legacy_ollama.get("model") or "qwen3.5:9b",
+                protocol="ollama_chat",
+            )
+        else:
+            llm_section = data.get("llm", {})
+            providers = llm_section.get("providers", {}) if isinstance(llm_section, dict) else {}
+            local = providers.get("local", {}) if isinstance(providers, dict) else {}
+            llm = LLMConfig(
+                backend=local.get("type", "llama_cpp"),
+                url=local.get("base_url", "http://127.0.0.1:8080/v1"),
+                model=local.get("model", "Qwen3.8-27B"),
+                protocol=local.get("protocol", "chat_completions"),
+            )
         analyzer = AnalyzerConfig(
             llm=llm,
             max_chunk_chars=tts_cfg.get("max_chunk_chars", 200),

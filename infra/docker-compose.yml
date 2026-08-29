@@ -4,3 +4,53 @@ services:
     ports:
       - "50021:50021"
     restart: unless-stopped
+
+  llama-server-rocm:
+    profiles: [rocm]
+    image: ghcr.io/ggml-org/llama.cpp:server-rocm
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    group_add: [video]
+    environment:
+      ROCR_VISIBLE_DEVICES: ${YOMIAGE_LLM_GPU_DEVICE:?set YOMIAGE_LLM_GPU_DEVICE}
+      HIP_VISIBLE_DEVICES: ${YOMIAGE_LLM_GPU_DEVICE:?set YOMIAGE_LLM_GPU_DEVICE}
+      GPU_DEVICE_ORDINAL: ${YOMIAGE_LLM_GPU_DEVICE:?set YOMIAGE_LLM_GPU_DEVICE}
+    volumes:
+      - ${LLAMA_MODEL_DIR:?set LLAMA_MODEL_DIR}:/models:ro
+    command:
+      - --model
+      - /models/${LLAMA_MODEL_FILE:?set LLAMA_MODEL_FILE}
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --ctx-size
+      - "32768"
+      - --parallel
+      - "1"
+      - --device
+      - ROCm0
+      - --split-mode
+      - none
+      - --main-gpu
+      - "0"
+      - --n-gpu-layers
+      - auto
+      - --fit
+      - "on"
+      - --fit-target
+      - "2048"
+      - --flash-attn
+      - "on"
+      - --cache-type-k
+      - q8_0
+      - --cache-type-v
+      - q8_0
+      - --jinja
+      - --reasoning
+      - "off"
+      - --metrics
+    ports:
+      - 127.0.0.1:8080:8080
+    restart: unless-stopped

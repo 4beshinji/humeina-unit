@@ -40,7 +40,9 @@ from pydantic import (
 )
 
 ProviderName = Literal["voisona", "voicevox", "voicepeak"]
-LLMBackendName = Literal["ollama", "openai", "anthropic"]
+LLMBackendName = Literal[
+    "llama_cpp", "opencode_go", "ollama", "openai", "anthropic", "gemini"
+]
 
 _PROVIDER_NAMES = ("voisona", "voicevox", "voicepeak")
 _PATH_FIELDS = {
@@ -170,6 +172,7 @@ class ProviderSettings(BaseModel):
     _validate_url = field_validator("url", mode="before")(_http_url)
     _validate_password = field_validator("password", mode="before")(_as_secret)
     _validate_api_key = field_validator("api_key", mode="before")(_as_secret)
+
     _resolve_path = field_validator("path", "executable", mode="before")(_absolute_path)
 
     @model_validator(mode="after")
@@ -251,20 +254,91 @@ class ProvidersSettings(BaseModel):
         return result
 
 
+class LLMProviderSettings(BaseModel):
+    """一つのLLM接続先。秘密値はrepr/model_dumpでmaskする。"""
+
+    model_config = ConfigDict(extra="allow", validate_assignment=True)
+
+    type: StrictStr = "llama_cpp"
+    base_url: StrictStr = "http://127.0.0.1:8080/v1"
+    api_key: SecretStr | None = None
+    model: StrictStr = "Qwen3.8-27B"
+    protocol: StrictStr = "chat_completions"
+    context_tokens: StrictInt = Field(default=32768, ge=1024)
+    enabled: StrictBool = True
+
+    _validate_base_url = field_validator("base_url", mode="before")(_http_url)
+    _validate_api_key = field_validator("api_key", mode="before")(_as_secret)
+
+    def to_config_dict(self) -> dict[str, Any]:
+        result = self.model_dump(mode="python")
+        if self.api_key is not None:
+            result["api_key"] = self.api_key.get_secret_value()
+        result.update(self.model_extra)
+        return result
+
+
+def _default_llm_providers() -> dict[str, LLMProviderSettings]:
+    return {"local": LLMProviderSettings()}
+
+
 class LLMSettings(BaseModel):
-    """LLM backend設定。API keyは有効なクラウドbackendだけ必須。"""
+    """Provider、API形式、task routeを分離したLLM設定。"""
 
     model_config = ConfigDict(extra="allow", validate_assignment=True)
 
     enabled: StrictBool = True
-    backend: LLMBackendName = "ollama"
-    url: StrictStr | None = "http://localhost:11434"
+    backend: LLMBackendName = "llama_cpp"
+    url: StrictStr | None = "http://127.0.0.1:8080/v1"
     api_key: SecretStr | None = None
-    model: StrictStr | None = "qwen3.5:9b"
-    summary_model: StrictStr | None = "gemma4:12b"
+    model: StrictStr | None = "Qwen3.8-27B"
+    summary_model: StrictStr | None = None
+    providers: dict[str, LLMProviderSettings] = Field(default_factory=_default_llm_providers)
+    routes: dict[str, dict[str, Any]] = Field(
+        default_factory=lambda: {"default": {"provider": "local"}}
+    )
+    fallback: dict[str, Any] = Field(default_factory=lambda: {"order": ["local"]})
+    limits: dict[str, Any] = Field(default_factory=dict)
 
     _validate_url = field_validator("url", mode="before")(_http_url)
     _validate_api_key = field_validator("api_key", mode="before")(_as_secret)
+
+    @field_validator("fallback", mode="before")
+    @classmethod
+    def _normalize_yaml_boolean_key(cls, value: Any) -> Any:
+        if isinstance(value, dict) and True in value and "on" not in value:
+            value = dict(value)
+            value["on"] = value.pop(True)
+        return value
+
+    @model_validator(mode="before")
+    @classmethod
+    def _convert_legacy_backend(cls, data: Any) -> Any:
+        if not isinstance(data, dict) or "providers" in data:
+            return data
+        if any(key in data for key in ("backend", "url", "model", "summary_model")):
+            result = deepcopy(data)
+            backend = str(result.get("backend", "ollama"))
+            provider_type = "ollama_legacy" if backend == "ollama" else backend
+            protocol = {
+                "ollama": "ollama_chat",
+                "anthropic": "messages",
+                "openai": "chat_completions",
+                "llama_cpp": "chat_completions",
+            }.get(backend, "auto")
+            result["providers"] = {
+                "local": {
+                    "type": provider_type,
+                    "base_url": result.get("url") or "http://localhost:11434",
+                    "api_key": result.get("api_key") or "",
+                    "model": result.get("model") or "qwen3.5:9b",
+                    "protocol": protocol,
+                }
+            }
+            result.setdefault("routes", {"default": {"provider": "local"}})
+            result.setdefault("fallback", {"order": ["local"]})
+            return result
+        return data
 
     @model_validator(mode="after")
     def _validate_backend_requirements(self, info: ValidationInfo) -> LLMSettings:
@@ -274,19 +348,27 @@ class LLMSettings(BaseModel):
             raise ValueError(f"api_key is required when LLM backend '{self.backend}' is enabled")
         return self
 
+    def to_config_dict(self) -> dict[str, Any]:
+        return {
+            "providers": {
+                name: provider.to_config_dict()
+                for name, provider in self.providers.items()
+            },
+            "routes": deepcopy(self.routes),
+            "fallback": deepcopy(self.fallback),
+            "limits": deepcopy(self.limits),
+        }
+
     def to_legacy_dict(self) -> dict[str, Any]:
-        result: dict[str, Any] = {
+        """旧integrator向け。新規compositionはto_config_dictを使う。"""
+
+        return {
             "url": self.url,
             "model": self.model,
+            "summary_model": self.summary_model,
+            "api_key": self.api_key.get_secret_value() if self.api_key else None,
+            "enabled": self.enabled,
         }
-        if self.summary_model is not None:
-            result["summary_model"] = self.summary_model
-        if self.api_key is not None:
-            result["api_key"] = self.api_key.get_secret_value()
-        if not self.enabled:
-            result["enabled"] = False
-        result.update(self.model_extra)
-        return result
 
 
 class BatchSettings(BaseModel):
@@ -635,7 +717,7 @@ class Settings(BaseModel):
 
         result["tts"] = self.tts.model_dump(mode="python")
         result.update(self.providers.to_legacy_dict())
-        result["ollama"] = self.llm.to_legacy_dict()
+        result["llm"] = self.llm.to_config_dict()
         result["batch"] = self.batch.model_dump(mode="python")
         result["server"] = self.server.model_dump(mode="python")
         result["storage"] = self.storage.model_dump(mode="python")

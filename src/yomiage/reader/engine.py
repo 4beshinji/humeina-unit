@@ -72,6 +72,8 @@ class ReadingEngine:
         self.classifier = classifier or TextClassifier()
         self.speaker_extractor = speaker_extractor or SpeakerExtractor()
         self.scene_analyzer = scene_analyzer
+        self.llm = scene_analyzer._backend if scene_analyzer is not None else None
+        self._owns_llm = False
         self.param_mapper = param_mapper or ParamMapper()
         self.bookmarks = bookmark_manager or BookmarkManager()
         self.auto_advance = auto_advance
@@ -222,6 +224,14 @@ class ReadingEngine:
                 except RuntimeError:
                     result.close()
         logger.info("Reading stopped")
+
+    async def close(self) -> None:
+        """Readerが所有するTTS/LLM資源を閉じる。"""
+
+        await self.tts.close()
+        if self._owns_llm and self.llm is not None:
+            await self.llm.close()
+            self._owns_llm = False
 
     async def _read_from_source(
         self,

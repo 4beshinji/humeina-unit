@@ -21,10 +21,42 @@ voicepeak:
   max_chars: 140
   pitch_scale: 300
 
-ollama:
-  url: ${OLLAMA_URL:-http://localhost:11434}
-  model: ${OLLAMA_MODEL:-qwen3.5:9b}
-  summary_model: ${OLLAMA_SUMMARY_MODEL:-gemma4:12b}
+llm:
+  providers:
+    local:
+      type: llama_cpp
+      base_url: ${LLAMA_CPP_URL:-http://127.0.0.1:8080/v1}
+      api_key: ${LLAMA_CPP_API_KEY:-}
+      model: ${LLAMA_CPP_MODEL:-Qwen3.8-27B}
+      protocol: chat_completions
+      context_tokens: 32768
+      timeout_seconds: 600
+    opencode_go:
+      type: opencode_go
+      base_url: https://opencode.ai/zen/go/v1
+      api_key: ${OPENCODE_GO_API_KEY:-}
+      model: ${OPENCODE_GO_MODEL:-qwen3.8-flash}
+      protocol: auto
+      enabled: false
+  routes:
+    default: {provider: local, max_output_tokens: 2048}
+    scene_analysis: {provider: local, max_output_tokens: 4096}
+    character_analysis: {provider: local, max_output_tokens: 4096}
+    romanization: {provider: local, max_output_tokens: 1024}
+    news_summary: {provider: local, max_output_tokens: 2048}
+    urgency_scoring: {provider: local, max_output_tokens: 32}
+    slack_scoring: {provider: local, max_output_tokens: 32}
+    ex_voice: {provider: local, max_output_tokens: 1024}
+  fallback:
+    order: [local]
+    "on": [unavailable, timeout, rate_limit]
+  limits:
+    context_safety_ratio: 0.80
+    availability_ttl_seconds: 60
+    max_retries: 2
+    max_requests_per_job: 100
+    max_input_tokens_per_job: 500000
+    on_budget_exceeded: rule_based
 
 news:
   daily_schedule: "08:00"
@@ -118,6 +150,7 @@ batch:
   default_mode: voisona
   analysis_window_chars: 3000
   analysis_window_sentences: 25
+  analysis_strategy: single_pass
   manifest_save_interval: 10
   silence_duration: 1.5
   concat_format: wav

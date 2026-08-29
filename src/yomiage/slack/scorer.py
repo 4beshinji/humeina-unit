@@ -2,7 +2,7 @@
 
 from loguru import logger
 
-from ..nlp.ollama_client import OllamaClient
+from ..llm import LLMBackend
 from .monitor import SlackMessage
 
 SCORE_SYSTEM = """\
@@ -17,15 +17,17 @@ class ImportanceScorer:
 
     def __init__(
         self,
-        ollama: OllamaClient,
+        llm: LLMBackend,
         mention_boost: float = 0.5,
         threshold: float = 0.6,
         priority_channels: list[str] | None = None,
+        owns_llm: bool = False,
     ):
-        self.ollama = ollama
+        self.llm = llm
         self.mention_boost = mention_boost
         self.threshold = threshold
         self.priority_channels = priority_channels or []
+        self._owns_llm = owns_llm
 
     async def score(self, message: SlackMessage) -> float:
         """メッセージの重要度を0.0-1.0でスコアリング."""
@@ -39,7 +41,10 @@ class ImportanceScorer:
         if message.reaction_count > 5:
             base_score += 0.2
 
-        # LLM補正
+        # LLM補正で通知閾値を跨げない確定ケースではAPIを呼ばない。
+        if base_score >= self.threshold or base_score + 0.5 < self.threshold:
+            return min(1.0, base_score)
+
         llm_score = await self._llm_score(message)
         final_score = min(1.0, base_score + llm_score * 0.5)
 
@@ -49,13 +54,14 @@ class ImportanceScorer:
         return score >= self.threshold
 
     async def _llm_score(self, message: SlackMessage) -> float:
-        if not await self.ollama.is_available():
-            return 0.3
-
         prompt = f"チャンネル: {message.channel}\nメッセージ: {message.text[:500]}\n\n重要度:"
         try:
-            response = await self.ollama.generate(
-                prompt, system=SCORE_SYSTEM, temperature=0.1, max_tokens=10
+            response = await self.llm.generate(
+                prompt,
+                system=SCORE_SYSTEM,
+                temperature=0.1,
+                max_tokens=10,
+                task="slack_scoring",
             )
             return float(response.strip().split()[0])
         except (ValueError, IndexError):
@@ -63,3 +69,8 @@ class ImportanceScorer:
         except Exception as e:
             logger.warning(f"LLM scoring failed: {e}")
             return 0.3
+
+    async def close(self) -> None:
+        if self._owns_llm:
+            await self.llm.close()
+            self._owns_llm = False

@@ -44,7 +44,7 @@ def create_reading_engine(
 ):
     """Reader 用の構成を組み立てる（旧 ``cli._create_reading_engine`` 互換）。"""
 
-    from ...nlp.ollama_client import OllamaClient
+    from ...llm.factory import create_llm_service
     from ...nlp.scene_analyzer import SceneAnalyzer
     from ...nlp.splitter import TextSplitter
     from ...reader.engine import ReadingEngine
@@ -55,11 +55,7 @@ def create_reading_engine(
     tts_cfg = config.get("tts", {})
     max_chars = tts_cfg.get("max_chunk_chars", 200)
 
-    ollama_cfg = config.get("ollama", {})
-    ollama = OllamaClient(
-        url=ollama_cfg.get("url", "http://localhost:11434"),
-        model=ollama_cfg.get("model", "qwen3.5:9b"),
-    )
+    llm = create_llm_service(config)
 
     scene_params = config.get("scene_params")
     param_mapper = (
@@ -73,16 +69,11 @@ def create_reading_engine(
         from ...exvoice.catalog import load_catalog
         from ...exvoice.manager import ExVoiceManager
         from ...exvoice.selector import ExVoiceSelector
-        from ...nlp.llm_backend import OllamaBackend
 
         ev_cfg = config.get("ex_voice", {})
         wav_dir = Path(ev_cfg.get("wav_dir", "/home/sin/code/una/VoiceWav"))
         catalog = load_catalog(wav_dir)
-        backend = OllamaBackend(
-            url=ollama_cfg.get("url", "http://localhost:11434"),
-            model=ollama_cfg.get("model", "qwen3.5:9b"),
-        )
-        selector = ExVoiceSelector(backend, catalog)
+        selector = ExVoiceSelector(llm, catalog)
         ex_voice_manager = ExVoiceManager(
             catalog=catalog,
             selector=selector,
@@ -93,10 +84,10 @@ def create_reading_engine(
         logger.info(f"EX voice enabled: {len(catalog)} clips from {wav_dir}")
 
     batch_cfg = config.get("batch", {})
-    return ReadingEngine(
+    engine = ReadingEngine(
         tts_manager=tts,
         splitter=TextSplitter(max_chars=max_chars),
-        scene_analyzer=SceneAnalyzer(ollama),
+        scene_analyzer=SceneAnalyzer(llm),
         param_mapper=param_mapper,
         auto_advance=config.get("reader", {}).get("auto_advance", True),
         lookahead_chunks=tts_cfg.get("lookahead_chunks", 5),
@@ -105,6 +96,8 @@ def create_reading_engine(
         synth_concurrency=batch_cfg.get("synth_concurrency", 2),
         ex_voice=ex_voice_manager,
     )
+    engine._owns_llm = True
+    return engine
 
 
 def create_batch_engine(
@@ -205,32 +198,37 @@ def create_studio_providers(config: dict, provider_names: set[str]):
 def create_news_scheduler(
     config: dict, provider: str | None = None, gemini_key: str | None = None,
 ):
+    from ...llm.factory import create_llm_service
     from ...news.scheduler import NewsScheduler
-    from ...nlp.ollama_client import OllamaClient
     from .common import _compat_helper
 
     tts = _compat_helper("_create_tts_manager")(config, provider)
-    ollama_cfg = config.get("ollama", {})
-    fallback = None
+    llm_config = config
     if gemini_key:
-        from ...nlp.gemini_client import GeminiClient
+        from copy import deepcopy
 
-        fallback = GeminiClient(api_key=gemini_key)
+        from ...llm.factory import normalize_llm_config
+
+        llm_config = deepcopy(config)
+        normalized = normalize_llm_config(config)
+        normalized.setdefault("providers", {})["gemini"] = {
+            "type": "gemini",
+            "model": "gemini-2.0-flash",
+            "api_key": gemini_key,
+        }
+        normalized.setdefault("fallback", {}).setdefault("order", []).append("gemini")
+        llm_config["llm"] = normalized
         logger.info("Gemini API fallback enabled")
-
-    ollama = OllamaClient(
-        url=ollama_cfg.get("url", "http://localhost:11434"),
-        model=ollama_cfg.get("summary_model") or "gemma4:12b",
-        fallback=fallback,
-    )
+    llm = create_llm_service(llm_config)
     news_cfg = config.get("news", {})
     news_tts = news_cfg.get("tts", {})
     return NewsScheduler(
         tts_manager=tts,
-        ollama=ollama,
+        llm=llm,
         sources=news_cfg.get("sources"),
         urgency_threshold=news_cfg.get("urgency_threshold", 0.8),
         tts_speed=news_tts.get("speed", 1.0),
+        owns_llm=True,
     )
 
 
@@ -241,21 +239,18 @@ def create_slack_components(config: dict):
     if not bot_token or not app_token:
         return None
 
-    from ...nlp.ollama_client import OllamaClient
+    from ...llm.factory import create_llm_service
     from ...slack.monitor import SlackMonitor
     from ...slack.scorer import ImportanceScorer
     from .common import _compat_helper
 
     tts = _compat_helper("_create_tts_manager")(config)
-    ollama_cfg = config.get("ollama", {})
-    ollama = OllamaClient(
-        url=ollama_cfg.get("url", "http://localhost:11434"),
-        model=ollama_cfg.get("model", "qwen3.5:9b"),
-    )
+    llm = create_llm_service(config)
     scorer = ImportanceScorer(
-        ollama=ollama,
+        llm=llm,
         mention_boost=slack_cfg.get("mention_boost", 0.5),
         threshold=slack_cfg.get("importance_threshold", 0.6),
+        owns_llm=True,
     )
     monitor = SlackMonitor(
         bot_token=bot_token,

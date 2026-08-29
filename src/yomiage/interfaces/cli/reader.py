@@ -33,6 +33,8 @@ def read(
         except KeyboardInterrupt:
             engine.stop()
             logger.info("Reading interrupted")
+        finally:
+            await engine.close()
 
     asyncio.run(_run())
 
@@ -48,7 +50,10 @@ def resume(
 
     async def _run() -> None:
         engine = common.create_reading_engine(config, provider)
-        await engine.resume_last()
+        try:
+            await engine.resume_last()
+        finally:
+            await engine.close()
 
     asyncio.run(_run())
 

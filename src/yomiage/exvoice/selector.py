@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from loguru import logger
 
-from ..nlp.llm_backend import LLMBackend
+from ..llm import LLMBackend
 from ..nlp.scene_analyzer import AnalyzedSegment
 from ..nlp.splitter import Chunk
 from .catalog import VoiceClip
@@ -87,7 +87,7 @@ class ExVoiceSelector:
 
         try:
             raw = await self._backend.generate_json(
-                prompt, system=_SELECTOR_SYSTEM, temperature=0.2
+                prompt, system=_SELECTOR_SYSTEM, temperature=0.2, task="ex_voice"
             )
         except Exception as e:
             logger.warning(f"ExVoice LLM selection failed: {e}")

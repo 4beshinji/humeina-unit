@@ -141,7 +141,7 @@ class VoisonaProvider(TTSProvider):
     ) -> str:
         """POST synthesis to VoiSona queue without polling. Returns UUID."""
         body = self._build_body(text, voice, speed, **params)
-        logger.debug(f"VoiSona enqueue: {text[:30]}...")
+        logger.debug(f"VoiSona enqueue: chars={len(text)}")
         return await self._post_synthesis(body)
 
     async def poll_until_done(self, uuid: str) -> AudioResult:

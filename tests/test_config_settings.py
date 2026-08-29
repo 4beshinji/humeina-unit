@@ -65,8 +65,9 @@ def test_required_voisona_secrets_are_checked_only_when_active() -> None:
 def test_local_llm_defaults_use_analysis_and_summary_models() -> None:
     settings = Settings.from_dict(_voicevox_config())
 
-    assert settings.llm.model == "qwen3.5:9b"
-    assert settings.llm.summary_model == "gemma4:12b"
+    assert settings.llm.model == "Qwen3.8-27B"
+    assert settings.llm.summary_model is None
+    assert settings.llm.providers["local"].type == "llama_cpp"
 
 
 def test_voicepeak_executable_is_checked_only_when_active(tmp_path: Path) -> None:
@@ -223,3 +224,33 @@ def test_legacy_adapter_unmasks_secrets_only_at_boundary() -> None:
     )
     assert "secret" not in repr(settings)
     assert settings.to_legacy_dict()["voisona"]["password"] == "secret"
+
+
+def test_llm_provider_secret_is_masked_until_composition_boundary() -> None:
+    settings = Settings.from_dict(
+        _voicevox_config(
+            llm={
+                "providers": {
+                    "local": {
+                        "type": "llama_cpp",
+                        "base_url": "http://127.0.0.1:8080/v1",
+                        "model": "Qwen3.8-27B",
+                        "protocol": "chat_completions",
+                    },
+                    "opencode_go": {
+                        "type": "opencode_go",
+                        "base_url": "https://opencode.ai/zen/go/v1",
+                        "api_key": "cloud-secret",
+                        "model": "qwen3.8-flash",
+                        "protocol": "auto",
+                    },
+                }
+            }
+        )
+    )
+
+    assert "cloud-secret" not in repr(settings)
+    assert (
+        settings.to_legacy_dict()["llm"]["providers"]["opencode_go"]["api_key"]
+        == "cloud-secret"
+    )

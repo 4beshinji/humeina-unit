@@ -1,10 +1,10 @@
-"""News summarizer via Ollama."""
+"""Provider非依存LLMによるニュース要約。"""
 
 import re
 
 from loguru import logger
 
-from ..nlp.ollama_client import OllamaClient
+from ..llm import LLMBackend
 from .fetcher import Article
 
 SUMMARY_SYSTEM = """\
@@ -89,19 +89,15 @@ def _split_long_chunk(text: str) -> list[str]:
 
 
 class NewsSummarizer:
-    """Ollamaによるニュースサマリ生成."""
+    """LLMによるニュースサマリ生成."""
 
-    def __init__(self, ollama: OllamaClient):
-        self.ollama = ollama
+    def __init__(self, llm: LLMBackend):
+        self.llm = llm
 
     async def daily_summary(self, articles: list[Article]) -> str:
         """主要ニュースの日次サマリを生成."""
         if not articles:
             return "本日のニュースはありません。"
-
-        if not await self.ollama.is_available():
-            logger.warning("Ollama unavailable, using raw titles")
-            return self._fallback_summary(articles)
 
         articles_text = "\n".join(
             f"- [{a.source}] {a.title}: {a.summary[:200]}" for a in articles[:15]
@@ -109,7 +105,9 @@ class NewsSummarizer:
         prompt = SUMMARY_PROMPT.format(articles=articles_text)
 
         try:
-            return await self.ollama.generate(prompt, system=SUMMARY_SYSTEM)
+            return await self.llm.generate(
+                prompt, system=SUMMARY_SYSTEM, task="news_summary"
+            )
         except Exception as e:
             logger.error(f"Summary generation failed: {e}")
             return self._fallback_summary(articles)
@@ -119,12 +117,11 @@ class NewsSummarizer:
         if article.language == target_lang:
             return f"{article.title}。{article.summary}"
 
-        if not await self.ollama.is_available():
-            return f"{article.title}. {article.summary}"
-
         text = f"{article.title}\n{article.summary}"
         try:
-            return await self.ollama.generate(text, system=TRANSLATE_SYSTEM)
+            return await self.llm.generate(
+                text, system=TRANSLATE_SYSTEM, task="news_summary"
+            )
         except Exception as e:
             logger.error(f"Translation failed: {e}")
             return text

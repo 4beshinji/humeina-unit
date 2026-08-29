@@ -17,8 +17,8 @@ from .splitter import Chunk, TextSplitter
 from .text_processor import TextProcessor
 
 if TYPE_CHECKING:
+    from ..llm import LLMBackend
     from ..reader.character_db import CharacterDB
-    from .llm_backend import LLMBackend
 
 
 @dataclass

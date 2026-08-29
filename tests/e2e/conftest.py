@@ -13,7 +13,7 @@ import pytest
 from dotenv import load_dotenv
 
 from yomiage.config import get_tts_config, load_config
-from yomiage.nlp.ollama_client import OllamaClient
+from yomiage.llm.factory import create_llm_service
 from yomiage.tts.voicepeak import VoicepeakProvider
 from yomiage.tts.voicevox import VoicevoxProvider
 from yomiage.tts.voisona import VoisonaProvider
@@ -22,6 +22,17 @@ from yomiage.tts.voisona import VoisonaProvider
 def _run(coro):
     """非同期コルーチンを同期的に実行するヘルパー."""
     return asyncio.run(coro)
+
+
+async def _available_and_close(service) -> bool:
+    try:
+        return await service.is_available()
+    finally:
+        close = getattr(service, "close", None)
+        if close is not None:
+            result = close()
+            if hasattr(result, "__await__"):
+                await result
 
 
 @pytest.fixture(scope="session")
@@ -34,19 +45,19 @@ def config():
 def _service_available(config: dict, name: str) -> bool:
     """指定した外部サービスが利用可能か確認する."""
     if name == "voicevox":
-        return _run(VoicevoxProvider(get_tts_config(config, "voicevox")).is_available())
-    if name == "voisona":
-        return _run(VoisonaProvider(get_tts_config(config, "voisona")).is_available())
-    if name == "voicepeak":
-        return _run(VoicepeakProvider(get_tts_config(config, "voicepeak")).is_available())
-    if name == "ollama":
-        cfg = config.get("ollama", {})
         return _run(
-            OllamaClient(
-                url=cfg.get("url", "http://localhost:11434"),
-                model=cfg.get("model", "qwen3.5:9b"),
-            ).is_available()
+            _available_and_close(VoicevoxProvider(get_tts_config(config, "voicevox")))
         )
+    if name == "voisona":
+        return _run(
+            _available_and_close(VoisonaProvider(get_tts_config(config, "voisona")))
+        )
+    if name == "voicepeak":
+        return _run(
+            _available_and_close(VoicepeakProvider(get_tts_config(config, "voicepeak")))
+        )
+    if name == "llm":
+        return _run(_available_and_close(create_llm_service(config)))
     raise ValueError(f"Unknown service: {name}")
 
 
@@ -75,6 +86,6 @@ def require_voicepeak(config):
 
 
 @pytest.fixture
-def require_ollama(config):
-    """Ollama が利用可能な場合のみテストを実行する."""
-    skip_unless_service(config, "ollama")
+def require_llm(config):
+    """設定されたLLM Providerが利用可能な場合のみ実行する。"""
+    skip_unless_service(config, "llm")

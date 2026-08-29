@@ -23,6 +23,9 @@ _ERROR_CATEGORIES = frozenset(
         "authentication",
         "invalid_request",
         "invalid_response",
+        "context_length",
+        "server",
+        "budget",
         "synthesis",
         "cancelled",
         "validation",
@@ -73,6 +76,13 @@ class MetricsCollector:
     _provider_latency_ms: defaultdict[str, float] = field(
         default_factory=lambda: defaultdict(float)
     )
+    _llm_routes: dict[tuple[str, str, str, str], Counter[str]] = field(
+        default_factory=dict
+    )
+    _llm_latency_ms: defaultdict[tuple[str, str, str, str], float] = field(
+        default_factory=lambda: defaultdict(float)
+    )
+    _llm_errors: Counter[str] = field(default_factory=Counter)
     _lock: Lock = field(default_factory=Lock)
 
     def record_synthesis(
@@ -170,6 +180,64 @@ class MetricsCollector:
         with self._lock:
             self.partial_artifacts_total += max(0, int(count))
 
+    def record_llm(
+        self,
+        *,
+        task: str,
+        provider: str,
+        model: str,
+        protocol: str,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        cached_input_tokens: int = 0,
+        latency_ms: float = 0.0,
+        retry_count: int = 0,
+        fallback: bool = False,
+        error_category: str | None = None,
+    ) -> None:
+        """本文・URL・credentialを受け取らないLLM利用量記録。"""
+
+        key = tuple(
+            _label(value) for value in (task, provider, model, protocol)
+        )
+        with self._lock:
+            counts = self._llm_routes.setdefault(key, Counter())
+            counts["requests"] += 1
+            counts["input_tokens"] += max(0, int(input_tokens))
+            counts["output_tokens"] += max(0, int(output_tokens))
+            counts["cached_input_tokens"] += max(0, int(cached_input_tokens))
+            counts["retries"] += max(0, int(retry_count))
+            counts["fallbacks"] += int(bool(fallback))
+            self._llm_latency_ms[key] += max(0.0, float(latency_ms))
+            if error_category:
+                category = _category(error_category)
+                counts["errors"] += 1
+                self._llm_errors[category] += 1
+            else:
+                counts["successes"] += 1
+
+    def record_llm_cache(
+        self,
+        *,
+        task: str,
+        provider: str,
+        model: str,
+        protocol: str,
+        hit: bool,
+    ) -> None:
+        key = tuple(_label(value) for value in (task, provider, model, protocol))
+        with self._lock:
+            self._llm_routes.setdefault(key, Counter())[
+                "cache_hits" if hit else "cache_misses"
+            ] += 1
+
+    def record_llm_validation_failure(
+        self, *, task: str, provider: str, model: str, protocol: str
+    ) -> None:
+        key = tuple(_label(value) for value in (task, provider, model, protocol))
+        with self._lock:
+            self._llm_routes.setdefault(key, Counter())["json_validation_failures"] += 1
+
     def set_queue_depth(self, depth: int, *, active_jobs: int | None = None) -> None:
         """Update current queue/active gauges and their process maxima."""
 
@@ -220,6 +288,29 @@ class MetricsCollector:
             job_transitions = dict(self._job_states)
             job_states = dict(Counter(self._current_job_states.values()))
             error_categories = dict(self._error_categories)
+            llm_routes = []
+            for (task, provider, model, protocol), counts in sorted(
+                self._llm_routes.items()
+            ):
+                requests = counts.get("requests", 0)
+                llm_routes.append(
+                    {
+                        "task": task,
+                        "provider": provider,
+                        "model": model,
+                        "protocol": protocol,
+                        **dict(counts),
+                        "latency_ms_total": self._llm_latency_ms.get(
+                            (task, provider, model, protocol), 0.0
+                        ),
+                        "latency_ms_average": (
+                            self._llm_latency_ms.get((task, provider, model, protocol), 0.0)
+                            / requests
+                            if requests
+                            else 0.0
+                        ),
+                    }
+                )
             synthesis = {
                 "total": self.synthesis_total,
                 "errors": self.synthesis_errors,
@@ -265,6 +356,10 @@ class MetricsCollector:
                 "process": {
                     "synthesis_total": self.synthesis_total,
                     "batch_jobs_total": self.batch_jobs_total,
+                },
+                "llm": {
+                    "routes": llm_routes,
+                    "errors": dict(self._llm_errors),
                 },
             }
 

@@ -41,7 +41,6 @@ def extract_json(response: str) -> list | dict:
     try:
         return json.loads(text)
     except json.JSONDecodeError as e:
-        logger.warning(
-            f"Failed to parse JSON from LLM: {e}\nResponse: {response[:200]}"
-        )
+        # LLM出力は入力本文を含み得る。位置と長さだけを残し、内容はlogへ出さない。
+        logger.warning(f"Failed to parse JSON from LLM: {e}; response_chars={len(response)}")
         return {}

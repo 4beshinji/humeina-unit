@@ -18,7 +18,7 @@ SpeakerExtractor.extract()      ── Stage 2: 話者識別
   │ ルールベース → 発話動詞パターンから話者候補を付与
   ▼
 SceneAnalyzer.analyze_batch()   ── Stage 3: SLM分析
-  │ Ollama (SLM) → 話者確定, シーン, 感情, 強度, 新キャラ検出
+  │ LLMService → 話者確定, シーン, 感情, 強度, 新キャラ検出
   ▼
 ParamMapper.map()               ── Stage 4: パラメータ変換
   │ キャラクター × シーン × 感情 → TTSParams
@@ -41,7 +41,8 @@ TTSParams
 | 字下げ除去 | 行頭全角スペースを除去 |
 | 連続空行圧縮 | 3行以上の空行 → 2行 |
 
-`TextProcessor.has_alphabet(text)` でアルファベット有無を判定。含まれる場合は `OllamaClient.romanize()` でカタカナに変換する（バッチモードでは合成直前に1文単位で実行）。
+`TextProcessor.has_alphabet(text)`でアルファベット有無を判定。Batchは英字語句だけを抽出・作品内で
+重複排除し、静的辞書/cacheにない語句を1回のJSON requestへまとめてからローカル置換する。
 
 数式記号や演算子は `MathProcessor`（`config/math_dict.yaml` ベースの辞書）で読み下しに置換される。
 
@@ -76,7 +77,7 @@ TTSParams
 
 ## Stage 3: SLM分析 (`scene_analyzer.py`)
 
-`SceneAnalyzer.analyze_batch()` がOllama経由でSLMにセグメントバッチを投げ、以下を判定:
+`SceneAnalyzer.analyze_batch()`がProvider非依存の`LLMService`へセグメントbatchを投げ、以下を判定:
 
 | フィールド | 値の範囲 | 説明 |
 |-----------|---------|------|
@@ -86,7 +87,8 @@ TTSParams
 | `emotion` | neutral/happy/angry/sad/surprised/scared/gentle | 感情 |
 | `intensity` | 0.0〜1.0 | 感情の強度 |
 
-SLMが利用不可の場合はデフォルト値（daily/neutral/0.5）で返す。Ollama がレートリミット等で失敗した際は、`OllamaClient` に渡された `fallback`（例: `GeminiClient`）に切り替えて再試行できる。
+LLMが利用不可の場合はデフォルト値（daily/neutral/0.5）で返す。availability probe、retry、
+circuit breaker、task別fallbackは`LLMService`が管理し、featureは生成前にhealth APIを呼ばない。
 
 ### プロンプト構造
 

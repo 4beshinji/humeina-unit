@@ -7,7 +7,7 @@ from pathlib import Path
 
 from loguru import logger
 
-from ..nlp.ollama_client import OllamaClient
+from ..llm import LLMBackend
 from ..nlp.text_processor import TextProcessor
 from ..tts.base import TTSParams
 from ..tts.manager import TTSManager
@@ -26,20 +26,22 @@ class NewsScheduler:
     def __init__(
         self,
         tts_manager: TTSManager,
-        ollama: OllamaClient,
+        llm: LLMBackend,
         sources: list[str] | None = None,
         daily_schedule: str = "08:00",
         poll_interval_minutes: int = 5,
         urgency_threshold: float = 0.8,
         tts_speed: float = 1.0,
+        owns_llm: bool = False,
     ):
         self.tts = tts_manager
-        self.ollama = ollama
+        self.llm = llm
+        self._owns_llm = owns_llm
         self.processor = TextProcessor()
         self.tts_speed = tts_speed
         self.fetcher = NewsFetcher(sources)
-        self.summarizer = NewsSummarizer(ollama)
-        self.urgency = UrgencyDetector(ollama, urgency_threshold)
+        self.summarizer = NewsSummarizer(llm)
+        self.urgency = UrgencyDetector(llm, urgency_threshold)
         self.daily_schedule = daily_schedule
         self.poll_interval = poll_interval_minutes * 60
         self._seen_urls: set[str] = set()
@@ -103,7 +105,7 @@ class NewsScheduler:
                 text = await self.summarizer.translate_if_needed(article)
                 text = self.processor.process(f"速報です。{text}")
                 if TextProcessor.has_alphabet(text):
-                    text = await self.ollama.romanize(text)
+                    text = await self.llm.romanize(text)
                 await self.tts.start()
                 await self.tts.enqueue(text, TTSParams(speed=self.tts_speed))
                 await self.tts.drain()
@@ -121,6 +123,14 @@ class NewsScheduler:
 
     def stop(self) -> None:
         self._running = False
+
+    async def close(self) -> None:
+        """schedulerが所有するTTS/LLM資源を閉じる。"""
+
+        await self.tts.close()
+        if self._owns_llm:
+            await self.llm.close()
+            self._owns_llm = False
 
 
 def _concat_wav(segments: list[bytes], output_path: Path) -> None:

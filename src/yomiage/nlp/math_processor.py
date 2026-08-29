@@ -13,7 +13,7 @@ from loguru import logger
 from ..resource_loader import packaged_config_resource
 
 if TYPE_CHECKING:
-    from .llm_backend import LLMBackend
+    from ..llm import LLMBackend
 
 _DEFAULT_RESOURCE = packaged_config_resource("math_dict.yaml")
 

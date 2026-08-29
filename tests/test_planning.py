@@ -23,6 +23,8 @@ class DeterministicLLM(LLMBackend):
         return ""
 
     async def generate_json(self, prompt: str, **kwargs: object) -> list[dict]:
+        if not self.available:
+            raise RuntimeError("LLM unavailable")
         # NLP classifier の segment index に対して固定値を返す。
         return [
             {

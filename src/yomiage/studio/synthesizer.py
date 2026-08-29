@@ -115,7 +115,7 @@ class StudioSynthesizer:
             # キャッシュチェック
             if cache and cache.is_cached(line, mapping, wav_path):
                 duration = _get_wav_duration_from_file(wav_path)
-                logger.debug(f"Cache hit: [{line.index + 1}] {line.text[:30]}")
+                logger.debug(f"Cache hit: line={line.index + 1}, chars={len(line.text)}")
             else:
                 logger.info(
                     f"[{i + 1}/{len(lines)}] {line.speaker}: {line.text[:40]}"

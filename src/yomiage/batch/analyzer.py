@@ -1,4 +1,4 @@
-"""Phase A: 2-stage LLM full-text analysis for batch pipeline."""
+"""Phase A: token予算ベースの原則1-pass全文分析。"""
 
 from __future__ import annotations
 
@@ -7,8 +7,9 @@ from typing import Any
 from loguru import logger
 
 from ..core.identity import build_identity
+from ..llm import LLMBackend, LLMError, LLMErrorCategory
+from ..llm.budgeting import TokenBudget, split_by_token_budget
 from ..nlp.classifier import SegmentType, TextClassifier
-from ..nlp.ollama_client import OllamaClient
 from ..nlp.speaker import SpeakerExtractor
 from ..nlp.splitter import TextSplitter
 from ..nlp.text_processor import TextProcessor
@@ -18,7 +19,7 @@ from ..sources import registry
 from ..sources.base import ChapterInfo
 from .manifest import BatchManifest, ChapterMeta, SentenceEntry
 
-# --- Pass 1 prompts ---
+# --- exhaustive互換用人物発見prompt ---
 
 CHAR_DISCOVERY_SYSTEM = """\
 あなたは小説テキスト分析器です。テキストから登場人物を抽出してください。JSON形式で回答してください。"""
@@ -58,7 +59,7 @@ CHAR_VOICE_PROMPT = """\
 JSON配列で回答:
 [{{"name": "キャラ名", "archetype": "female_young"}}]"""
 
-# --- Pass 2 prompts ---
+# --- 通常1-pass詳細分析prompt ---
 
 DETAIL_ANALYSIS_SYSTEM = """\
 あなたは小説テキスト分析器です。各文を詳細に分析してください。JSON形式で回答してください。"""
@@ -72,32 +73,52 @@ DETAIL_ANALYSIS_PROMPT = """\
 
 各文についてJSON配列で回答:
 [{{"id": 0, "speaker": "キャラ名" or null, \
+"new_character": {{"name": "名前", "gender": "male/female/unknown", \
+"age_group": "child/teen/young_adult/adult/elder", "personality": "短い説明"}} or null, \
 "scene": "daily/battle/romance/tense/comedy/sad/horror", \
 "emotion": "neutral/happy/angry/sad/surprised/scared/gentle", \
 "intensity": 0.0-1.0, \
 "viewpoint": "視点キャラ名" or null}}]"""
 
+DETAIL_ANALYSIS_SCHEMA = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {"id": {"type": "integer"}},
+        "required": ["id"],
+    },
+}
+
 
 class BatchAnalyzer:
-    """2段階LLM全文分析."""
+    """詳細分析と新規人物発見を同じ応答へ統合する全文分析器。"""
 
     def __init__(
         self,
-        ollama: OllamaClient,
+        llm: LLMBackend,
         text_processor: TextProcessor | None = None,
         classifier: TextClassifier | None = None,
         speaker_extractor: SpeakerExtractor | None = None,
         analysis_window_chars: int = 3000,
         analysis_window_sentences: int = 25,
+        context_tokens: int = 32768,
+        context_safety_ratio: float = 0.8,
+        analysis_strategy: str = "single_pass",
         voice_profile: Any = None,
         url_policy: URLPolicy | None = None,
     ):
-        self.ollama = ollama
+        self.llm = llm
         self.processor = text_processor or TextProcessor()
         self.classifier = classifier or TextClassifier()
         self.speaker_extractor = speaker_extractor or SpeakerExtractor()
         self.window_chars = analysis_window_chars
         self.window_sentences = analysis_window_sentences
+        self.token_budget = TokenBudget(
+            context_tokens=context_tokens,
+            safety_ratio=context_safety_ratio,
+            max_items=analysis_window_sentences,
+        )
+        self.analysis_strategy = analysis_strategy
         self.voice_profile = voice_profile
         self.url_policy = url_policy
 
@@ -116,8 +137,10 @@ class BatchAnalyzer:
         identity = build_identity(
             url,
             {
-                "analysis_window_chars": self.window_chars,
-                "analysis_window_sentences": self.window_sentences,
+                "llm_context_tokens": self.token_budget.context_tokens,
+                "llm_context_safety_ratio": self.token_budget.safety_ratio,
+                "llm_max_items": self.token_budget.max_items,
+                "analysis_strategy": self.analysis_strategy,
                 "splitter_max_chars": 500,
                 # ``mode`` is intentionally excluded by the identity utility.  Provider changes
                 # should reuse this plan while receiving a fresh run directory.
@@ -157,8 +180,7 @@ class BatchAnalyzer:
 
         char_db = CharacterDB(work_id)
 
-        # --- Pass 1: キャラクター発見 ---
-        logger.info("=== Pass 1: Character discovery ===")
+        logger.info("=== Phase A: single-pass detail and character analysis ===")
         all_chapter_texts: list[tuple[ChapterMeta, str]] = []
 
         for ch_info in toc:
@@ -179,19 +201,11 @@ class BatchAnalyzer:
             )
             all_chapter_texts.append((ch_meta, clean_text))
 
-            # ウィンドウ分割してキャラ発見
-            windows = self._split_windows(clean_text, self.window_chars)
-            for window in windows:
-                await self._discover_characters(window, char_db)
+            # 品質比較用の明示的exhaustiveモードだけ旧人物発見passを行う。
+            if self.analysis_strategy == "exhaustive":
+                for window in self._split_windows(clean_text, self.window_chars):
+                    await self._discover_characters(window, char_db)
 
-        logger.info(f"Discovered {len(char_db.characters)} characters")
-
-        # キャラクターボイスパラメータ生成
-        if char_db.characters:
-            await self._generate_voice_params(char_db, mode)
-
-        # --- Pass 2: 章ごと詳細分析 ---
-        logger.info("=== Pass 2: Detailed analysis ===")
         global_idx = 0
         context = "物語の冒頭"
 
@@ -210,13 +224,20 @@ class BatchAnalyzer:
             # セグメントを文に対応付け
             seg_map = self._map_segments_to_sentences(sentences, segments)
 
-            # ウィンドウ単位でLLM詳細分析
-            for win_start in range(0, len(sentences), self.window_sentences):
-                win_end = min(win_start + self.window_sentences, len(sentences))
-                win_sentences = sentences[win_start:win_end]
-                win_seg_info = [seg_map.get(win_start + j, {}) for j in range(len(win_sentences))]
+            # 入力・予想JSON出力・最大項目数からbatchを動的に決める。
+            batches = split_by_token_budget(
+                sentences,
+                self.token_budget,
+                output_tokens_per_item=96,
+                fixed_output_tokens=512,
+            )
+            win_start = 0
+            for win_sentences in batches:
+                win_seg_info = [
+                    seg_map.get(win_start + j, {}) for j in range(len(win_sentences))
+                ]
 
-                analysis = await self._analyze_detail(
+                analysis = await self._analyze_detail_resilient(
                     win_sentences, win_seg_info, char_db, context
                 )
 
@@ -228,6 +249,16 @@ class BatchAnalyzer:
                     seg_type = seg_info.get("type", "narration")
 
                     speaker = llm_info.get("speaker") or seg_info.get("speaker")
+                    new_character = llm_info.get("new_character")
+                    if isinstance(new_character, dict) and new_character.get("name"):
+                        char_db.get_or_create(
+                            str(new_character["name"]),
+                            profile_hint={
+                                "gender": new_character.get("gender"),
+                                "age_group": new_character.get("age_group"),
+                                "personality": new_character.get("personality"),
+                            },
+                        )
                     if speaker:
                         char_db.get_or_create(speaker)
 
@@ -248,6 +279,7 @@ class BatchAnalyzer:
                 # コンテキスト更新
                 if win_sentences:
                     context = "".join(win_sentences[-3:])
+                win_start += len(win_sentences)
 
             ch_meta.sentence_end = global_idx
             manifest.chapters.append(ch_meta)
@@ -255,6 +287,9 @@ class BatchAnalyzer:
                 f"Chapter {ch_meta.index + 1} analyzed: "
                 f"{ch_meta.sentence_end - ch_meta.sentence_start} sentences"
             )
+
+        if char_db.characters:
+            await self._generate_voice_params(char_db, mode)
 
         # キャラクター情報をマニフェストに保存
         from dataclasses import asdict
@@ -302,7 +337,9 @@ class BatchAnalyzer:
 
         prompt = CHAR_DISCOVERY_PROMPT.format(known_chars=known_str, text=text)
         try:
-            result = await self.ollama.generate_json(prompt, system=CHAR_DISCOVERY_SYSTEM)
+            result = await self.llm.generate_json(
+                prompt, system=CHAR_DISCOVERY_SYSTEM, task="character_analysis"
+            )
         except Exception as e:
             logger.warning(f"Character discovery failed: {e}")
             return
@@ -330,21 +367,34 @@ class BatchAnalyzer:
         from ..tools.voice_profile import ARCHETYPE_NAMES
 
         chars_desc = []
+        deterministic: list[tuple[str, Any, str]] = []
+        unresolved: list[tuple[str, Any]] = []
         for name, char in char_db.characters.items():
-            chars_desc.append(
-                f"- {name}: {char.gender or '不明'}, {char.age_group or '不明'}, "
-                f"{char.personality or '不明'}"
-            )
+            archetype = self._deterministic_archetype(char.gender, char.age_group)
+            if archetype:
+                deterministic.append((name, char, archetype))
+            else:
+                unresolved.append((name, char))
+                chars_desc.append(
+                    f"- {name}: {char.gender or '不明'}, {char.age_group or '不明'}, "
+                    f"{char.personality or '不明'}"
+                )
 
-        prompt = CHAR_VOICE_PROMPT.format(characters="\n".join(chars_desc))
-        try:
-            result = await self.ollama.generate_json(prompt, system=CHAR_VOICE_SYSTEM)
-        except Exception as e:
-            logger.warning(f"Voice param generation failed: {e}")
-            return
-
-        if not isinstance(result, list):
-            return
+        result: list[dict[str, str]] = [
+            {"name": name, "archetype": archetype}
+            for name, _, archetype in deterministic
+        ]
+        if unresolved:
+            prompt = CHAR_VOICE_PROMPT.format(characters="\n".join(chars_desc))
+            try:
+                generated = await self.llm.generate_json(
+                    prompt, system=CHAR_VOICE_SYSTEM, task="character_analysis"
+                )
+            except Exception as e:
+                logger.warning(f"Voice param generation failed: {e}")
+                generated = []
+            if isinstance(generated, list):
+                result.extend(entry for entry in generated if isinstance(entry, dict))
 
         # Track archetype usage for noise differentiation
         archetype_count: dict[str, int] = {}
@@ -376,6 +426,22 @@ class BatchAnalyzer:
 
         char_db._save()
         logger.info(f"Voice archetypes assigned for {len(result)} characters")
+
+    @staticmethod
+    def _deterministic_archetype(gender: str | None, age_group: str | None) -> str | None:
+        """性別・年代だけで一意に決まる場合はLLMを使わない。"""
+
+        if gender not in {"male", "female"}:
+            return None
+        age_map = {
+            "child": "child",
+            "teen": "young",
+            "young_adult": "young",
+            "adult": "adult",
+            "elder": "elder",
+        }
+        suffix = age_map.get(age_group or "")
+        return f"{gender}_{suffix}" if suffix else None
 
     def _assign_voisona_params(
         self,
@@ -501,6 +567,8 @@ class BatchAnalyzer:
         seg_info: list[dict],
         char_db: CharacterDB,
         context: str,
+        *,
+        retry_missing: bool = True,
     ) -> dict[int, dict]:
         """文ウィンドウの詳細LLM分析."""
         chars_str = ", ".join(char_db.known_names) if char_db.known_names else "なし"
@@ -517,9 +585,17 @@ class BatchAnalyzer:
         )
 
         try:
-            result = await self.ollama.generate_json(
-                prompt, system=DETAIL_ANALYSIS_SYSTEM
+            result = await self.llm.generate_json(
+                prompt,
+                system=DETAIL_ANALYSIS_SYSTEM,
+                task="scene_analysis",
+                json_schema=DETAIL_ANALYSIS_SCHEMA,
             )
+        except LLMError as e:
+            if e.category == LLMErrorCategory.CONTEXT_LENGTH:
+                raise
+            logger.warning(f"Detail analysis failed: {e}")
+            return {}
         except Exception as e:
             logger.warning(f"Detail analysis failed: {e}")
             return {}
@@ -530,4 +606,58 @@ class BatchAnalyzer:
                 if isinstance(r, dict) and "id" in r:
                     analysis[r["id"]] = r
 
+        # 正常なIDは採用済みとし、欠落した文だけを短いrequestで一度再問い合わせする。
+        missing = [index for index in range(len(sentences)) if index not in analysis]
+        if retry_missing and analysis and missing:
+            missing_result = await self._analyze_detail_resilient(
+                [sentences[index] for index in missing],
+                [seg_info[index] for index in missing],
+                char_db,
+                context,
+                retry_missing=False,
+            )
+            for local_index, value in missing_result.items():
+                if isinstance(local_index, int) and 0 <= local_index < len(missing):
+                    analysis[missing[local_index]] = value
+
         return analysis
+
+    async def _analyze_detail_resilient(
+        self,
+        sentences: list[str],
+        seg_info: list[dict],
+        char_db: CharacterDB,
+        context: str,
+        *,
+        retry_missing: bool = True,
+    ) -> dict[int, dict]:
+        """context超過時だけ同じProvider上でbatchを二分する。"""
+
+        try:
+            return await self._analyze_detail(
+                sentences,
+                seg_info,
+                char_db,
+                context,
+                retry_missing=retry_missing,
+            )
+        except LLMError as error:
+            if error.category != LLMErrorCategory.CONTEXT_LENGTH or len(sentences) <= 1:
+                logger.warning(f"Detail analysis failed: {error}")
+                return {}
+        middle = len(sentences) // 2
+        left = await self._analyze_detail_resilient(
+            sentences[:middle],
+            seg_info[:middle],
+            char_db,
+            context,
+            retry_missing=retry_missing,
+        )
+        right = await self._analyze_detail_resilient(
+            sentences[middle:],
+            seg_info[middle:],
+            char_db,
+            context,
+            retry_missing=retry_missing,
+        )
+        return {**left, **{index + middle: value for index, value in right.items()}}

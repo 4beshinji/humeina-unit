@@ -7,7 +7,7 @@ CLI/API/SDK です。NLP 分析、発話計画、音声合成、バッチ成果�
 ## できること
 
 - URL（青空文庫・小説家になろう・カクヨム・一般公開 Web）の取得と読み上げ
-- ルールベース分類、話者候補抽出、任意の Ollama/Gemini によるシーン・感情分析
+- ルールベース分類、話者候補抽出、llama.cpp/OpenCode Go/Geminiによるシーン・感情分析
 - VoiSona Talk（Windows VM）、VOICEVOX（HTTP/Docker）、VOICEPEAK（ローカル CLI）の選択と
   fallback
 - `UtterancePlan` による Reader、Batch、API、SDK 間の発話境界共有

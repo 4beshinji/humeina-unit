@@ -1,8 +1,8 @@
-"""News urgency scoring via Ollama."""
+"""Provider非依存LLMによるニュース緊急度判定。"""
 
 from loguru import logger
 
-from ..nlp.ollama_client import OllamaClient
+from ..llm import LLMBackend
 from .fetcher import Article
 
 URGENCY_SYSTEM = """\
@@ -14,19 +14,20 @@ URGENCY_SYSTEM = """\
 class UrgencyDetector:
     """Ollamaによるニュース緊急度スコアリング."""
 
-    def __init__(self, ollama: OllamaClient, threshold: float = 0.8):
-        self.ollama = ollama
+    def __init__(self, llm: LLMBackend, threshold: float = 0.8):
+        self.llm = llm
         self.threshold = threshold
 
     async def score(self, article: Article) -> float:
         """記事の緊急度を0.0-1.0でスコアリング."""
-        if not await self.ollama.is_available():
-            return self._rule_based_score(article)
-
         prompt = f"タイトル: {article.title}\n要約: {article.summary[:300]}\n\n緊急度スコア:"
         try:
-            response = await self.ollama.generate(
-                prompt, system=URGENCY_SYSTEM, temperature=0.1, max_tokens=10
+            response = await self.llm.generate(
+                prompt,
+                system=URGENCY_SYSTEM,
+                temperature=0.1,
+                max_tokens=10,
+                task="urgency_scoring",
             )
             score = float(response.strip().split()[0])
             return max(0.0, min(1.0, score))

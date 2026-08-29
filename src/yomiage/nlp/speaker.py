@@ -95,7 +95,10 @@ class SpeakerExtractor:
 
             if candidates:
                 seg.speaker_candidates = candidates
-                logger.debug(f"Speaker candidates for [{seg.text[:20]}...]: {candidates}")
+                logger.debug(
+                    "Speaker candidates found: "
+                    f"segment_chars={len(seg.text)}, count={len(candidates)}"
+                )
 
         return segments
 

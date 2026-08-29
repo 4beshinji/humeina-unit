@@ -38,7 +38,6 @@ from .bootstrap import create_reading_engine
 from .config import load_config
 from .core.identity import new_job_id
 from .core.jobs import Job
-from .nlp.ollama_client import OllamaClient
 from .ports.repositories import JobRepository
 from .ports.sources import DNSResolutionError, URLPolicy, URLPolicyError, URLTarget
 
@@ -1374,18 +1373,14 @@ def create_app(
         from .news.fetcher import NewsFetcher
         from .news.summarizer import NewsSummarizer
 
-        ollama_cfg = runtime.config.get("ollama", {})
-        if not isinstance(ollama_cfg, Mapping):
-            ollama_cfg = {}
-        ollama = OllamaClient(
-            url=str(ollama_cfg.get("url", "http://localhost:11434")),
-            model=str(ollama_cfg.get("summary_model") or "gemma4:12b"),
-        )
         news_cfg = runtime.config.get("news", {})
         if not isinstance(news_cfg, Mapping):
             news_cfg = {}
         fetcher = NewsFetcher(news_cfg.get("sources"))
-        summarizer = NewsSummarizer(ollama)
+        llm = getattr(engine, "llm", None)
+        if llm is None:
+            raise HTTPException(503, "LLM service not initialized")
+        summarizer = NewsSummarizer(llm)
         articles = await fetcher.fetch_all()
         summary = await summarizer.daily_summary(articles)
         from .tts.base import TTSParams

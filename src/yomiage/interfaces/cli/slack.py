@@ -35,7 +35,9 @@ def slack_cmd(
         async def on_message(msg) -> None:
             score = await scorer.score(msg)
             if scorer.is_important(score):
-                logger.info(f"Important Slack message (score={score:.2f}): {msg.text[:50]}")
+                logger.info(
+                    f"Important Slack message: score={score:.2f}, chars={len(msg.text)}"
+                )
                 await tts.start()
                 try:
                     await tts.enqueue(f"Slackメッセージです。{msg.text}", TTSParams())
@@ -44,7 +46,11 @@ def slack_cmd(
                     await tts.stop()
 
         monitor.on_message(on_message)
-        await monitor.start()
+        try:
+            await monitor.start()
+        finally:
+            await scorer.close()
+            await tts.close()
 
     asyncio.run(_run())
 

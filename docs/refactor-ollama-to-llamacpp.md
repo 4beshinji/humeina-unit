@@ -1,9 +1,13 @@
 # Ollama → llama.cpp 移行設計書
 
+> **後継文書あり:** 本文書の専用`LlamaCppClient`案は採用せず、OpenCode Goの3 API形式対応と
+> コスト最適化を含む[LLM基盤刷新・llama.cpp移行計画](llm-platform-migration-plan.md)へ
+> 統合しました。以後の実装判断には後継文書を使用してください。
+
 本ドキュメントは voisona-yomiage プロジェクト内の Ollama 依存箇所を llama.cpp（または同等のローカル LLM サーバ）へ置き換えるためのリファクタ計画です。**完全ローカルホスティング前提**で記述しています。
 
-> **状態: 提案（未実装）** — 現行の既定 backend は Ollama です。この設計書は将来の候補を
-> 記録するものであり、現行 CLI/API の起動手順ではありません。以前存在した
+> **状態: 廃止済み（後継計画を実装済み）** — 本文は当時の調査記録であり、現在の
+> CLI/APIの起動手順ではありません。以前存在した
 > `nlp/translator.py` は削除済みで、翻訳専用モジュールを前提にしないでください。
 
 本 PJ は既に `LLMBackend` というプロバイダ抽象を持っていますが、`OllamaClient` を直接利用している箇所も多く、**新しい `LlamaCppClient`（または既存の `OpenAIBackend` の URL 指定）への切替 + 直接利用箇所のリファクタ**が必要です。

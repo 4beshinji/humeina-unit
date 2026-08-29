@@ -28,12 +28,15 @@ def news(
 
     async def _run() -> None:
         scheduler = common.create_news_scheduler(config, provider, gemini_key)
-        if action == "daily":
-            await scheduler.run_daily_summary(output_path=output)
-        elif action == "check":
-            await scheduler.check_urgent()
-        else:
-            typer.echo(f"Unknown action: {action}")
+        try:
+            if action == "daily":
+                await scheduler.run_daily_summary(output_path=output)
+            elif action == "check":
+                await scheduler.check_urgent()
+            else:
+                typer.echo(f"Unknown action: {action}")
+        finally:
+            await scheduler.close()
 
     asyncio.run(_run())
 

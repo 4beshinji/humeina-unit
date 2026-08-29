@@ -27,10 +27,13 @@ async def test_voicevox_bridge_synthesis(config, require_voicevox, tmp_path):
     default_speaker = str(tts_cfg.get("default_speaker", 47))
 
     bridge = TTSBridge.create("voicevox", **tts_cfg)
-    result = await bridge.synthesize(
-        "これは実スタックの音声合成テストです。",
-        voice_id=default_speaker,
-    )
+    try:
+        result = await bridge.synthesize(
+            "これは実スタックの音声合成テストです。",
+            voice_id=default_speaker,
+        )
+    finally:
+        await bridge.close()
 
     assert result.format == "wav"
     assert len(result.audio_data) > 0
@@ -53,9 +56,12 @@ async def test_pipeline_with_voicevox(config, require_voicevox):
         default_voice=str(tts_cfg.get("default_speaker", 47)),
     )
 
-    chunks = await pipeline.process(
-        "太郎は「こんにちは」と言った。花子は笑った。"
-    )
+    try:
+        chunks = await pipeline.process(
+            "太郎は「こんにちは」と言った。花子は笑った。"
+        )
+    finally:
+        await pipeline.close()
     assert chunks
 
     valid_types = {"dialogue", "narration", "thought"}
@@ -126,11 +132,14 @@ async def test_voisona_provider_synthesis(config, require_voisona):
 
     tts_cfg = get_tts_config(config, "voisona")
     provider = VoisonaProvider(tts_cfg)
-    result = await provider.synthesize(
-        "これはVoiSona Talkの実スタックテストです。",
-        voice="neutral",
-        speed=1.0,
-    )
+    try:
+        result = await provider.synthesize(
+            "これはVoiSona Talkの実スタックテストです。",
+            voice="neutral",
+            speed=1.0,
+        )
+    finally:
+        await provider.close()
 
     assert result.format == "wav"
     assert result.duration and result.duration > 0
@@ -141,6 +150,10 @@ async def test_voisona_list_voices(config, require_voisona):
     """VoiSona Talk の実エンジンからボイス一覧を取得する."""
     from yomiage.tts.voisona import VoisonaProvider
 
-    voices = await VoisonaProvider(get_tts_config(config, "voisona")).list_voices()
+    provider = VoisonaProvider(get_tts_config(config, "voisona"))
+    try:
+        voices = await provider.list_voices()
+    finally:
+        await provider.close()
     assert voices
     assert any("id" in v and "name" in v for v in voices)

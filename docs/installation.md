@@ -29,30 +29,55 @@ cp .env.example .env
 
 ## 外部サービスのセットアップ
 
-### Ollama（必須）
+### llama.cpp（標準ローカルLLM）
 
-NLP分析のSLMバックエンド。標準設定は分析に `qwen3.5:9b`、要約に `gemma4:12b` を使用する。
-要約用モデルは `OLLAMA_SUMMARY_MODEL` で変更できる。
+2026-08-29時点でQwen公式の最新open-weight世代はQwen3.8です。標準モデルIDは
+`Qwen3.8-27B`です。RX 6900 XT 16GB向けのGGUFには、Hugging Faceのモデルカードが
+16GB級向けとして推奨する`bartowski/Qwen3.8-27B-GGUF:IQ4_XS`（15.57GB）を選びます。
+32K KV cache用の余白を確保するため、起動時の`--fit-target 2048`による一部CPU offloadを許容します。
 
 ```bash
-# インストール
-curl -fsSL https://ollama.ai/install.sh | sh
-
-# モデルダウンロード（例）
-ollama pull qwen3.5:9b            # 分析用（デフォルト）
-ollama pull gemma4:12b            # 要約用（デフォルト）
+# upstreamのROCm buildまたは公式server-rocm imageを用意する
+# GGUFを任意のmodel directoryへ配置後、GPU indexとpathを必ず明示する
+export YOMIAGE_LLM_GPU_DEVICE=0
+export LLAMA_MODEL_PATH=/models/Qwen3.8-27B-IQ4_XS.gguf
+infra/llama-server-rocm.sh
 ```
 
-`.env` に設定:
-```
-OLLAMA_URL=http://localhost:11434
-OLLAMA_MODEL=qwen3.5:9b
-OLLAMA_SUMMARY_MODEL=gemma4:12b
+`.env`に設定:
+
+```dotenv
+LLAMA_CPP_URL=http://127.0.0.1:8080/v1
+LLAMA_CPP_MODEL=Qwen3.8-27B
+YOMIAGE_LLM_GPU_DEVICE=0
 ```
 
-### Gemini API（オプション、Ollamaフォールバック）
+ROCm複数GPU環境ではGPU自動選択を使用しません。起動scriptは
+`ROCR_VISIBLE_DEVICES` / `HIP_VISIBLE_DEVICES` / `GPU_DEVICE_ORDINAL`を同じindexへ固定し、
+可視化後の論理deviceを`--device ROCm0 --split-mode none --main-gpu 0`でも固定します。
+index未指定なら起動前に失敗します。このホストでは
+GPU 0がRX 6900 XT（gfx1030、16GB）、GPU 1がRaphael iGPU（512MB）です。
+短い構造化NLP処理で出力予算を内部thinkingに消費しないよう、scriptは`--reasoning off`も指定します。
 
-Ollamaがレートリミット等で失敗した場合のフォールバックとして Gemini API を利用できる。`yomiage news` 系コマンドでは `--gemini-key`（または `GEMINI_API_KEY` 環境変数）で有効化される。
+Dockerを使う場合:
+
+```bash
+YOMIAGE_LLM_GPU_DEVICE=0 \
+LLAMA_MODEL_DIR=/absolute/path/to/models \
+LLAMA_MODEL_FILE=Qwen3.8-27B-IQ4_XS.gguf \
+docker compose -f infra/docker-compose.yml --profile rocm up llama-server-rocm
+```
+
+### OpenCode Go（オプション）
+
+`OPENCODE_GO_API_KEY`を設定し、ユーザーYAMLで`opencode_go.enabled: true`とroute/fallbackを明示します。
+標準cloud候補はQwen3.8 Flash（Messages API）です。実API testは課金を避けるため通常skipされ、
+`RUN_PAID_LLM_TESTS=1`も指定した場合だけ実行されます。
+
+### Gemini API（オプションfallback）
+
+ローカルProviderが失敗した場合の明示fallbackとして利用できる。`yomiage news`系コマンドでは
+`--gemini-key`（または`GEMINI_API_KEY`）で有効化される。
 
 ```
 GEMINI_API_KEY=your-gemini-api-key
@@ -118,9 +143,11 @@ sudo apt install ffmpeg
 | `VOISONA_USERNAME` | VoiSona使用時 | VoiSona Talk のユーザー名 |
 | `VOISONA_PASSWORD` | VoiSona使用時 | VoiSona Talk のパスワード |
 | `VOICEVOX_URL` | VOICEVOX使用時 | VOICEVOX Engine のURL |
-| `OLLAMA_URL` | Ollama使用時 | Ollama のURL |
-| `OLLAMA_MODEL` | Ollama使用時 | NLP分析に使うモデル名 |
-| `OLLAMA_SUMMARY_MODEL` | いいえ | ニュース要約用モデル（省略時は `OLLAMA_MODEL`） |
+| `LLAMA_CPP_URL` | 標準LLM使用時 | llama-serverのOpenAI互換URL |
+| `LLAMA_CPP_MODEL` | 標準LLM使用時 | API上のmodel alias |
+| `LLAMA_MODEL_PATH` | llama-server起動時 | GGUFの絶対path |
+| `YOMIAGE_LLM_GPU_DEVICE` | ROCm使用時 | 明示的なROCm GPU index |
+| `OLLAMA_URL`, `OLLAMA_MODEL` | rollback時のみ | 旧Ollama互換設定 |
 | `GEMINI_API_KEY` | いいえ | Gemini フォールバック有効化 |
 | `VOISONA_VM_MOUNT` | バッチVoiSona時 | VM内のvirtiofsマウントポイント（デフォルト: `Z:`） |
 | `EX_VOICE_WAV_DIR` | EXボイス使用時 | EXボイス用WAVクリップ格納ディレクトリ |
@@ -132,8 +159,8 @@ HEMS/MQTT 連携用の設定やサービスは実装していません。
 ## 動作確認
 
 ```bash
-# Ollama
-curl http://localhost:11434/api/tags
+# llama.cpp
+curl http://127.0.0.1:8080/health
 
 # VOICEVOX
 curl http://localhost:50021/speakers

@@ -281,13 +281,20 @@ def _environment_overrides(env: Mapping[str, str]) -> dict[str, Any]:
             # Keep the same precedence visible to legacy raw-dict consumers.
             result[name] = dict(section_overrides)
 
-    for key in ("backend", "url", "model", "summary_model", "api_key"):
-        names = [f"YOMIAGE_LLM_{key.upper()}"]
-        if key == "api_key":
-            names.extend(("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY"))
+    backend = first("YOMIAGE_LLM_BACKEND")
+    local: dict[str, Any] = {}
+    if backend is not None:
+        local["type"] = "ollama_legacy" if backend == "ollama" else backend
+    for target, names in {
+        "base_url": ("YOMIAGE_LLM_URL", "LLAMA_CPP_URL"),
+        "model": ("YOMIAGE_LLM_MODEL", "LLAMA_CPP_MODEL"),
+        "api_key": ("YOMIAGE_LLM_API_KEY", "LLAMA_CPP_API_KEY"),
+    }.items():
         value = first(*names)
         if value is not None:
-            result.setdefault("llm", {})[key] = value
+            local[target] = value
+    if local:
+        result.setdefault("llm", {}).setdefault("providers", {})["local"] = local
     return result
 
 

@@ -86,7 +86,7 @@ plan = analyzer.plan_sync(
 )
 ```
 
-LLM を使う場合は TextAnalyzer.create("ollama", url=..., model=...) または
+LLMを使う場合は`TextAnalyzer.create("llama_cpp", url=..., model="Qwen3.8-27B")`または
 TextAnalyzer.from_config(AnalyzerConfig(...)) を使います。analyze() は分類・話者・シーン・
 感情を AnalysisResult の list で返し、plan()/create_plan() は共通 UtterancePlan を返します。
 旧 analyze 結果は plan_results() で import できます。
