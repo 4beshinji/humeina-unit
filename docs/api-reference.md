@@ -21,8 +21,10 @@
 {"error": {"code": "url_not_allowed", "message": "URL is not allowed"}}
 ```
 
-主な status は `400`（validation/URL policy）、`401`（Bearer 欠落）、`403`（token 不正）、
-`409`（状態競合）、`413`（body/text 上限）、`429`（rate/queue 上限）、`503`（runtime 未準備）です。
+主な status は `400`（URL policy）、`401`（Bearer 欠落）、`403`（token 不正）、
+`409`（状態競合）、`413`（body/text 上限）、`422`（request schema validation）、
+`429`（rate/queue 上限）、`502`（上流応答/合成失敗）、`503`（runtime/Provider 未準備）、
+`504`（Provider timeout）です。Provider の URL、資格情報、元の error 本文は response に含めません。
 
 ## Health
 
@@ -46,6 +48,23 @@
 
 Provider、LLM、ffmpeg、storage、SQLite など runtime dependency の readiness を返します。
 `status: "ready"` は 200、未準備なら 503 です。token 設定時は認証が必要です。
+既定のhealth checkerでは、集約結果に加えて `operations` が
+`immediate_playback`、`batch_audio`、`video`、`slack` ごとの `ready` と不足dependency名を
+返します。batchのVM fileには `vm_mount`、Slackにはtoken設定と別に `slack_sdk` が必要です。
+path、endpoint、credential、元のexception本文は含めません。
+
+`operations` 部分の例:
+
+```json
+{
+  "operations": {
+    "immediate_playback": {"ready": true, "missing": []},
+    "batch_audio": {"ready": false, "missing": ["provider"]},
+    "video": {"ready": false, "missing": ["provider", "ffmpeg"]},
+    "slack": {"ready": false, "missing": ["slack"]}
+  }
+}
+```
 
 ## Reader 制御
 
@@ -116,17 +135,21 @@ text を primary/fallback 設定で合成し、`audio/{output_format}` の binar
 | --- | --- | --- | --- |
 | `text` | string | 必須 | `max_text_chars` 以下 |
 | `voice_id` | string/null | null | Provider に渡す ID（別 Provider へ再利用しない） |
-| `speed` | float | 1.0 | 話速 |
+| `speed` | float | 1.0 | `0 < speed <= 5` |
 | `pitch` | float | 0.0 | ピッチ |
 | `volume` | float | 0.0 | 音量 |
-| `intonation` | float | 1.0 | 抑揚 |
+| `intonation` | float | 1.0 | `0 <= intonation <= 2` |
 | `preset` | string/null | null | profile preset |
 | `emotion` | string | `neutral` | 感情タグ |
-| `intensity` | float | 0.5 | Providerへ渡す感情強度。対応範囲はProvider依存 |
-| `output_format` | string | `wav` | Provider/ffmpegが対応する形式。変換にはffmpegが必要な場合あり |
+| `intensity` | float | 0.5 | `0 <= intensity <= 1` |
+| `output_format` | string | `wav` | 現在の即時合成は `wav` のみ |
 
 response headers: `X-Audio-Duration`（秒）、`X-Audio-Format`。入力上限超過や admission 拒否時は
 binary の代わりに JSON error を返します。
+
+空文字・空白だけの `text`、上記範囲外の値、未知の `output_format` は Provider を呼ぶ前に
+`422` です。Provider timeout は `504`、利用不能/rate limit は `503`、不正な上流応答と
+その他の上流合成失敗は `502` です。
 
 ### `GET /api/yomiage/voices`
 
@@ -189,6 +212,7 @@ URL を検証し、非同期 Batch job を受け付けます。
 
 `text/event-stream` で `event: progress` を送ります。終端 status は `completed`,
 `complete_with_warnings`, `partial`, `failed`, `cancelled` のいずれかです。
+存在しない `job_id` は stream を開始する前に JSON の `404` を返します。
 
 ```text
 event: progress
