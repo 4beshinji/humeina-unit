@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ..application.synthesis import SynthesisFailure, SynthesisRequest, SynthesisService
+from ..application.voice_parameters import VoiceOverrides, VoiceResolutionContext
 from ..bootstrap import create_synthesis_service, create_tts_provider
 from ..core.models import VoiceIntent
 from ..tts.base import AudioResult, TTSParams, TTSProvider
@@ -262,6 +263,9 @@ class TTSBridge:
                 SynthesisRequest(
                     text=text,
                     voice_intent=_voice_intent_from_kwargs(synth_kwargs),
+                    parameter_context=VoiceResolutionContext(
+                        overrides=VoiceOverrides.from_mapping(synth_kwargs)
+                    ),
                     metadata=synth_kwargs,
                 )
             )
@@ -337,6 +341,9 @@ class TTSBridge:
                 SynthesisRequest(
                     text=text,
                     voice_intent=_voice_intent_from_kwargs(synth_kwargs),
+                    parameter_context=VoiceResolutionContext(
+                        overrides=VoiceOverrides.from_mapping(synth_kwargs)
+                    ),
                     destination=str(path),
                     metadata=synth_kwargs,
                 )

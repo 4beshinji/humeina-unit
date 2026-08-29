@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import re
 import time
-from dataclasses import replace
-from typing import Any, Iterable
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, replace
+from typing import Any, AsyncIterator, Iterable
 
 from loguru import logger
 
@@ -39,6 +41,13 @@ _STATIC_READINGS = {
     "TTS": "ティーティーエス",
     "URL": "ユーアールエル",
 }
+
+
+@dataclass(slots=True)
+class _JobBudget:
+    job_id: str
+    requests: int = 0
+    estimated_input_tokens: int = 0
 
 
 class LLMService(LLMBackend):
@@ -77,6 +86,9 @@ class LLMService(LLMBackend):
         self._circuit_until: dict[str, float] = {}
         self._requests = 0
         self._estimated_input_tokens = 0
+        self._job_budget: contextvars.ContextVar[_JobBudget | None] = contextvars.ContextVar(
+            f"llm_job_budget_{id(self)}", default=None
+        )
         self._closed = False
 
     def _providers_for(self, task: str) -> list[str]:
@@ -106,10 +118,6 @@ class LLMService(LLMBackend):
             raise RuntimeError("LLMService is closed")
         request = self._route_request(request)
         estimated = estimate_tokens((request.system or "") + request.prompt)
-        if self._requests >= self.max_requests_per_job:
-            raise LLMError(LLMErrorCategory.BUDGET, "LLM request budget exceeded")
-        if self._estimated_input_tokens + estimated > self.max_input_tokens_per_job:
-            raise LLMError(LLMErrorCategory.BUDGET, "LLM input token budget exceeded")
 
         cache_key = self.cache.key(
             "completion",
@@ -140,8 +148,7 @@ class LLMService(LLMBackend):
                 )
                 continue
             for retry in range(self.max_retries + 1):
-                self._requests += 1
-                self._estimated_input_tokens += estimated
+                self._consume_budget(estimated)
                 try:
                     response = await transport.complete(request)
                 except LLMError as exc:
@@ -317,8 +324,45 @@ class LLMService(LLMBackend):
         return False
 
     def reset_job_budget(self) -> None:
-        self._requests = 0
-        self._estimated_input_tokens = 0
+        budget = self._job_budget.get()
+        if budget is None:
+            self._requests = 0
+            self._estimated_input_tokens = 0
+        else:
+            budget.requests = 0
+            budget.estimated_input_tokens = 0
+
+    @asynccontextmanager
+    async def job_scope(self, job_id: str) -> AsyncIterator[None]:
+        """concurrent jobへ独立した物理request/token budgetを割り当てる。"""
+
+        resolved = str(job_id).strip()
+        if not resolved:
+            raise ValueError("job_id must not be empty")
+        token = self._job_budget.set(_JobBudget(resolved))
+        try:
+            yield
+        finally:
+            self._job_budget.reset(token)
+
+    def _consume_budget(self, estimated_tokens: int) -> None:
+        budget = self._job_budget.get()
+        requests = budget.requests if budget is not None else self._requests
+        tokens = (
+            budget.estimated_input_tokens
+            if budget is not None
+            else self._estimated_input_tokens
+        )
+        if requests >= self.max_requests_per_job:
+            raise LLMError(LLMErrorCategory.BUDGET, "LLM request budget exceeded")
+        if tokens + estimated_tokens > self.max_input_tokens_per_job:
+            raise LLMError(LLMErrorCategory.BUDGET, "LLM input token budget exceeded")
+        if budget is not None:
+            budget.requests += 1
+            budget.estimated_input_tokens += estimated_tokens
+        else:
+            self._requests += 1
+            self._estimated_input_tokens += estimated_tokens
 
     def _mark_failure(self, provider: str) -> None:
         failures = self._failures.get(provider, 0) + 1

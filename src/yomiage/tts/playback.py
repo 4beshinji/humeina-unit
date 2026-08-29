@@ -56,8 +56,16 @@ async def play_wav(audio_data: bytes) -> float:
         if channels > 1:
             data = data.reshape(-1, channels)
 
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, lambda: sd.play(data, rate) or sd.wait())
+        loop = asyncio.get_running_loop()
+        worker = loop.run_in_executor(None, lambda: sd.play(data, rate) or sd.wait())
+        try:
+            await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            # sounddevice.wait() blocks a worker thread.  Stop the device first, then
+            # join that worker before cancellation leaves this operation.
+            sd.stop()
+            await asyncio.shield(worker)
+            raise
         return duration
     except ImportError:
         logger.error("No audio playback available (install sounddevice or aplay)")

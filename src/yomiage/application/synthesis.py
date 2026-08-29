@@ -7,11 +7,12 @@ cache、artifact 公開、timeout、concurrency、lifecycle を一元的に適�
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import inspect
 import json
 import time
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -19,17 +20,24 @@ from ..core.models import Utterance, VoiceIntent
 from ..ports.artifacts import ArtifactRef, ArtifactStore
 from ..ports.tts import (
     RETRYABLE_ERROR_CATEGORIES,
+    ArtifactTarget,
     ProviderError,
     ProviderErrorCategory,
     ProviderHealth,
+    ProviderOutputMode,
     ProviderSynthesisRequest,
     ProviderSynthesisResult,
     ProviderVoice,
+    SynthesisTarget,
     TTSProviderPort,
     classify_provider_error,
     normalize_health,
     normalize_voice_list,
 )
+from ..tts.audio_utils import validate_audio_bytes
+from ..utils.atomic_io import atomic_replace_file, atomic_write_wav
+from .operations import OperationDeadline
+from .voice_parameters import VoiceResolutionContext, resolve_voice_parameters
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,7 +72,10 @@ class SynthesisRequest:
     provider: str | None = None
     work_id: str | None = None
     run_id: str | None = None
+    scene: str | None = None
+    parameter_context: VoiceResolutionContext = field(default_factory=VoiceResolutionContext)
     destination: str | None = None
+    target: SynthesisTarget | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -72,6 +83,19 @@ class SynthesisRequest:
             raise ValueError("text must not be empty")
         if not isinstance(self.voice_intent, VoiceIntent):
             raise TypeError("voice_intent must be VoiceIntent")
+        if not isinstance(self.parameter_context, VoiceResolutionContext):
+            raise TypeError("parameter_context must be VoiceResolutionContext")
+        if self.target is None and self.destination and self.work_id and self.run_id:
+            object.__setattr__(
+                self,
+                "target",
+                ArtifactTarget(
+                    self.work_id,
+                    self.run_id,
+                    self.destination,
+                    Path(self.destination).suffix.lstrip(".") or "wav",
+                ),
+            )
         object.__setattr__(self, "metadata", dict(self.metadata))
 
     @classmethod
@@ -89,6 +113,7 @@ class SynthesisRequest:
             utterance_id=utterance.id,
             work_id=work_id,
             run_id=run_id,
+            scene=utterance.scene,
             destination=destination,
         )
 
@@ -104,6 +129,7 @@ class SynthesisResult:
     sample_rate: int | None = None
     duration: float | None = None
     artifact: ArtifactRef | None = None
+    output_mode: ProviderOutputMode = ProviderOutputMode.AUDIO_BYTES
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -143,6 +169,7 @@ class SynthesisResult:
             "sample_rate": self.sample_rate,
             "duration": self.duration,
             "artifact": self.artifact.to_dict() if self.artifact else None,
+            "output_mode": self.output_mode.value,
             "metadata": dict(self.metadata),
         }
 
@@ -226,6 +253,8 @@ class SynthesisService:
         # exposing ``record_synthesis``.
         self.metrics = metrics
         self._closed = False
+        self._flight_registry_lock = asyncio.Lock()
+        self._flight_locks: dict[str, tuple[asyncio.Lock, int]] = {}
 
     @property
     def primary_provider(self) -> TTSProviderPort:
@@ -341,41 +370,110 @@ class SynthesisService:
         *,
         timeout: float | None = None,
     ) -> SynthesisResult:
+        """同一cache keyのmissを一つのprovider operationへ直列化する。"""
+
+        req = self._normalize_request(request)
+        if self.cache is None:
+            return await self._synthesize_once(req, timeout=timeout)
+        provider_name = req.provider or self._primary
+        key = self._cache_key(provider_name, req)
+        lock = await self._retain_flight_lock(key)
+        try:
+            async with lock:
+                return await self._synthesize_once(req, timeout=timeout)
+        finally:
+            await self._release_flight_lock(key, lock)
+
+    @staticmethod
+    def _normalize_request(request: SynthesisRequest | Utterance | str) -> SynthesisRequest:
+        if isinstance(request, SynthesisRequest):
+            return request
+        if isinstance(request, Utterance):
+            return SynthesisRequest.from_utterance(request)
+        return SynthesisRequest(str(request))
+
+    async def _retain_flight_lock(self, key: str) -> asyncio.Lock:
+        async with self._flight_registry_lock:
+            existing = self._flight_locks.get(key)
+            if existing is None:
+                lock = asyncio.Lock()
+                self._flight_locks[key] = (lock, 1)
+                return lock
+            lock, users = existing
+            self._flight_locks[key] = (lock, users + 1)
+            return lock
+
+    async def _release_flight_lock(self, key: str, lock: asyncio.Lock) -> None:
+        async with self._flight_registry_lock:
+            existing = self._flight_locks.get(key)
+            if existing is None or existing[0] is not lock:
+                return
+            users = existing[1] - 1
+            if users <= 0:
+                self._flight_locks.pop(key, None)
+            else:
+                self._flight_locks[key] = (lock, users)
+
+    async def _synthesize_once(
+        self,
+        request: SynthesisRequest | Utterance | str,
+        *,
+        timeout: float | None = None,
+    ) -> SynthesisResult:
         if self._closed:
             raise RuntimeError("SynthesisService is closed")
-        if isinstance(request, SynthesisRequest):
-            req = request
-        elif isinstance(request, Utterance):
-            req = SynthesisRequest.from_utterance(request)
-        else:
-            req = SynthesisRequest(str(request))
+        req = self._normalize_request(request)
         if req.provider is not None:
             candidates = [req.provider]
         else:
             candidates = [self._primary] + ([self._fallback] if self._fallback else [])
         started = time.monotonic()
+        operation_timeout = timeout if timeout is not None else self.timeout
+        deadline = OperationDeadline.after(operation_timeout)
         errors: list[dict[str, Any]] = []
         total_attempts = 0
         total_retries = 0
+        context = req.parameter_context
+        resolved_parameters = resolve_voice_parameters(
+            req.voice_intent,
+            profile=context.profile,
+            scene=context.scene,
+            emotion=context.emotion,
+            overrides=context.overrides,
+        )
         for index, name in enumerate(candidates):
             provider = self._providers.get(name)
             if provider is None:
                 continue
             fallback_used = index > 0
-            key = self._cache_key(name, req)
-            cached = await self._cache_get(key, name, req)
+            key = self._cache_key(
+                name,
+                req,
+                resolved_parameters=resolved_parameters,
+            )
+            try:
+                cached = await deadline.run(self._cache_get(key, name, req))
+            except TimeoutError:
+                errors.append(self._deadline_error(name))
+                break
             if cached is not None:
                 result = self._result_from_value(cached, provider=name)
-                result = await self._finish_result(
-                    result,
-                    req,
-                    provider=name,
-                    fallback_used=fallback_used,
-                    cache_hit=True,
-                    retry_count=0,
-                    attempts=0,
-                    started=started,
-                )
+                try:
+                    result = await deadline.run(
+                        self._finish_result(
+                            result,
+                            req,
+                            provider=name,
+                            fallback_used=fallback_used,
+                            cache_hit=True,
+                            retry_count=0,
+                            attempts=0,
+                            started=started,
+                        )
+                    )
+                except TimeoutError:
+                    errors.append(self._deadline_error(name))
+                    break
                 self._record_metrics(
                     duration_ms=(time.monotonic() - started) * 1000,
                     provider=name,
@@ -384,7 +482,11 @@ class SynthesisService:
                     text_length=len(req.text),
                 )
                 return result
-            health = await self.health(name)
+            try:
+                health = await deadline.run(self.health(name))
+            except TimeoutError:
+                errors.append(self._deadline_error(name))
+                break
             if not health.healthy:
                 errors.append(
                     {
@@ -394,7 +496,11 @@ class SynthesisService:
                     }
                 )
                 continue
-            voice = await self.resolve_voice(req.voice_intent, name)
+            try:
+                voice = await deadline.run(self.resolve_voice(req.voice_intent, name))
+            except TimeoutError:
+                errors.append(self._deadline_error(name))
+                break
             provider_metadata = dict(req.metadata)
             if fallback_used:
                 # IDs from the primary provider are not portable.  Fallback adapters must
@@ -407,44 +513,61 @@ class SynthesisService:
                 voice=voice,
                 utterance_id=req.utterance_id,
                 destination=req.destination,
+                target=req.target,
+                resolved_parameters=resolved_parameters,
                 metadata=provider_metadata,
             )
             try:
                 raw, attempts, retry_errors = await self._call_provider(
                     provider,
                     provider_request,
-                    timeout=timeout if timeout is not None else self.timeout,
+                    deadline=deadline,
                 )
                 total_attempts += attempts
                 total_retries += len(retry_errors)
             except asyncio.CancelledError:
                 raise
+            except TimeoutError:
+                errors.append(self._deadline_error(name))
+                break
             except ProviderError as exc:
                 total_attempts += int(getattr(exc, "attempts", 0) or 0)
                 total_retries += int(getattr(exc, "retry_count", 0) or 0)
                 errors.append(
                     {"provider": name, "category": exc.category.value, "message": exc.message}
                 )
+                if deadline.expired():
+                    errors[-1] = self._deadline_error(name)
+                    break
                 continue
             result = self._result_from_value(raw, provider=name)
             try:
-                result = await self._finish_result(
-                    result,
-                    req,
-                    provider=name,
-                    fallback_used=fallback_used,
-                    cache_hit=False,
-                    retry_count=total_retries,
-                    attempts=attempts,
-                    started=started,
+                result = await deadline.run(
+                    self._finish_result(
+                        result,
+                        req,
+                        provider=name,
+                        fallback_used=fallback_used,
+                        cache_hit=False,
+                        retry_count=total_retries,
+                        attempts=attempts,
+                        started=started,
+                    )
                 )
+            except TimeoutError:
+                errors.append(self._deadline_error(name))
+                break
             except ProviderError as exc:
                 errors.append(
                     {"provider": name, "category": exc.category.value, "message": exc.message}
                 )
                 continue
             if self.cache is not None and result.audio_data:
-                await self._cache_put(key, result.audio_data, name, req)
+                try:
+                    await deadline.run(self._cache_put(key, result.audio_data, name, req))
+                except TimeoutError:
+                    errors.append(self._deadline_error(name))
+                    break
             self._record_metrics(
                 duration_ms=(time.monotonic() - started) * 1000,
                 provider=name,
@@ -492,18 +615,19 @@ class SynthesisService:
         provider: TTSProviderPort,
         request: ProviderSynthesisRequest,
         *,
-        timeout: float | None,
+        deadline: OperationDeadline,
     ) -> tuple[Any, int, list[ProviderError]]:
         name = str(provider.name)
         errors: list[ProviderError] = []
         for attempt in range(1, self.retry_policy.max_attempts + 1):
             try:
                 semaphore = self._semaphore(name)
-                async with semaphore:
+                await deadline.run(semaphore.acquire())
+                try:
                     call = provider.synthesize(request)
-                    raw = (
-                        await asyncio.wait_for(call, timeout) if timeout is not None else await call
-                    )
+                    raw = await deadline.run(call)
+                finally:
+                    semaphore.release()
                 return raw, attempt, errors
             except asyncio.CancelledError:
                 raise
@@ -517,12 +641,20 @@ class SynthesisService:
                 ):
                     delay = self.retry_policy.delay(attempt - 1)
                     if delay:
-                        await asyncio.sleep(delay)
+                        await deadline.sleep(delay)
                     continue
                 classified.attempts = attempt
                 classified.retry_count = max(0, len(errors) - 1)
                 raise classified from exc
         raise RuntimeError("retry loop exhausted")
+
+    @staticmethod
+    def _deadline_error(provider: str) -> dict[str, str]:
+        return {
+            "provider": provider,
+            "category": ProviderErrorCategory.TIMEOUT.value,
+            "message": "operation deadline exceeded",
+        }
 
     def _semaphore(self, name: str) -> asyncio.Semaphore:
         if name not in self._semaphores:
@@ -606,13 +738,36 @@ class SynthesisService:
                 data = path.read_bytes()
             if result.metadata.get("_cleanup_file"):
                 path.unlink(missing_ok=True)
+        validation_data = data
+        if validation_data is None and artifact is not None and artifact.path.is_file():
+            validation_data = artifact.path.read_bytes()
+        if validation_data:
+            try:
+                descriptor = validate_audio_bytes(validation_data, result.format)
+                if (
+                    result.sample_rate is not None
+                    and descriptor.sample_rate is not None
+                    and int(result.sample_rate) != descriptor.sample_rate
+                ):
+                    raise ValueError("declared sample rate does not match audio bytes")
+            except (OSError, ValueError) as exc:
+                raise ProviderError(
+                    "provider returned invalid audio",
+                    category=ProviderErrorCategory.INVALID_RESPONSE,
+                    provider=provider,
+                    retryable=False,
+                    details={"reason": str(exc), "format": result.format},
+                ) from exc
         if not data and artifact is None:
-            raise ProviderError(
-                "provider returned empty audio without an artifact",
-                category=ProviderErrorCategory.INVALID_RESPONSE,
-                provider=provider,
-                retryable=False,
-            )
+            if result.output_mode is ProviderOutputMode.REMOTE_PLAYBACK:
+                data = None
+            else:
+                raise ProviderError(
+                    "provider returned empty audio without an artifact",
+                    category=ProviderErrorCategory.INVALID_RESPONSE,
+                    provider=provider,
+                    retryable=False,
+                )
         if request.destination:
             artifact = await self._publish_artifact(
                 data,
@@ -644,6 +799,7 @@ class SynthesisService:
             sample_rate=result.sample_rate,
             duration=result.duration,
             artifact=artifact,
+            output_mode=result.output_mode,
             metadata=metadata,
         )
 
@@ -659,8 +815,13 @@ class SynthesisService:
         if self.artifact_store is None:
             path = Path(request.destination or "")
             if data is not None:
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_bytes(data)
+                if path.suffix.lower() == ".wav":
+                    atomic_write_wav(path, data)
+                else:
+                    def write_audio(temporary: Path) -> None:
+                        temporary.write_bytes(data)
+
+                    atomic_replace_file(path, write_audio)
             return artifact
         store = self.artifact_store
         destination = request.destination
@@ -709,17 +870,47 @@ class SynthesisService:
             if source != (artifact.path if artifact else None):
                 source.unlink(missing_ok=True)
 
-    def _cache_key(self, provider: str, request: SynthesisRequest) -> str:
+    def _cache_key(
+        self,
+        provider: str,
+        request: SynthesisRequest,
+        *,
+        resolved_parameters: Any | None = None,
+    ) -> str:
+        item = self._providers.get(provider)
+        provider_version = getattr(item, "cache_version", getattr(item, "version", None))
+        target_format = getattr(request.target, "format", None) or request.metadata.get(
+            "format", "wav"
+        )
+        resolved = resolved_parameters or resolve_voice_parameters(
+            request.voice_intent,
+            profile=request.parameter_context.profile,
+            scene=request.parameter_context.scene,
+            emotion=request.parameter_context.emotion,
+            overrides=request.parameter_context.overrides,
+        )
         payload = {
+            "schema_version": 2,
             "provider": provider,
+            "provider_version": provider_version,
+            "format": str(target_format).lower().lstrip("."),
             "text": request.text,
             "voice_intent": request.voice_intent.to_dict(),
+            "resolved_parameters": asdict(resolved),
+            "parameter_context": asdict(request.parameter_context),
             "metadata": dict(request.metadata),
+            "target": asdict(request.target) if request.target is not None else None,
         }
-        return json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+        serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+        return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
     async def _cache_get(self, key: str, provider: str, request: SynthesisRequest) -> Any | None:
-        if self.cache is None or not callable(getattr(self.cache, "get", None)):
+        if self.cache is None:
+            return None
+        canonical = getattr(self.cache, "get_key", None)
+        if callable(canonical):
+            return await self._maybe_await(canonical(key))
+        if not callable(getattr(self.cache, "get", None)):
             return None
         method = self.cache.get
         try:
@@ -735,6 +926,10 @@ class SynthesisService:
     async def _cache_put(
         self, key: str, data: bytes, provider: str, request: SynthesisRequest
     ) -> None:
+        canonical = getattr(self.cache, "put_key", None)
+        if callable(canonical):
+            await self._maybe_await(canonical(key, data))
+            return
         method = getattr(self.cache, "put", None)
         if not callable(method):
             return

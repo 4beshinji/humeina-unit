@@ -11,7 +11,9 @@ from typing import Any
 from loguru import logger
 
 from ..adapters.persistence.filesystem import FilesystemArtifactStore
+from ..application.operations import ThreadProcessRunner, run_blocking_process_operation
 from ..application.synthesis import SynthesisRequest, SynthesisService
+from ..application.voice_parameters import VoiceOverrides, VoiceResolutionContext
 from ..config import get_tts_config
 from ..core.identity import new_job_id, new_run_id
 from ..core.models import Utterance, VoiceIntent
@@ -286,6 +288,10 @@ class BatchEngine:
         # VOICEPEAKのlegacy profileは50〜200のnative値、それ以外はratioを使う。
         if self.mode == "voicepeak" and isinstance(speed, (int, float)) and speed > 10:
             speed = float(speed) / 100.0
+        canonical_params = dict(params)
+        canonical_params["speed"] = speed
+        canonical_params.setdefault("emotion", utterance.emotion)
+        canonical_params.setdefault("intensity", utterance.intensity)
         try:
             intent = VoiceIntent(
                 archetype=(
@@ -313,6 +319,7 @@ class BatchEngine:
         metadata.update(
             {
                 "run_dir": str(work_dir),
+                "output_root": str(Path(self.output_dir).expanduser().resolve()),
                 "vm_mount": self.vm_mount,
                 "entry_index": entry.index,
                 "sentence_index": entry.index,
@@ -334,6 +341,9 @@ class BatchEngine:
             provider=provider_name,
             work_id=manifest.work_id if manifest.run_id else None,
             run_id=manifest.run_id,
+            parameter_context=VoiceResolutionContext(
+                overrides=VoiceOverrides.from_mapping(canonical_params)
+            ),
             destination=f"{entry.index:04d}.wav",
             metadata=metadata,
         )
@@ -985,6 +995,7 @@ class BatchEngine:
         *,
         allow_partial: bool = False,
         run_id: str | None = None,
+        process_runner: ThreadProcessRunner | None = None,
     ) -> Path | None:
         """Phase C: WAVファイル結合."""
         manifest = BatchManifest.load(self.output_dir, work_id, run_id=run_id)
@@ -992,6 +1003,7 @@ class BatchEngine:
         concatenator = Concatenator(
             output_format=self.output_format,
             cleanup=self.cleanup,
+            process_runner=process_runner,
         )
 
         return concatenator.concat_chapters_then_full(
@@ -1008,6 +1020,7 @@ class BatchEngine:
         style: str | None = None,
         *,
         run_id: str | None = None,
+        process_runner: ThreadProcessRunner | None = None,
     ) -> Path | None:
         """Phase D: 動画生成."""
         from ..video.composer import VideoComposer
@@ -1025,7 +1038,7 @@ class BatchEngine:
         video_cfg = VideoConfig.from_dict(self.config.get("video", {}))
         if style:
             video_cfg.style = style
-        composer = VideoComposer(video_cfg, work_dir)
+        composer = VideoComposer(video_cfg, work_dir, process_runner=process_runner)
         return composer.compose_all(manifest)
 
     def subtitle(
@@ -1110,7 +1123,8 @@ class BatchEngine:
 
         # Phase C
         logger.info("=== Phase C: Concatenation ===")
-        audio_output = self.concat(
+        audio_output = await run_blocking_process_operation(
+            self.concat,
             manifest.work_id,
             allow_partial=allow_partial,
             run_id=manifest.run_id,
@@ -1122,7 +1136,8 @@ class BatchEngine:
         # partial音声を通常名の動画として公開しないため、partial時は音声のみ返す。
         if video and completion_status != "partial":
             logger.info("=== Phase D: Video Generation ===")
-            video_output = self.video(
+            video_output = await run_blocking_process_operation(
+                self.video,
                 manifest.work_id,
                 style=style,
                 run_id=manifest.run_id,

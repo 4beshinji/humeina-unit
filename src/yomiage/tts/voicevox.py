@@ -40,6 +40,7 @@ class VoicevoxProvider(TTSProvider):
     async def synthesize(
         self, text: str, voice: str = "neutral", speed: float = 1.0, **params
     ) -> AudioResult:
+        native = params.pop("_native_parameters", None)
         # voice_id override from params takes priority
         if "voice_id" in params and params["voice_id"] is not None:
             try:
@@ -49,9 +50,16 @@ class VoicevoxProvider(TTSProvider):
         else:
             speaker_id = self.speakers.get(voice, self.default_speaker)
 
-        effective_speed = self.speed_scale * speed
-        pitch = self.pitch_scale + params.get("pitch", 0.0)
-        intonation = self.intonation_scale + params.get("intonation", 0.0)
+        if isinstance(native, dict):
+            effective_speed = float(native.get("speedScale", 1.0))
+            pitch = float(native.get("pitchScale", 0.0))
+            intonation = float(native.get("intonationScale", 1.0))
+            volume = float(native.get("volumeScale", 1.0))
+        else:
+            effective_speed = self.speed_scale * speed
+            pitch = self.pitch_scale + params.get("pitch", 0.0)
+            intonation = self.intonation_scale + params.get("intonation", 0.0)
+            volume = 1.0 + params["volume"] * 0.1 if "volume" in params else None
 
         try:
             session = self.session
@@ -68,8 +76,8 @@ class VoicevoxProvider(TTSProvider):
             query["speedScale"] = effective_speed
             query["pitchScale"] = pitch
             query["intonationScale"] = intonation
-            if "volume" in params:
-                query["volumeScale"] = 1.0 + params["volume"] * 0.1
+            if volume is not None:
+                query["volumeScale"] = volume
 
             async with session.post(
                 f"{self.base_url}/synthesis",

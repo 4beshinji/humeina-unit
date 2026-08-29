@@ -13,6 +13,8 @@ from yomiage.api.metrics import MetricsCollector
 from yomiage.tts.base import AudioResult, TTSProvider
 from yomiage.tts.cache import TTSCache
 
+from .test_audio_validation import wav_bytes
+
 
 class MockTTSProvider(TTSProvider):
     """テスト用モックTTSプロバイダー."""
@@ -23,7 +25,7 @@ class MockTTSProvider(TTSProvider):
 
     async def synthesize(self, text, voice="neutral", speed=1.0, **params):
         return AudioResult(
-            audio_data=b"RIFF_mock", format="wav", sample_rate=24000, duration=1.0
+            audio_data=wav_bytes(), format="wav", sample_rate=24000, duration=1.0
         )
 
     async def is_available(self) -> bool:
@@ -47,7 +49,7 @@ class TestTTSBridgeHooks:
         )
         result = await bridge.synthesize("こんにちは")
 
-        assert result.audio_data == b"RIFF_mock"
+        assert result.audio_data == wav_bytes()
         start_events = [e for e in events if e.type == EventType.SYNTHESIS_START]
         end_events = [e for e in events if e.type == EventType.SYNTHESIS_END]
         assert len(start_events) == 1

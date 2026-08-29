@@ -47,6 +47,7 @@ class SlackMonitor:
         self._running = True
         logger.info(f"Slack monitor starting (channels={self.channels})")
 
+        socket_client = None
         try:
             from slack_sdk.socket_mode.aiohttp import SocketModeClient
             from slack_sdk.web.async_client import AsyncWebClient
@@ -88,6 +89,13 @@ class SlackMonitor:
             logger.error("slack-sdk not installed. Run: pip install 'humeina-unit[slack]'")
         except Exception as e:
             logger.error(f"Slack monitor error: {e}")
+        finally:
+            self._running = False
+            if socket_client is not None:
+                try:
+                    await socket_client.close()
+                except Exception as e:
+                    logger.warning(f"Slack socket close failed: {type(e).__name__}")
 
     def stop(self) -> None:
         self._running = False

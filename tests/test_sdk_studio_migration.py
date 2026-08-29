@@ -16,6 +16,8 @@ from yomiage.ports.tts import (
 from yomiage.studio.engine import StudioEngine
 from yomiage.tts.base import AudioResult, TTSProvider
 
+from .test_audio_validation import wav_bytes
+
 
 class PortProvider:
     def __init__(self, name: str = "fake", *, fail: bool = False) -> None:
@@ -34,7 +36,7 @@ class PortProvider:
         self.calls.append(request)
         if self.fail:
             raise RuntimeError("provider down")
-        return ProviderSynthesisResult(audio_data=b"RIFF-fake", duration=0.1)
+        return ProviderSynthesisResult(audio_data=wav_bytes(), duration=0.1)
 
     async def close(self) -> None:
         self.closed = True
@@ -47,7 +49,7 @@ def test_bridge_external_service_is_not_closed_by_facade() -> None:
         bridge = TTSBridge.from_service(service)
 
         result = await bridge.synthesize("テスト", voice_id="fake-voice")
-        assert result.audio_data == b"RIFF-fake"
+        assert result.audio_data == wav_bytes()
         assert isinstance(bridge.service, SynthesisService)
 
         await bridge.close()
@@ -82,7 +84,7 @@ def test_bridge_fallback_resolves_provider_voice_again() -> None:
             self.calls.append({"voice": voice, **kwargs})
             if self.fail:
                 raise RuntimeError("provider down")
-            return AudioResult(audio_data=b"fallback")
+            return AudioResult(audio_data=wav_bytes())
 
     async def run() -> None:
         primary = LegacyProvider("primary", fail=True)
@@ -90,7 +92,7 @@ def test_bridge_fallback_resolves_provider_voice_again() -> None:
         bridge = TTSBridge(primary, fallback)
 
         result = await bridge.synthesize("テスト", voice_id="primary-voice")
-        assert result.audio_data == b"fallback"
+        assert result.audio_data == wav_bytes()
         assert fallback.calls[0]["voice"] == "fallback-voice"
         assert "voice_id" not in fallback.calls[0]
         await bridge.close()
@@ -121,7 +123,7 @@ def test_studio_uses_injected_service_without_taking_ownership(tmp_path: Path) -
         engine._create_providers = fail_if_provider_construction_is_attempted
 
         project = await engine.synth(script, provider="fake", output_format="plain")
-        assert project.results[0].wav_path.read_bytes() == b"RIFF-fake"
+        assert project.results[0].wav_path.read_bytes() == wav_bytes()
         assert len(provider.calls) == 1
         assert provider.closed is False
         await service.close()

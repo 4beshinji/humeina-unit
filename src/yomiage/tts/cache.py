@@ -7,6 +7,11 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..utils.atomic_io import atomic_write_wav
+from .audio_utils import validate_audio_bytes
+
+CACHE_SCHEMA_VERSION = 2
+
 
 @dataclass
 class TTSCache:
@@ -32,6 +37,34 @@ class TTSCache:
     def _path(self, key: str, ext: str = "wav") -> Path:
         return self.cache_dir / f"{key}.{ext}"
 
+    def get_key(self, key: str, *, ext: str = "wav") -> bytes | None:
+        """canonical schema keyから検証済みentryだけを返す。"""
+
+        if not self.enabled:
+            return None
+        path = self._path(f"v{CACHE_SCHEMA_VERSION}-{key}", ext)
+        if not path.is_file():
+            return None
+        data = path.read_bytes()
+        try:
+            validate_audio_bytes(data, ext)
+        except ValueError:
+            path.unlink(missing_ok=True)
+            return None
+        return data
+
+    def put_key(self, key: str, audio_data: bytes, *, ext: str = "wav") -> None:
+        """検証後、canonical schema entryへatomic publishする。"""
+
+        if not self.enabled or not audio_data:
+            return
+        validate_audio_bytes(audio_data, ext)
+        path = self._path(f"v{CACHE_SCHEMA_VERSION}-{key}", ext)
+        if ext == "wav":
+            atomic_write_wav(path, audio_data)
+            return
+        raise ValueError(f"unsupported cache audio format: {ext}")
+
     def get(self, engine: str, text: str, **params: object) -> bytes | None:
         """キャッシュから音声データを取得."""
         if not self.enabled:
@@ -39,7 +72,13 @@ class TTSCache:
         key = self._key(engine, text, **params)
         path = self._path(key)
         if path.exists():
-            return path.read_bytes()
+            data = path.read_bytes()
+            try:
+                validate_audio_bytes(data, path.suffix)
+            except ValueError:
+                path.unlink(missing_ok=True)
+                return None
+            return data
         return None
 
     def put(
@@ -54,4 +93,5 @@ class TTSCache:
             return
         key = self._key(engine, text, **params)
         path = self._path(key)
-        path.write_bytes(audio_data)
+        validate_audio_bytes(audio_data, "wav")
+        atomic_write_wav(path, audio_data)

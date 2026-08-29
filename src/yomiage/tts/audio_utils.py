@@ -11,15 +11,72 @@ import struct
 import subprocess
 import tempfile
 import wave
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from loguru import logger
 
+from ..application.operations import ThreadProcessRunner
 from ..utils.atomic_io import atomic_replace_file, atomic_write_wav
 
 if TYPE_CHECKING:
     pass
+
+
+@dataclass(frozen=True, slots=True)
+class AudioDescriptor:
+    """公開前に検証したaudio streamの構造。"""
+
+    format: str
+    sample_rate: int | None = None
+    channels: int | None = None
+    sample_width: int | None = None
+    frames: int | None = None
+
+
+def validate_audio_bytes(audio_data: bytes, declared_format: str = "wav") -> AudioDescriptor:
+    """bytesと宣言formatの整合・完全性を検証する。"""
+
+    data = bytes(audio_data)
+    audio_format = str(declared_format).lower().lstrip(".")
+    if not data:
+        raise ValueError("audio data is empty")
+    if audio_format == "wav":
+        try:
+            with wave.open(io.BytesIO(data), "rb") as stream:
+                channels = stream.getnchannels()
+                sample_width = stream.getsampwidth()
+                sample_rate = stream.getframerate()
+                frames = stream.getnframes()
+                compression = stream.getcomptype()
+                payload = stream.readframes(frames)
+            expected = frames * channels * sample_width
+            if (
+                data[:4] != b"RIFF"
+                or data[8:12] != b"WAVE"
+                or compression != "NONE"
+                or channels <= 0
+                or sample_width <= 0
+                or sample_rate <= 0
+                or frames <= 0
+                or len(payload) != expected
+            ):
+                raise ValueError("invalid or truncated PCM WAV structure")
+        except (EOFError, OSError, wave.Error, ValueError) as exc:
+            raise ValueError("invalid or truncated WAV audio") from exc
+        return AudioDescriptor("wav", sample_rate, channels, sample_width, frames)
+    signatures = {
+        "flac": (b"fLaC",),
+        "ogg": (b"OggS",),
+        "mp3": (b"ID3", b"\xff\xfb", b"\xff\xf3", b"\xff\xf2"),
+    }
+    expected_signatures = signatures.get(audio_format)
+    if expected_signatures is None:
+        raise ValueError(f"unsupported audio format: {audio_format}")
+    if not any(data.startswith(signature) for signature in expected_signatures):
+        raise ValueError(f"audio bytes do not match declared format: {audio_format}")
+    return AudioDescriptor(audio_format)
 
 
 def write_silence_wav(
@@ -51,7 +108,11 @@ def write_silence_wav(
 
 
 def concat_wav_files(
-    files: list[Path], output: Path, output_format: str = "wav"
+    files: list[Path],
+    output: Path,
+    output_format: str = "wav",
+    *,
+    process_runner: ThreadProcessRunner | None = None,
 ) -> None:
     """ffmpeg concat demuxer で複数 WAV ファイルを結合.
 
@@ -84,7 +145,8 @@ def concat_wav_files(
         def _run_ffmpeg(temporary_output: Path) -> None:
             # 一時名は拡張子が ``.tmp`` のため、出力formatを明示する。
             ffmpeg_cmd = [*cmd, "-f", output_format, str(temporary_output)]
-            result = subprocess.run(
+            run_process = process_runner.run if process_runner else subprocess.run
+            result = run_process(
                 ffmpeg_cmd, capture_output=True, text=True, timeout=600
             )
             if result.returncode != 0:
@@ -122,74 +184,27 @@ def concat_wav_bytes(wav_parts: list[bytes]) -> bytes:
     if len(wav_parts) == 1:
         return wav_parts[0]
 
-    first = wav_parts[0]
-    if len(first) < 44 or first[:4] != b"RIFF" or first[8:12] != b"WAVE":
-        raise ValueError("Invalid WAV data")
+    descriptors = [validate_audio_bytes(part, "wav") for part in wav_parts]
+    first = descriptors[0]
+    for descriptor in descriptors[1:]:
+        if (
+            descriptor.sample_rate,
+            descriptor.channels,
+            descriptor.sample_width,
+        ) != (first.sample_rate, first.channels, first.sample_width):
+            raise ValueError("WAV descriptor format mismatch (rate/channel/width)")
 
-    fmt_data = first[12:]
-    header_end = 12
-    channels = 1
-    sample_rate = 44100
-    bits_per_sample = 16
-
-    pos = 0
-    data_offset = 0
-    while pos < len(fmt_data) - 8:
-        chunk_id = fmt_data[pos : pos + 4]
-        chunk_size = struct.unpack_from("<I", fmt_data, pos + 4)[0]
-        if chunk_id == b"fmt ":
-            channels = struct.unpack_from("<H", fmt_data, pos + 10)[0]
-            sample_rate = struct.unpack_from("<I", fmt_data, pos + 12)[0]
-            bits_per_sample = struct.unpack_from("<H", fmt_data, pos + 22)[0]
-        elif chunk_id == b"data":
-            data_offset = header_end + pos + 8
-            break
-        pos += 8 + chunk_size
-        header_end += 8 + chunk_size
-
-    if data_offset == 0:
-        raise ValueError("No data chunk found")
-
-    # Collect PCM data from all parts
-    all_data = bytearray()
-    for part in wav_parts:
-        part_fmt = part[12:]
-        part_pos = 0
-        part_header_end = 12
-        part_data_offset = 0
-        while part_pos < len(part_fmt) - 8:
-            chunk_id = part_fmt[part_pos : part_pos + 4]
-            chunk_size = struct.unpack_from("<I", part_fmt, part_pos + 4)[0]
-            if chunk_id == b"data":
-                part_data_offset = part_header_end + part_pos + 8
-                break
-            part_pos += 8 + chunk_size
-            part_header_end += 8 + chunk_size
-        if part_data_offset == 0:
-            raise ValueError("Invalid WAV part: no data chunk")
-        all_data.extend(part[part_data_offset:])
-
-    # Build output WAV header
-    byte_rate = sample_rate * channels * bits_per_sample // 8
-    block_align = channels * bits_per_sample // 8
-    data_size = len(all_data)
-
-    header = bytearray()
-    header.extend(b"RIFF")
-    header.extend(struct.pack("<I", 36 + data_size))
-    header.extend(b"WAVE")
-    header.extend(b"fmt ")
-    header.extend(struct.pack("<I", 16))
-    header.extend(struct.pack("<H", 1))  # PCM
-    header.extend(struct.pack("<H", channels))
-    header.extend(struct.pack("<I", sample_rate))
-    header.extend(struct.pack("<I", byte_rate))
-    header.extend(struct.pack("<H", block_align))
-    header.extend(struct.pack("<H", bits_per_sample))
-    header.extend(b"data")
-    header.extend(struct.pack("<I", data_size))
-
-    return bytes(header) + bytes(all_data)
+    combined = io.BytesIO()
+    with wave.open(combined, "wb") as output:
+        output.setnchannels(first.channels or 1)
+        output.setsampwidth(first.sample_width or 2)
+        output.setframerate(first.sample_rate or 24_000)
+        for part in wav_parts:
+            with wave.open(io.BytesIO(part), "rb") as stream:
+                output.writeframes(stream.readframes(stream.getnframes()))
+    result = combined.getvalue()
+    validate_audio_bytes(result, "wav")
+    return result
 
 
 def get_wav_duration(wav: bytes | Path) -> float:

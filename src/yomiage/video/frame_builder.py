@@ -7,6 +7,7 @@ from pathlib import Path
 
 from loguru import logger
 
+from ..application.operations import ThreadProcessRunner
 from .asset_manager import AssetManager
 from .config import VideoConfig
 from .timeline import TimelineEvent
@@ -139,9 +140,15 @@ class PortraitOverlay:
 class TitleCardGenerator:
     """タイトルカード画像生成 (Pillow)."""
 
-    def __init__(self, config: VideoConfig):
+    def __init__(
+        self,
+        config: VideoConfig,
+        *,
+        process_runner: ThreadProcessRunner | None = None,
+    ):
         self.config = config
         self.tc_cfg = config.title_card
+        self.process_runner = process_runner
 
     def generate(
         self,
@@ -211,7 +218,8 @@ class TitleCardGenerator:
             "-shortest",
             str(mp4_path),
         ]
-        result = subprocess.run(
+        run_process = self.process_runner.run if self.process_runner else subprocess.run
+        result = run_process(
             cmd, capture_output=True, text=True, timeout=60
         )
         png_path.unlink(missing_ok=True)

@@ -39,13 +39,13 @@ class TTSEngineConfig(BaseModel):
     def to_provider_dict(self) -> dict:
         """プロバイダーが期待するdict形式に変換."""
         d: dict = {}
-        if self.url:
+        if self.url is not None:
             d["url"] = self.url
-        if self.username:
+        if self.username is not None:
             d["username"] = self.username
-        if self.password:
+        if self.password is not None:
             d["password"] = self.password
-        if self.default_voice:
+        if self.default_voice is not None:
             if self.engine == "voicevox":
                 d["default_speaker"] = self.default_voice
             elif self.engine == "voicepeak":
@@ -120,32 +120,12 @@ class PipelineConfig(BaseModel):
             raise ValueError(f"Unknown TTS provider: {', '.join(map(str, unknown))}")
 
         primary_engine_cfg = data.get(primary_name, {})
-        tts = TTSEngineConfig(
-            engine=primary_name,
-            url=primary_engine_cfg.get("url"),
-            username=primary_engine_cfg.get("username"),
-            password=primary_engine_cfg.get("password"),
-            default_voice=(
-                primary_engine_cfg.get("default_voice")
-                or primary_engine_cfg.get("default_speaker")
-                or primary_engine_cfg.get("default_narrator")
-            ),
-        )
+        tts = cls._provider_config(primary_name, primary_engine_cfg)
 
         tts_fallback = None
         if fallback_name and fallback_name != primary_name:
             fb_cfg = data.get(fallback_name, {})
-            tts_fallback = TTSEngineConfig(
-                engine=fallback_name,
-                url=fb_cfg.get("url"),
-                username=fb_cfg.get("username"),
-                password=fb_cfg.get("password"),
-                default_voice=(
-                    fb_cfg.get("default_voice")
-                    or fb_cfg.get("default_speaker")
-                    or fb_cfg.get("default_narrator")
-                ),
-            )
+            tts_fallback = cls._provider_config(fallback_name, fb_cfg)
 
         legacy_ollama = data.get("ollama")
         if isinstance(legacy_ollama, dict):
@@ -182,6 +162,35 @@ class PipelineConfig(BaseModel):
             if batch_cfg.get("voice_profile_dir")
             else None,
             voice_profile_name=batch_cfg.get("default_voice_profile"),
+        )
+
+    @staticmethod
+    def _provider_config(engine: str, raw: dict) -> TTSEngineConfig:
+        if not isinstance(raw, dict):
+            raise TypeError(f"{engine} provider settings must be a mapping")
+        reserved = {
+            "url",
+            "username",
+            "password",
+            "default_voice",
+            "default_speaker",
+            "default_narrator",
+        }
+        default_voice = next(
+            (
+                raw[key]
+                for key in ("default_voice", "default_speaker", "default_narrator")
+                if key in raw and raw[key] is not None
+            ),
+            None,
+        )
+        return TTSEngineConfig(
+            engine=engine,
+            url=raw.get("url"),
+            username=raw.get("username"),
+            password=raw.get("password"),
+            default_voice=default_voice,
+            extra={key: value for key, value in raw.items() if key not in reserved},
         )
 
 

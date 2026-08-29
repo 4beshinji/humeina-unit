@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,7 @@ from yomiage.application.synthesis import (
     SynthesisRequest,
     SynthesisService,
 )
+from yomiage.application.voice_parameters import VoiceResolutionContext
 from yomiage.core.models import VoiceIntent
 from yomiage.ports.tts import (
     ProviderError,
@@ -26,6 +28,8 @@ from yomiage.ports.tts import (
 )
 from yomiage.tts.audio_utils import write_silence_wav
 
+from .test_audio_validation import wav_bytes
+
 
 class FakeProvider:
     def __init__(
@@ -34,12 +38,12 @@ class FakeProvider:
         *,
         failures: int = 0,
         delay: float = 0.0,
-        audio_data: bytes = b"audio",
+        audio_data: bytes | None = None,
     ) -> None:
         self.name = name
         self.failures = failures
         self.delay = delay
-        self.audio_data = audio_data
+        self.audio_data = wav_bytes() if audio_data is None else audio_data
         self.calls: list[ProviderSynthesisRequest] = []
         self.closed = False
 
@@ -93,7 +97,7 @@ async def test_normal_synthesis_returns_typed_result_and_metadata() -> None:
         SynthesisRequest("こんにちは", voice_intent=VoiceIntent(preferred_profile="primary"))
     )
 
-    assert result.audio_data == b"audio"
+    assert result.audio_data == provider.audio_data
     assert result.provider == "primary"
     assert result.status == "synthesized"
     assert result.metadata["fallback_used"] is False
@@ -154,6 +158,34 @@ async def test_timeout_is_classified_and_not_retried_when_policy_disallows() -> 
 
 
 @pytest.mark.asyncio
+async def test_f10_single_deadline_includes_voice_resolution_retry_and_fallback() -> None:
+    class SlowVoiceProvider(FakeProvider):
+        async def list_voices(self) -> list[ProviderVoice]:
+            await asyncio.sleep(0.03)
+            return await super().list_voices()
+
+    primary = SlowVoiceProvider("primary", failures=10)
+    fallback = FakeProvider("fallback")
+    service = SynthesisService(
+        {"primary": primary, "fallback": fallback},
+        primary="primary",
+        fallback="fallback",
+        timeout=0.04,
+        retry_policy=RetryPolicy(max_retries=2, backoff_factor=0.03),
+    )
+    started = time.monotonic()
+
+    with pytest.raises(SynthesisFailure) as caught:
+        await service.synthesize("operation deadline")
+
+    assert caught.value.category is ProviderErrorCategory.TIMEOUT
+    assert time.monotonic() - started < 0.08
+    assert len(primary.calls) == 1
+    assert fallback.calls == []
+    await service.close()
+
+
+@pytest.mark.asyncio
 async def test_cancellation_is_propagated_without_fallback_or_retry() -> None:
     provider = FakeProvider("primary", delay=0.1)
     fallback = FakeProvider("fallback")
@@ -182,7 +214,7 @@ async def test_provider_concurrency_is_bounded() -> None:
             self.maximum = max(self.maximum, self.active)
             try:
                 await asyncio.sleep(0.01)
-                return ProviderSynthesisResult(audio_data=b"audio")
+                return ProviderSynthesisResult(audio_data=wav_bytes())
             finally:
                 self.active -= 1
 
@@ -190,6 +222,7 @@ async def test_provider_concurrency_is_bounded() -> None:
     service = SynthesisService(provider, concurrency=1)
     await asyncio.gather(*(service.synthesize(f"text-{index}") for index in range(3)))
     assert provider.maximum == 1
+    assert provider.active == 0
     await service.close()
 
 
@@ -280,3 +313,93 @@ async def test_close_is_explicit_and_idempotent() -> None:
     await service.close()
 
     assert primary.closed and fallback.closed
+
+
+@pytest.mark.asyncio
+async def test_f17_file_cache_key_includes_voice_intent(tmp_path: Path) -> None:
+    from yomiage.tts.cache import TTSCache
+
+    wav_path = tmp_path / "fixture.wav"
+    write_silence_wav(wav_path, 0.01)
+    provider = FakeProvider("primary", audio_data=wav_path.read_bytes())
+    service = SynthesisService(provider, cache=TTSCache(tmp_path / "cache"))
+
+    await service.synthesize(
+        SynthesisRequest("same", voice_intent=VoiceIntent(pitch=-0.25, emotion="sad"))
+    )
+    await service.synthesize(
+        SynthesisRequest("same", voice_intent=VoiceIntent(pitch=0.25, emotion="happy"))
+    )
+
+    assert len(provider.calls) == 2
+    assert len(list((tmp_path / "cache").glob("*.wav"))) == 2
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_f17_file_cache_key_includes_resolved_scene_parameters(
+    tmp_path: Path,
+) -> None:
+    from yomiage.tts.cache import TTSCache
+
+    provider = FakeProvider("primary")
+    service = SynthesisService(provider, cache=TTSCache(tmp_path / "cache"))
+    intent = VoiceIntent(emotion="neutral", intensity=0.0)
+
+    await service.synthesize(
+        SynthesisRequest(
+            "same",
+            voice_intent=intent,
+            parameter_context=VoiceResolutionContext(scene={"pitch": -0.25}),
+        )
+    )
+    await service.synthesize(
+        SynthesisRequest(
+            "same",
+            voice_intent=intent,
+            parameter_context=VoiceResolutionContext(scene={"pitch": 0.25}),
+        )
+    )
+
+    assert len(provider.calls) == 2
+    resolved = [request.resolved_parameters for request in provider.calls]
+    assert all(value is not None for value in resolved)
+    assert [value.pitch for value in resolved if value is not None] == [-0.25, 0.25]
+    assert len(list((tmp_path / "cache").glob("*.wav"))) == 2
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_d03_concurrent_identical_cache_miss_is_single_flight(tmp_path: Path) -> None:
+    wav_path = tmp_path / "fixture.wav"
+    write_silence_wav(wav_path, 0.01)
+
+    class BarrierProvider(FakeProvider):
+        def __init__(self) -> None:
+            super().__init__("primary", audio_data=wav_path.read_bytes())
+            self.entered = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def synthesize(
+            self, request: ProviderSynthesisRequest
+        ) -> ProviderSynthesisResult:
+            self.calls.append(request)
+            self.entered.set()
+            await self.release.wait()
+            return ProviderSynthesisResult(audio_data=self.audio_data)
+
+    provider = BarrierProvider()
+    cache = MemoryCache()
+    service = SynthesisService(provider, cache=cache, concurrency=2)
+    first = asyncio.create_task(service.synthesize("same"))
+    second = asyncio.create_task(service.synthesize("same"))
+    await provider.entered.wait()
+    await asyncio.sleep(0)
+    provider.release.set()
+    results = await asyncio.gather(first, second)
+
+    assert len(provider.calls) == 1
+    assert results[0].audio_data == results[1].audio_data
+    assert len(cache.values) == 1
+    assert service._flight_locks == {}
+    await service.close()

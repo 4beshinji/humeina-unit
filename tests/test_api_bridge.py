@@ -28,9 +28,9 @@ def _make_wav_bytes(duration: float = 0.1, sample_rate: int = 24000) -> bytes:
 class MockProvider(TTSProvider):
     """テスト用モックプロバイダー."""
 
-    def __init__(self, name: str = "mock", audio_data: bytes = b"RIFF_mock_wav"):
+    def __init__(self, name: str = "mock", audio_data: bytes | None = None):
         self._name = name
-        self._audio_data = audio_data
+        self._audio_data = _make_wav_bytes() if audio_data is None else audio_data
         self.synthesize_calls: list[dict] = []
 
     @property
@@ -68,7 +68,7 @@ class MockEmptyAudioProvider(MockProvider):
         )
         # ファイルにダミーデータ書き出し
         from pathlib import Path
-        Path(output_path).write_bytes(b"RIFF_file_wav")
+        Path(output_path).write_bytes(_make_wav_bytes(sample_rate=44100))
         return AudioResult(audio_data=b"", format="wav", sample_rate=44100, duration=2.0)
 
 
@@ -93,7 +93,7 @@ class TestTTSBridgeSynthesize:
         bridge = TTSBridge(provider)
         result = await bridge.synthesize("テスト")
         assert isinstance(result, SynthesisResult)
-        assert result.audio_data == b"RIFF_mock_wav"
+        assert result.audio_data == provider._audio_data
         assert result.format == "wav"
         assert result.sample_rate == 24000
         assert result.duration == 1.0
@@ -125,17 +125,17 @@ class TestTTSBridgeSynthesize:
         provider = MockEmptyAudioProvider()
         bridge = TTSBridge(provider)
         result = await bridge.synthesize("テスト")
-        assert result.audio_data == b"RIFF_file_wav"
+        assert result.audio_data == _make_wav_bytes(sample_rate=44100)
         assert len(provider.file_synthesize_calls) == 1
 
     @pytest.mark.asyncio
     async def test_fallback_on_primary_failure(self):
         primary = MockProvider(name="primary")
         primary.synthesize = AsyncMock(side_effect=RuntimeError("down"))
-        fallback = MockProvider(name="fallback", audio_data=b"FALLBACK")
+        fallback = MockProvider(name="fallback")
         bridge = TTSBridge(primary, fallback)
         result = await bridge.synthesize("テスト")
-        assert result.audio_data == b"FALLBACK"
+        assert result.audio_data == fallback._audio_data
 
     @pytest.mark.asyncio
     async def test_no_fallback_raises(self):
@@ -154,7 +154,7 @@ class TestTTSBridgeSynthesizeToFile:
         output = tmp_path / "out.wav"
         result = await bridge.synthesize_to_file("テスト", output)
         assert isinstance(result, SynthesisResult)
-        assert result.audio_data == b"RIFF_mock_wav"
+        assert result.audio_data == provider._audio_data
 
 
 class TestTTSBridgeListVoices:
@@ -210,7 +210,7 @@ class TestTTSBridgeSync:
         bridge = TTSBridge(provider)
         result = bridge.synthesize_sync("テスト")
         assert isinstance(result, SynthesisResult)
-        assert result.audio_data == b"RIFF_mock_wav"
+        assert result.audio_data == provider._audio_data
 
     def test_list_voices_sync(self):
         provider = MockProvider()

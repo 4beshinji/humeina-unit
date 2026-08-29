@@ -13,6 +13,7 @@ from loguru import logger
 
 from ..application.planning import ReaderPlanningAdapter, UtterancePlanner
 from ..application.synthesis import SynthesisRequest, SynthesisService
+from ..application.voice_parameters import VoiceResolutionContext
 from ..core.models import SourceRef, Utterance, VoiceIntent
 from ..core.plan import UtterancePlan
 from ..exvoice.catalog import normalize_wav
@@ -531,6 +532,20 @@ class ReadingEngine:
                 )
             )
 
+        def parameter_context_factory(item: Utterance) -> VoiceResolutionContext:
+            scene_parameters = self.param_mapper.scenes.get(item.scene, {})
+            emotion_value = self.param_mapper.emotion_styles.get(item.emotion, {})
+            if isinstance(emotion_value, Mapping):
+                emotion_parameters = dict(emotion_value)
+            elif emotion_value:
+                emotion_parameters = {"style_weights": emotion_value}
+            else:
+                emotion_parameters = {}
+            return VoiceResolutionContext(
+                scene=scene_parameters,
+                emotion=emotion_parameters,
+            )
+
         try:
             return await queue.play_plan(
                 plan,
@@ -541,6 +556,7 @@ class ReadingEngine:
                 on_played=on_played,
                 metadata_factory=metadata_factory,
                 destination_factory=destination_factory,
+                parameter_context_factory=parameter_context_factory,
             )
         finally:
             if work_dir is not None:

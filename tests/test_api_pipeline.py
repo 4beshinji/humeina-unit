@@ -9,6 +9,10 @@ from yomiage.api.models import AnalysisResult, PipelineChunk, SynthesisResult
 from yomiage.api.pipeline import Pipeline, _params_to_dict
 from yomiage.tts.base import AudioResult, TTSParams, TTSProvider
 
+from .test_audio_validation import wav_bytes
+
+MOCK_WAV = wav_bytes()
+
 
 class MockTTSProvider(TTSProvider):
     """テスト用モックTTSプロバイダー."""
@@ -19,7 +23,7 @@ class MockTTSProvider(TTSProvider):
 
     async def synthesize(self, text, voice="neutral", speed=1.0, **params):
         return AudioResult(
-            audio_data=b"RIFF_mock", format="wav", sample_rate=24000, duration=1.0
+            audio_data=MOCK_WAV, format="wav", sample_rate=24000, duration=1.0
         )
 
     async def is_available(self) -> bool:
@@ -65,7 +69,7 @@ class TestPipelineProcess:
             assert isinstance(chunk, PipelineChunk)
             assert isinstance(chunk.analysis, AnalysisResult)
             assert isinstance(chunk.audio, SynthesisResult)
-            assert chunk.audio.audio_data == b"RIFF_mock"
+            assert chunk.audio.audio_data == MOCK_WAV
 
     @pytest.mark.asyncio
     async def test_process_empty_text(self):

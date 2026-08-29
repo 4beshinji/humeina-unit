@@ -10,6 +10,7 @@ from pathlib import Path
 from loguru import logger
 
 from ..application.synthesis import SynthesisRequest, SynthesisService
+from ..application.voice_parameters import VoiceOverrides, VoiceResolutionContext
 from ..bootstrap import create_synthesis_service
 from ..core.models import VoiceIntent
 from ..tts.base import TTSProvider
@@ -59,6 +60,7 @@ class StudioSynthesizer:
         """1行を合成してWAVに書き出し、duration(秒)を返す."""
         params = self._build_params(line, mapping)
         voice = params.pop("voice_id", mapping.voice_id)
+        overrides = VoiceOverrides.from_mapping({**params, "emotion": line.emotion})
         voice_intent = _voice_intent_from_params(line, params)
         result = await self._service.synthesize(
             SynthesisRequest(
@@ -72,6 +74,7 @@ class StudioSynthesizer:
                     else mapping.provider
                 ),
                 destination=str(output_path),
+                parameter_context=VoiceResolutionContext(overrides=overrides),
                 metadata={"voice_id": voice, **params},
             )
         )
@@ -146,6 +149,7 @@ class StudioSynthesizer:
 
         params = self._build_params(line, mapping)
         voice = params.pop("voice_id", mapping.voice_id)
+        overrides = VoiceOverrides.from_mapping({**params, "emotion": line.emotion})
         voice_intent = _voice_intent_from_params(line, params)
         result = await self._service.synthesize(
             SynthesisRequest(
@@ -156,6 +160,7 @@ class StudioSynthesizer:
                     if mapping.provider == self._service.primary_provider.name
                     else mapping.provider
                 ),
+                parameter_context=VoiceResolutionContext(overrides=overrides),
                 metadata={"voice_id": voice, **params},
             )
         )

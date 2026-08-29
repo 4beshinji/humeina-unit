@@ -7,6 +7,7 @@ provide deterministic fakes without constructing a real TTS or LLM client.
 
 from __future__ import annotations
 
+import importlib.util
 import inspect
 import os
 import re
@@ -17,7 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from ..ports.tts import ProviderHealth
+from ..ports.tts import ProviderCapabilities, ProviderHealth, ProviderOutputMode
 
 CHECK_NAMES = ("provider", "llm", "ffmpeg", "storage", "sqlite")
 _SAFE_STATUSES = frozenset(
@@ -136,6 +137,9 @@ class HealthDependencies:
     ffmpeg: Any | None = None
     storage: Any | None = None
     sqlite: Any | None = None
+    slack: Any | None = None
+    slack_sdk: Any | None = None
+    vm_mount: Any | None = None
 
 
 def _coerce_check(value: Any) -> HealthCheck:
@@ -204,6 +208,9 @@ class HealthChecker:
         ffmpeg: Any | None = None,
         storage: Any | None = None,
         sqlite: Any | None = None,
+        slack: Any | None = None,
+        slack_sdk: Any | None = None,
+        vm_mount: Any | None = None,
     ) -> None:
         self.engine = engine
         self.repository = repository
@@ -220,6 +227,9 @@ class HealthChecker:
         self.ffmpeg = ffmpeg if ffmpeg is not None else supplied.ffmpeg
         self.storage = storage if storage is not None else supplied.storage
         self.sqlite = sqlite if sqlite is not None else supplied.sqlite
+        self.slack = slack if slack is not None else supplied.slack
+        self.slack_sdk = slack_sdk if slack_sdk is not None else supplied.slack_sdk
+        self.vm_mount = vm_mount if vm_mount is not None else supplied.vm_mount
 
     async def liveness(self) -> dict[str, Any]:
         """Return process liveness without touching an external dependency."""
@@ -243,6 +253,73 @@ class HealthChecker:
 
     async def ready(self) -> HealthReport:
         return await self.readiness()
+
+    async def operation_readiness(self) -> dict[str, dict[str, Any]]:
+        """Return readiness for each public operation and its required capability.
+
+        This is deliberately separate from the legacy aggregate readiness report:
+        an audio-bytes provider can serve immediate playback but cannot satisfy a
+        provider-owned batch file target, while a file-only provider has the
+        opposite capability.  No probe creates a directory, job, or connection.
+        """
+
+        capabilities = await self._healthy_provider_capabilities()
+        storage = await self._storage_check()
+        ffmpeg = await self._ffmpeg_check()
+        llm = await self._llm_check()
+        slack = await self._slack_check()
+        slack_sdk = await self._slack_sdk_check()
+        vm_mount = await self._vm_mount_check()
+
+        def provider_supports(*modes: ProviderOutputMode, format: str = "wav") -> bool:
+            required = frozenset(modes)
+            return any(
+                bool(capability.output_modes.intersection(required))
+                and format in capability.audio_formats
+                for capability in capabilities.values()
+            )
+
+        immediate_provider = provider_supports(ProviderOutputMode.AUDIO_BYTES)
+        local_file_provider = provider_supports(ProviderOutputMode.LOCAL_FILE)
+        vm_file_provider = provider_supports(ProviderOutputMode.VM_FILE)
+        batch_provider = local_file_provider or vm_file_provider
+
+        def report(*requirements: tuple[str, bool]) -> dict[str, Any]:
+            missing = [name for name, available in requirements if not available]
+            return {"ready": not missing, "missing": missing}
+
+        batch_requirements = [
+            ("provider", batch_provider),
+            ("storage", storage.healthy),
+        ]
+        if vm_file_provider and not local_file_provider:
+            batch_requirements.append(("vm_mount", vm_mount.healthy))
+
+        operations = {
+            "immediate_playback": report(("provider", immediate_provider)),
+            "batch_audio": report(*batch_requirements),
+            "video": report(
+                *batch_requirements,
+                ("ffmpeg", ffmpeg.healthy),
+            ),
+            "slack": report(
+                ("provider", immediate_provider),
+                ("llm", llm.healthy),
+                ("slack", slack.healthy),
+                ("slack_sdk", slack_sdk.healthy),
+            ),
+        }
+
+        codec = self._configured_video_codec()
+        if codec and not self._ffmpeg_codec_available(codec):
+            # A codec is only marked missing when the injected ffmpeg dependency
+            # explicitly declares a capability set.  A path-only executable is
+            # still covered by the real-environment codec smoke in RT-010.
+            declared = self._declared_ffmpeg_codecs()
+            if declared is not None:
+                operations["video"]["missing"].append(f"codec:{codec}")
+                operations["video"]["ready"] = False
+        return operations
 
     def _provider_candidates(self) -> dict[str, Any]:
         source = self.providers
@@ -269,6 +346,27 @@ class HealthChecker:
         if isinstance(source, Sequence) and not isinstance(source, (str, bytes, bytearray)):
             return {str(getattr(item, "name", index)): item for index, item in enumerate(source)}
         return {str(getattr(source, "name", "primary")): source}
+
+    async def _healthy_provider_capabilities(
+        self,
+    ) -> dict[str, ProviderCapabilities]:
+        """Return only healthy providers with the typed capability contract."""
+
+        available: dict[str, ProviderCapabilities] = {}
+        for name, provider in self._provider_candidates().items():
+            capabilities = getattr(provider, "capabilities", None)
+            if not isinstance(capabilities, ProviderCapabilities):
+                continue
+            try:
+                method = getattr(provider, "health", None)
+                if not callable(method):
+                    method = getattr(provider, "is_available", None)
+                value = await _call(method) if callable(method) else False
+                if _coerce_check(value).healthy:
+                    available[name] = capabilities
+            except Exception:
+                continue
+        return available
 
     async def _provider_check(self) -> HealthCheck:
         candidates = self._provider_candidates()
@@ -348,6 +446,78 @@ class HealthChecker:
         except Exception:
             return _failure()
 
+    def _configured_video_codec(self) -> str | None:
+        video = self.config.get("video", {})
+        if not isinstance(video, Mapping) or video.get("enabled") is False:
+            return None
+        codec = video.get("codec")
+        return str(codec) if codec else None
+
+    def _declared_ffmpeg_codecs(self) -> frozenset[str] | None:
+        candidate = self.ffmpeg
+        codecs: Any | None = None
+        if isinstance(candidate, Mapping):
+            codecs = candidate.get("codecs")
+        elif candidate is not None:
+            codecs = getattr(candidate, "codecs", None)
+        if codecs is None:
+            return None
+        if isinstance(codecs, Mapping):
+            return frozenset(str(name) for name, enabled in codecs.items() if enabled)
+        if isinstance(codecs, Sequence) and not isinstance(codecs, (str, bytes, bytearray)):
+            return frozenset(str(name) for name in codecs)
+        return frozenset()
+
+    def _ffmpeg_codec_available(self, codec: str) -> bool:
+        declared = self._declared_ffmpeg_codecs()
+        return declared is None or codec in declared
+
+    async def _slack_check(self) -> HealthCheck:
+        candidate = self.slack
+        if candidate is not None:
+            try:
+                return _coerce_check(await _call(candidate))
+            except Exception:
+                return _failure()
+        config = self.config.get("slack", {})
+        if not isinstance(config, Mapping) or not bool(config.get("enabled", False)):
+            return HealthCheck(False, "not_configured")
+        configured = bool(config.get("bot_token")) and bool(config.get("app_token"))
+        return HealthCheck(configured, "healthy" if configured else "not_configured")
+
+    async def _slack_sdk_check(self) -> HealthCheck:
+        """Check the optional SDK separately from Slack token configuration."""
+
+        candidate = self.slack_sdk
+        if candidate is not None:
+            try:
+                return _coerce_check(await _call(candidate))
+            except Exception:
+                return _failure()
+        try:
+            available = importlib.util.find_spec("slack_sdk") is not None
+        except (ImportError, ValueError):
+            available = False
+        return HealthCheck(available, "healthy" if available else "unavailable")
+
+    async def _vm_mount_check(self) -> HealthCheck:
+        """Check the provider-visible VM share configuration without probing it."""
+
+        candidate = self.vm_mount
+        if candidate is None:
+            batch = self.config.get("batch", {})
+            if isinstance(batch, Mapping):
+                candidate = batch.get("voisona_vm_mount")
+        if callable(candidate):
+            try:
+                return _coerce_check(await _call(candidate))
+            except Exception:
+                return _failure()
+        if isinstance(candidate, bool):
+            return _coerce_check(candidate)
+        configured = isinstance(candidate, (str, Path)) and bool(str(candidate).strip())
+        return HealthCheck(configured, "healthy" if configured else "not_configured")
+
     def _storage_paths(self) -> list[Path]:
         value = self.storage
         if value is None:
@@ -378,14 +548,38 @@ class HealthChecker:
             value = self.config.get("storage", self.config.get("paths", {}))
         if isinstance(value, Mapping):
             entries: list[tuple[str, Path]] = []
-            for label, keys in (
-                ("data", ("data_dir", "data")),
-                ("output", ("output_dir", "output")),
-            ):
-                item = next((value.get(key) for key in keys if value.get(key) is not None), None)
-                path = _path_value(item)
-                if path is not None:
-                    entries.append((label, path))
+            data = next(
+                (value.get(key) for key in ("data_dir", "data") if value.get(key) is not None),
+                None,
+            )
+            if data is not None and (path := _path_value(data)) is not None:
+                entries.append(("data", path))
+
+            output: Any | None = None
+            if self.storage is not None:
+                output = next(
+                    (
+                        value.get(key)
+                        for key in ("output_dir", "output")
+                        if value.get(key) is not None
+                    ),
+                    None,
+                )
+            if output is None:
+                batch = self.config.get("batch", {})
+                if isinstance(batch, Mapping):
+                    output = batch.get("output_dir")
+            if output is None:
+                output = next(
+                    (
+                        value.get(key)
+                        for key in ("output_dir", "output")
+                        if value.get(key) is not None
+                    ),
+                    None,
+                )
+            if output is not None and (path := _path_value(output)) is not None:
+                entries.append(("output", path))
             return entries
         paths = self._storage_paths()
         return [(str(index), path) for index, path in enumerate(paths)]
@@ -401,13 +595,20 @@ class HealthChecker:
         if not entries:
             return HealthCheck(False, "not_configured")
         statuses: dict[str, bool] = {}
+        capacity: dict[str, int] = {}
         for label, path in entries:
             try:
                 statuses[label] = path.is_dir() and os.access(path, os.W_OK | os.X_OK)
+                capacity[label] = shutil.disk_usage(path).free if statuses[label] else 0
             except OSError:
                 statuses[label] = False
+                capacity[label] = 0
         healthy = all(statuses.values())
-        return HealthCheck(healthy, "healthy" if healthy else "unwritable", {"paths": statuses})
+        return HealthCheck(
+            healthy,
+            "healthy" if healthy else "unwritable",
+            {"paths": statuses, "capacity_bytes": capacity},
+        )
 
     async def _sqlite_check(self) -> HealthCheck:
         target = self.sqlite if self.sqlite is not None else self.repository

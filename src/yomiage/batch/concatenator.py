@@ -4,6 +4,7 @@ from pathlib import Path
 
 from loguru import logger
 
+from ..application.operations import ThreadProcessRunner
 from ..tts.audio_utils import concat_wav_files
 from .manifest import BatchManifest
 
@@ -11,9 +12,16 @@ from .manifest import BatchManifest
 class Concatenator:
     """ffmpeg concat demuxer でWAVファイルを結合."""
 
-    def __init__(self, output_format: str = "wav", cleanup: bool = False):
+    def __init__(
+        self,
+        output_format: str = "wav",
+        cleanup: bool = False,
+        *,
+        process_runner: ThreadProcessRunner | None = None,
+    ):
         self.output_format = output_format
         self.cleanup = cleanup
+        self.process_runner = process_runner
 
     def concat_chapter(
         self,
@@ -63,7 +71,7 @@ class Concatenator:
         suffix = ".partial" if partial else ""
         output_name = f"chapter_{chapter_index + 1:03d}{suffix}.{self.output_format}"
         output_path = work_dir / output_name
-        concat_wav_files(wav_files, output_path, self.output_format)
+        self._concat_files(wav_files, output_path)
 
         if self.cleanup:
             for f in wav_files:
@@ -103,7 +111,7 @@ class Concatenator:
         suffix = ".partial" if partial else ""
         output_name = f"full{suffix}.{self.output_format}"
         output_path = work_dir / output_name
-        concat_wav_files(wav_files, output_path, self.output_format)
+        self._concat_files(wav_files, output_path)
 
         if self.cleanup:
             for f in wav_files:
@@ -159,7 +167,7 @@ class Concatenator:
 
             shutil.copy2(chapter_files[0], output_path)
         else:
-            concat_wav_files(chapter_files, output_path, self.output_format)
+            self._concat_files(chapter_files, output_path)
 
         if self.cleanup:
             # 個別WAVを削除（チャプターファイルは残す）
@@ -172,6 +180,12 @@ class Concatenator:
         manifest.save(base_dir)
         logger.info(f"Full output: {output_path}")
         return output_path
+
+    def _concat_files(self, files: list[Path], output: Path) -> None:
+        kwargs = {}
+        if self.process_runner is not None:
+            kwargs["process_runner"] = self.process_runner
+        concat_wav_files(files, output, self.output_format, **kwargs)
 
     @staticmethod
     def _chapter_has_unresolved_audio(

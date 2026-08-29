@@ -9,6 +9,7 @@ from pathlib import Path
 
 from loguru import logger
 
+from ..application.operations import ThreadProcessRunner
 from ..batch.manifest import BatchManifest
 from .asset_manager import AssetManager
 from .config import VideoConfig
@@ -26,13 +27,24 @@ class VideoComposer:
     Phase 4: トランジション・タイトルカード
     """
 
-    def __init__(self, config: VideoConfig, work_dir: Path):
+    def __init__(
+        self,
+        config: VideoConfig,
+        work_dir: Path,
+        *,
+        process_runner: ThreadProcessRunner | None = None,
+    ):
         self.config = config
         self.work_dir = work_dir
         self.video_dir = work_dir / "video"
         self.video_dir.mkdir(parents=True, exist_ok=True)
         self.asset_manager = AssetManager(config, work_dir.parent.parent)
         self.subtitle_gen = SubtitleGenerator(config)
+        self.process_runner = process_runner
+
+    def _run_process(self, command: list[str], **kwargs: object):
+        run = self.process_runner.run if self.process_runner else subprocess.run
+        return run(command, **kwargs)
 
     def compose_chapter(
         self,
@@ -137,7 +149,11 @@ class VideoComposer:
 
         from .audio_mixer import AudioMixer
 
-        mixer = AudioMixer(self.config, self.asset_manager)
+        mixer = AudioMixer(
+            self.config,
+            self.asset_manager,
+            process_runner=self.process_runner,
+        )
         mixed_path = self.video_dir / "_mixed_audio.wav"
         return mixer.mix_chapter_audio(
             tts_audio, events, scene_segments, mixed_path
@@ -215,7 +231,7 @@ class VideoComposer:
             "-an",
             str(output),
         ]
-        result = subprocess.run(
+        result = self._run_process(
             cmd, capture_output=True, text=True, timeout=300
         )
         if result.returncode != 0:
@@ -288,7 +304,7 @@ class VideoComposer:
                 "-an",
                 str(seg_path),
             ]
-            result = subprocess.run(
+            result = self._run_process(
                 cmd, capture_output=True, text=True, timeout=300
             )
             if result.returncode != 0:
@@ -372,7 +388,7 @@ class VideoComposer:
             str(output),
         ]
 
-        result = subprocess.run(
+        result = self._run_process(
             cmd, capture_output=True, text=True, timeout=600
         )
         if result.returncode != 0:
@@ -403,7 +419,7 @@ class VideoComposer:
                 "-c", "copy",
                 str(output),
             ]
-            result = subprocess.run(
+            result = self._run_process(
                 cmd, capture_output=True, text=True, timeout=300
             )
             if result.returncode != 0:
@@ -440,7 +456,7 @@ class VideoComposer:
             return False
 
         logger.debug(f"Portrait overlay: {len(cmd)} args")
-        result = subprocess.run(
+        result = self._run_process(
             cmd, capture_output=True, text=True, timeout=600
         )
         if result.returncode != 0:
@@ -464,7 +480,7 @@ class VideoComposer:
 
         from .frame_builder import TitleCardGenerator
 
-        gen = TitleCardGenerator(self.config)
+        gen = TitleCardGenerator(self.config, process_runner=self.process_runner)
         return gen.generate(
             title, subtitle=subtitle, output_dir=self.video_dir
         )
@@ -497,7 +513,7 @@ class VideoComposer:
             "-movflags", "+faststart",
             str(output),
         ]
-        result = subprocess.run(
+        result = self._run_process(
             cmd, capture_output=True, text=True, timeout=600
         )
         if result.returncode != 0:
@@ -538,7 +554,7 @@ class VideoComposer:
                 "-codec:a", "pcm_s16le",
                 str(output),
             ]
-            result = subprocess.run(
+            result = self._run_process(
                 cmd, capture_output=True, text=True, timeout=300
             )
             if result.returncode != 0:
@@ -593,7 +609,7 @@ class VideoComposer:
                 "-movflags", "+faststart",
                 str(output),
             ]
-            result = subprocess.run(
+            result = self._run_process(
                 cmd, capture_output=True, text=True, timeout=600
             )
             if result.returncode != 0:

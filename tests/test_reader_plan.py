@@ -20,8 +20,15 @@ from yomiage.ports.tts import (
 )
 from yomiage.reader.bookmark import BookmarkManager
 from yomiage.reader.engine import ReadingEngine
+from yomiage.reader.param_mapper import ParamMapper
 from yomiage.reader.playback import UtterancePlaybackQueue
 from yomiage.tts.base import AudioResult
+
+from .test_audio_validation import wav_bytes
+
+
+def _audio_for(text: str) -> bytes:
+    return wav_bytes(frames=max(1, len(text)))
 
 
 class FakeProvider:
@@ -47,7 +54,7 @@ class FakeProvider:
         except asyncio.CancelledError:
             self.cancelled += 1
             raise
-        return ProviderSynthesisResult(audio_data=request.text.encode())
+        return ProviderSynthesisResult(audio_data=_audio_for(request.text))
 
     async def close(self) -> None:
         self.closed = True
@@ -80,7 +87,7 @@ class LegacyProvider:
         return True
 
     async def synthesize(self, text: str, **_kwargs) -> AudioResult:
-        return AudioResult(audio_data=text.encode())
+        return AudioResult(audio_data=_audio_for(text))
 
     async def close(self) -> None:
         self.closed = True
@@ -135,8 +142,12 @@ async def test_playback_queue_preserves_plan_order_with_lookahead() -> None:
 
     results = await queue.play_plan(make_plan())
 
-    assert [value.audio_data for value in results] == [b"alpha", b"beta", b"gamma"]
-    assert played == [b"alpha", b"beta", b"gamma"]
+    assert [value.audio_data for value in results] == [
+        _audio_for("alpha"),
+        _audio_for("beta"),
+        _audio_for("gamma"),
+    ]
+    assert played == [_audio_for("alpha"), _audio_for("beta"), _audio_for("gamma")]
     assert [item.utterance_id for item in provider.calls] == ["u-0000", "u-0001", "u-0002"]
     assert provider.closed is False
 
@@ -214,6 +225,77 @@ async def test_read_plan_uses_utterance_voice_intent_and_bookmark_reference(tmp_
     assert latest.source_ref is not None
     assert latest.source_ref.start == 11
     assert service._closed is False
+
+
+@pytest.mark.asyncio
+async def test_f16_reader_scene_and_emotion_change_provider_boundary_parameters(
+    tmp_path: Path,
+) -> None:
+    provider = FakeProvider()
+    service = SynthesisService(provider)
+    mapper = ParamMapper(
+        {
+            "scenes": {
+                "daily": {"speed": 1.0, "pitch": 0.0},
+                "battle": {"speed": 1.2, "pitch": 0.2},
+            },
+            "emotion_styles": {
+                "neutral": {
+                    "param_offsets": {"intonation": 1.0},
+                    "style_weights": [1.0, 0.0],
+                },
+                "angry": {
+                    "param_offsets": {"intonation": 1.5},
+                    "style_weights": [0.0, 1.0],
+                },
+            },
+        }
+    )
+    plan = UtterancePlan(
+        schema_version=1,
+        plan_id="scene-parameter-plan",
+        source_fingerprint="source",
+        config_fingerprint="config",
+        utterances=(
+            Utterance(
+                id="daily",
+                order=0,
+                text="日常",
+                segment_type=SegmentType.NARRATION,
+                scene="daily",
+                emotion="neutral",
+                intensity=0.0,
+            ),
+            Utterance(
+                id="battle",
+                order=1,
+                text="戦闘",
+                segment_type=SegmentType.DIALOGUE,
+                scene="battle",
+                emotion="angry",
+                intensity=1.0,
+            ),
+        ),
+    )
+    engine = ReadingEngine(
+        FakeTTSManager(provider),
+        synthesis_service=service,
+        param_mapper=mapper,
+        bookmark_manager=BookmarkManager(tmp_path / "bookmarks"),
+        playback_queue=UtterancePlaybackQueue(service, play_audio=lambda _data: None),
+    )
+
+    await engine.read_plan(plan)
+
+    daily, battle = [request.resolved_parameters for request in provider.calls]
+    assert daily is not None and battle is not None
+    assert daily.speaking_rate == pytest.approx(1.0)
+    assert battle.speaking_rate == pytest.approx(1.2)
+    assert daily.intonation == pytest.approx(1.0)
+    assert battle.intonation == pytest.approx(1.5)
+    assert daily.style_weights != battle.style_weights
+    assert battle.style_weights == pytest.approx((0.0, 1.0))
+    await service.close()
 
 
 @pytest.mark.asyncio
@@ -309,4 +391,4 @@ async def test_read_url_uses_plan_path_for_multiple_speakers(monkeypatch, tmp_pa
     await engine.read_url("https://example.invalid/book")
 
     assert [item.utterance_id for item in provider.calls] == ["u-0000", "u-0001", "u-0002"]
-    assert played == [b"alpha", b"beta", b"gamma"]
+    assert played == [_audio_for("alpha"), _audio_for("beta"), _audio_for("gamma")]

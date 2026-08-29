@@ -63,6 +63,7 @@ class TTSManager:
         self._stop_event = asyncio.Event()
         self._synth_task: asyncio.Task | None = None
         self._play_task: asyncio.Task | None = None
+        self._owned_synthesis_tasks: set[asyncio.Task[AudioResult]] = set()
 
     @property
     def service(self) -> "SynthesisService | None":
@@ -114,12 +115,23 @@ class TTSManager:
 
     async def start(self) -> None:
         """Start the synthesis and playback worker loops."""
+        if any(
+            task is not None and not task.done()
+            for task in (self._synth_task, self._play_task)
+        ):
+            return
         self._stop_event.clear()
+        self._pause_event.set()
         self._synth_task = asyncio.create_task(self._synth_loop())
         self._play_task = asyncio.create_task(self._play_loop())
 
     async def drain(self) -> None:
         """Wait for all queued items to be processed, then stop workers."""
+        if not any(
+            task is not None and not task.done()
+            for task in (self._synth_task, self._play_task)
+        ):
+            return
         await self._queue.put(None)  # sentinel → synth_loop exits → play_loop exits
         if self._synth_task:
             await self._synth_task
@@ -129,12 +141,22 @@ class TTSManager:
     async def stop(self) -> None:
         """Stop all workers immediately and clear queues."""
         self._stop_event.set()
-        await self._queue.put(None)
-        await self._audio_queue.put(None)
-        if self._synth_task:
-            await self._synth_task
-        if self._play_task:
-            await self._play_task
+        self._pause_event.set()
+        workers = [
+            task
+            for task in (self._synth_task, self._play_task)
+            if task is not None and not task.done()
+        ]
+        for task in workers:
+            task.cancel()
+        for task in tuple(self._owned_synthesis_tasks):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(
+            *workers,
+            *tuple(self._owned_synthesis_tasks),
+            return_exceptions=True,
+        )
         self._clear_queues()
 
     def pause(self) -> None:
@@ -217,6 +239,7 @@ class TTSManager:
         start = asyncio.get_event_loop().time()
         try:
             from ..application.synthesis import SynthesisRequest
+            from ..application.voice_parameters import VoiceOverrides, VoiceResolutionContext
             from ..core.models import VoiceIntent
 
             try:
@@ -234,7 +257,14 @@ class TTSManager:
             except (TypeError, ValueError):
                 intent = VoiceIntent()
             result = await self._ensure_service().synthesize(
-                SynthesisRequest(text=text, voice_intent=intent, metadata=kwargs)
+                SynthesisRequest(
+                    text=text,
+                    voice_intent=intent,
+                    parameter_context=VoiceResolutionContext(
+                        overrides=VoiceOverrides.from_mapping(kwargs)
+                    ),
+                    metadata=kwargs,
+                )
             )
             duration_ms = (asyncio.get_event_loop().time() - start) * 1000
             if self._hooks:
@@ -293,10 +323,10 @@ class TTSManager:
                     await self._audio_queue.put(None)
                     return
                 if isinstance(item, RawAudioItem):
-                    pending.append(asyncio.create_task(self._passthrough(item)))
+                    pending.append(self._spawn_synthesis(self._passthrough(item)))
                 else:
                     text, params = item
-                    pending.append(asyncio.create_task(self._safe_synthesize(text, params)))
+                    pending.append(self._spawn_synthesis(self._safe_synthesize(text, params)))
 
             if not pending:
                 # Nothing in queue yet, wait for next item
@@ -305,14 +335,20 @@ class TTSManager:
                     await self._audio_queue.put(None)
                     return
                 if isinstance(item, RawAudioItem):
-                    pending.append(asyncio.create_task(self._passthrough(item)))
+                    pending.append(self._spawn_synthesis(self._passthrough(item)))
                 else:
                     text, params = item
-                    pending.append(asyncio.create_task(self._safe_synthesize(text, params)))
+                    pending.append(self._spawn_synthesis(self._safe_synthesize(text, params)))
 
             # Wait for the first (oldest) task to complete — preserves order
             result = await pending.pop(0)
             await self._audio_queue.put(result)
+
+    def _spawn_synthesis(self, coroutine: Any) -> asyncio.Task[AudioResult]:
+        task = asyncio.create_task(coroutine)
+        self._owned_synthesis_tasks.add(task)
+        task.add_done_callback(self._owned_synthesis_tasks.discard)
+        return task
 
     @staticmethod
     async def _passthrough(item: RawAudioItem) -> AudioResult:

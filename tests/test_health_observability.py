@@ -17,6 +17,8 @@ from yomiage.ports.tts import (
 )
 from yomiage.server import ServerDependencies, create_app
 
+from .test_audio_validation import wav_bytes
+
 
 class _Provider:
     name = "fake"
@@ -31,7 +33,7 @@ class _Provider:
         return []
 
     async def synthesize(self, request: ProviderSynthesisRequest) -> ProviderSynthesisResult:
-        return ProviderSynthesisResult(audio_data=b"RIFF")
+        return ProviderSynthesisResult(audio_data=wav_bytes())
 
     async def close(self) -> None:
         return None

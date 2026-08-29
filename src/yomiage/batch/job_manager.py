@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
+from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -11,6 +13,7 @@ from loguru import logger
 
 from ..api.hooks import EventHooks
 from ..api.metrics import MetricsCollector
+from ..application.operations import run_blocking_process_operation
 from ..core.identity import new_job_id
 from ..ports.sources import URLPolicy
 from .engine import BatchEngine
@@ -148,7 +151,12 @@ class BatchJobManager:
         async def progress_callback(status: str, percent: float, message: str) -> None:
             await self._notify(job, status, percent, message)
 
+        resources = AsyncExitStack()
+        await resources.__aenter__()
         try:
+            job_scope = getattr(getattr(engine, "llm", None), "job_scope", None)
+            if callable(job_scope):
+                await resources.enter_async_context(job_scope(job.id))
             await self._notify(job, "analyzing", 5.0, "テキストを分析中です")
             manifest = await engine.analyze(job.url)
             job.work_id = manifest.work_id
@@ -194,7 +202,11 @@ class BatchJobManager:
             concat_kwargs = {"allow_partial": bool(allow_partial)}
             if job.run_id:
                 concat_kwargs["run_id"] = job.run_id
-            output_path = engine.concat(manifest.work_id, **concat_kwargs)
+            output_path = await run_blocking_process_operation(
+                engine.concat,
+                manifest.work_id,
+                **concat_kwargs,
+            )
 
             if output_path is None:
                 job.result = _job_result(manifest, None, completion_status)
@@ -207,7 +219,11 @@ class BatchJobManager:
                 video_kwargs = {"style": style}
                 if job.run_id:
                     video_kwargs["run_id"] = job.run_id
-                video_path = engine.video(manifest.work_id, **video_kwargs)
+                video_path = await run_blocking_process_operation(
+                    engine.video,
+                    manifest.work_id,
+                    **video_kwargs,
+                )
                 if video_path:
                     output_path = video_path
 
@@ -229,6 +245,15 @@ class BatchJobManager:
             logger.exception(f"Batch job {job_id} failed")
             job.error = str(exc)
             await self._notify(job, "failed", job.percent, f"失敗しました: {exc}")
+        finally:
+            try:
+                close = getattr(engine, "close", None)
+                if callable(close):
+                    result = close()
+                    if inspect.isawaitable(result):
+                        await result
+            finally:
+                await resources.aclose()
 
     async def _notify(
         self, job: BatchJob, status: str, percent: float, message: str

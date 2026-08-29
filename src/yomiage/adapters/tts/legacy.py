@@ -5,14 +5,20 @@ from __future__ import annotations
 import inspect
 import tempfile
 import uuid
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Protocol, runtime_checkable
 
+from ...application.voice_parameters import translate_provider_parameters
 from ...ports.tts import (
+    MemoryTarget,
+    ProviderCapabilities,
     ProviderHealth,
+    ProviderOutputMode,
     ProviderSynthesisRequest,
     ProviderSynthesisResult,
     ProviderVoice,
+    RemotePlaybackTarget,
+    SharedFileTarget,
     TTSProviderPort,
     normalize_voice_list,
 )
@@ -38,6 +44,10 @@ class LegacyTTSProviderAdapter:
     def __init__(self, provider: Any, *, name: str | None = None) -> None:
         self.provider = provider
         self.name = name or str(provider.name)
+        output_modes = {ProviderOutputMode.AUDIO_BYTES}
+        if isinstance(provider, TTSProvider) or isinstance(provider, FileSynthesisProvider):
+            output_modes.add(ProviderOutputMode.LOCAL_FILE)
+        self.capabilities = ProviderCapabilities(output_modes=frozenset(output_modes))
 
     async def health(self) -> ProviderHealth:
         method = getattr(self.provider, "is_available", None)
@@ -64,6 +74,24 @@ class LegacyTTSProviderAdapter:
 
     async def synthesize(self, request: ProviderSynthesisRequest) -> ProviderSynthesisResult:
         kwargs = dict(request.metadata)
+        if request.resolved_parameters is not None and self.name in {
+            "voisona",
+            "voicevox",
+            "voicepeak",
+        }:
+            for key in (
+                "speed",
+                "pitch",
+                "volume",
+                "intonation",
+                "huskiness",
+                "alp",
+                "style_weights",
+            ):
+                kwargs.pop(key, None)
+            kwargs["_native_parameters"] = dict(
+                translate_provider_parameters(self.name, request.resolved_parameters).values
+            )
         # Batch adapters pass a few execution-only values (run directory, VM mount, and
         # provider-specific voice override) through request metadata.  They must never leak
         # into the legacy provider's public kwargs.
@@ -106,8 +134,13 @@ class LegacyTTSProviderAdapter:
             value = file_method(request.text, temporary_path, voice=voice, **kwargs)
         else:
             value = self.provider.synthesize(request.text, voice=voice, **kwargs)
-        if inspect.isawaitable(value):
-            value = await value
+        try:
+            if inspect.isawaitable(value):
+                value = await value
+        except BaseException:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
+            raise
         if isinstance(value, ProviderSynthesisResult):
             return value
         data = getattr(value, "audio_data", value if isinstance(value, bytes) else None)
@@ -170,7 +203,57 @@ class VoisonaFileProviderAdapter(LegacyTTSProviderAdapter):
     以降の検証・atomic publishは SynthesisService/ArtifactStore が担当する。
     """
 
+    def __init__(self, provider: Any, *, name: str | None = None) -> None:
+        super().__init__(provider, name=name)
+        self.capabilities = ProviderCapabilities(
+            output_modes=frozenset(
+                {
+                    ProviderOutputMode.AUDIO_BYTES,
+                    ProviderOutputMode.VM_FILE,
+                    ProviderOutputMode.REMOTE_PLAYBACK,
+                }
+            )
+        )
+
     async def synthesize(self, request: ProviderSynthesisRequest) -> ProviderSynthesisResult:
+        if isinstance(request.target, RemotePlaybackTarget):
+            value = self.provider.synthesize(
+                request.text,
+                voice=(request.voice.id if request.voice else "neutral"),
+                **self._provider_kwargs(request),
+            )
+            if inspect.isawaitable(value):
+                value = await value
+            return ProviderSynthesisResult(
+                audio_data=None,
+                format=getattr(value, "format", request.target.format),
+                duration=getattr(value, "duration", None),
+                output_mode=ProviderOutputMode.REMOTE_PLAYBACK,
+                metadata={"remote_playback": True},
+            )
+
+        if isinstance(request.target, MemoryTarget) and not request.destination:
+            handle = tempfile.NamedTemporaryFile(suffix=f".{request.target.format}", delete=False)
+            handle.close()
+            temporary = Path(handle.name)
+            try:
+                value = self.provider.synthesize_to_file(
+                    request.text,
+                    str(temporary),
+                    voice=(request.voice.id if request.voice else "neutral"),
+                    **self._provider_kwargs(request),
+                )
+                if inspect.isawaitable(value):
+                    value = await value
+                data = temporary.read_bytes() if temporary.is_file() else b""
+                return ProviderSynthesisResult(
+                    audio_data=data or None,
+                    format=getattr(value, "format", request.target.format),
+                    duration=getattr(value, "duration", None),
+                )
+            finally:
+                temporary.unlink(missing_ok=True)
+
         if not request.destination:
             return await super().synthesize(request)
 
@@ -185,27 +268,18 @@ class VoisonaFileProviderAdapter(LegacyTTSProviderAdapter):
         run_dir.mkdir(parents=True, exist_ok=True)
         filename = Path(request.destination).name
         temporary = run_dir / f".{filename}.{uuid.uuid4().hex}.tmp.wav"
-        vm_path = f"{vm_mount}\\{run_dir.name}\\{temporary.name}"
+        if isinstance(request.target, SharedFileTarget):
+            provider_relative = PurePosixPath(request.target.provider_relative_path or "")
+            relative = provider_relative.parent / temporary.name
+        else:
+            output_root_value = metadata.get("output_root")
+            relative_run = self._relative_run_path(run_dir, output_root_value)
+            relative = PurePosixPath(*relative_run.parts) / temporary.name
+        vm_root = vm_mount if vm_mount.endswith("\\") else f"{vm_mount}\\"
+        vm_path = str(PureWindowsPath(vm_root, *relative.parts))
 
-        kwargs = dict(metadata)
-        kwargs.pop("run_dir", None)
-        kwargs.pop("vm_mount", None)
-        voice_override = kwargs.pop("voice_id", None)
-        if voice_override is None:
-            voice_override = kwargs.pop("speaker_id", None)
-        if voice_override is not None:
-            kwargs["voice_id"] = voice_override
-        for key in ("entry_index", "sentence_index", "utterance_id"):
-            kwargs.pop(key, None)
-        voice = str(
-            voice_override or (request.voice.id if request.voice is not None else "neutral")
-        )
-        kwargs.setdefault("speed", request.voice_intent.speaking_rate)
-        kwargs.setdefault("pitch", request.voice_intent.pitch)
-        kwargs.setdefault("volume", request.voice_intent.volume)
-        kwargs.setdefault("intonation", request.voice_intent.intonation)
-        kwargs.setdefault("emotion", request.voice_intent.emotion.value)
-        kwargs.setdefault("intensity", request.voice_intent.intensity)
+        kwargs = self._provider_kwargs(request)
+        voice = str(request.voice.id if request.voice is not None else "neutral")
 
         try:
             value = self.provider.synthesize_to_file(
@@ -232,6 +306,58 @@ class VoisonaFileProviderAdapter(LegacyTTSProviderAdapter):
         except BaseException:
             temporary.unlink(missing_ok=True)
             raise
+
+    @staticmethod
+    def _relative_run_path(run_dir: Path, output_root: object | None) -> Path:
+        if output_root is not None:
+            root = Path(str(output_root)).expanduser().resolve()
+            try:
+                return run_dir.relative_to(root)
+            except ValueError as exc:
+                raise ValueError("run_dir must be inside output_root") from exc
+        try:
+            works_index = run_dir.parts.index("works")
+        except ValueError:
+            return Path(run_dir.name)
+        return Path(*run_dir.parts[works_index:])
+
+    @staticmethod
+    def _provider_kwargs(request: ProviderSynthesisRequest) -> dict[str, Any]:
+        kwargs = dict(request.metadata)
+        for key in (
+            "run_dir",
+            "vm_mount",
+            "output_root",
+            "entry_index",
+            "sentence_index",
+            "utterance_id",
+        ):
+            kwargs.pop(key, None)
+        voice_override = kwargs.pop("voice_id", kwargs.pop("speaker_id", None))
+        if voice_override is not None:
+            kwargs["voice_id"] = voice_override
+        if request.resolved_parameters is not None:
+            for key in (
+                "speed",
+                "pitch",
+                "volume",
+                "intonation",
+                "huskiness",
+                "alp",
+                "style_weights",
+            ):
+                kwargs.pop(key, None)
+            provider = str(getattr(request.voice, "provider", "") or "voisona")
+            kwargs["_native_parameters"] = dict(
+                translate_provider_parameters(provider, request.resolved_parameters).values
+            )
+        kwargs.setdefault("speed", request.voice_intent.speaking_rate)
+        kwargs.setdefault("pitch", request.voice_intent.pitch)
+        kwargs.setdefault("volume", request.voice_intent.volume)
+        kwargs.setdefault("intonation", request.voice_intent.intonation)
+        kwargs.setdefault("emotion", request.voice_intent.emotion.value)
+        kwargs.setdefault("intensity", request.voice_intent.intensity)
+        return kwargs
 
 
 __all__ = [

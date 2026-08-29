@@ -71,7 +71,11 @@ class StudioEngine:
         # 外部からserviceを注入した場合、Providerはcomposition root側の所有物である。
         # ここでlegacy Providerを生成すると未使用のセッションがリークするため、完全に
         # 構築をスキップする。
-        providers = {} if self._synthesis_service is not None else self._create_providers(mappings)
+        providers = (
+            {}
+            if self._synthesis_service is not None
+            else self._create_providers(mappings, primary=default_provider)
+        )
 
         # 4. ファイル命名 + 共通service cache
         namer = FileNamer(format=fmt, max_slug_chars=max_slug)
@@ -172,7 +176,11 @@ class StudioEngine:
             speaker=line.speaker, provider=default_provider, voice_id=""
         ))
 
-        providers = {} if self._synthesis_service is not None else self._create_providers(mappings)
+        providers = (
+            {}
+            if self._synthesis_service is not None
+            else self._create_providers(mappings, primary=default_provider)
+        )
         service = self._synthesis_service or create_synthesis_service(
             providers,
             primary=default_provider,
@@ -245,12 +253,19 @@ class StudioEngine:
 
         return mappings
 
-    def _create_providers(self, mappings: dict[str, SpeakerMapping]) -> dict:
+    def _create_providers(
+        self,
+        mappings: dict[str, SpeakerMapping],
+        *,
+        primary: str | None = None,
+    ) -> dict:
         """必要なTTSプロバイダーを初期化."""
         needed = {m.provider for m in mappings.values()}
-        fallback = self._configured_fallback_provider(
-            self.config.get("studio", {}).get("default_provider", "voicevox")
+        resolved_primary = primary or self.config.get("studio", {}).get(
+            "default_provider", "voicevox"
         )
+        needed.add(str(resolved_primary))
+        fallback = self._configured_fallback_provider(str(resolved_primary))
         if fallback:
             needed.add(fallback)
         providers = create_studio_providers(self.config, needed)

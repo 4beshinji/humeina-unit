@@ -10,10 +10,14 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Mapping, Protocol, Sequence, runtime_checkable
+from pathlib import PurePosixPath
+from typing import TYPE_CHECKING, Any, Mapping, Protocol, Sequence, runtime_checkable
 
 from ..core.models import VoiceIntent
 from .artifacts import ArtifactRef
+
+if TYPE_CHECKING:
+    from ..application.voice_parameters import ResolvedVoiceParameters
 
 
 class ProviderErrorCategory(str, Enum):
@@ -37,6 +41,104 @@ RETRYABLE_ERROR_CATEGORIES = frozenset(
         ProviderErrorCategory.RATE_LIMIT,
     }
 )
+
+
+class ProviderOutputMode(str, Enum):
+    """Providerが1 operationで生成できる出力形態。"""
+
+    AUDIO_BYTES = "audio_bytes"
+    LOCAL_FILE = "local_file"
+    VM_FILE = "vm_file"
+    REMOTE_PLAYBACK = "remote_playback"
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderCapabilities:
+    """readinessとtarget選択に使うprovider capability。"""
+
+    output_modes: frozenset[ProviderOutputMode] = frozenset(
+        {ProviderOutputMode.AUDIO_BYTES}
+    )
+    audio_formats: frozenset[str] = frozenset({"wav"})
+    voice_listing: bool = True
+    cancellation: bool = True
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "output_modes",
+            frozenset(ProviderOutputMode(value) for value in self.output_modes),
+        )
+        formats = frozenset(str(value).lower().lstrip(".") for value in self.audio_formats)
+        if not formats:
+            raise ValueError("audio_formats must not be empty")
+        object.__setattr__(self, "audio_formats", formats)
+
+    def supports(self, target: SynthesisTarget) -> bool:
+        return target.output_mode in self.output_modes and target.format in self.audio_formats
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryTarget:
+    """検証済みaudio bytesを返すtarget。"""
+
+    format: str = "wav"
+    output_mode: ProviderOutputMode = field(
+        default=ProviderOutputMode.AUDIO_BYTES, init=False
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactTarget:
+    """canonical run rootからの相対pathへpublishするtarget。"""
+
+    work_id: str
+    run_id: str
+    relative_path: str
+    format: str = "wav"
+    output_mode: ProviderOutputMode = field(
+        default=ProviderOutputMode.LOCAL_FILE, init=False
+    )
+
+    def __post_init__(self) -> None:
+        relative = PurePosixPath(self.relative_path)
+        if relative.is_absolute() or ".." in relative.parts or not relative.name:
+            raise ValueError("relative_path must stay within the canonical run root")
+        object.__setattr__(self, "relative_path", relative.as_posix())
+
+
+@dataclass(frozen=True, slots=True)
+class SharedFileTarget:
+    """host artifactとVM共有rootで同じ相対位置を指すtarget。"""
+
+    artifact: ArtifactTarget
+    provider_relative_path: str | None = None
+    format: str = "wav"
+    output_mode: ProviderOutputMode = field(
+        default=ProviderOutputMode.VM_FILE, init=False
+    )
+
+    def __post_init__(self) -> None:
+        relative = PurePosixPath(
+            self.provider_relative_path or self.artifact.relative_path
+        )
+        if relative.is_absolute() or ".." in relative.parts or not relative.name:
+            raise ValueError("provider_relative_path must be a safe relative path")
+        object.__setattr__(self, "provider_relative_path", relative.as_posix())
+        object.__setattr__(self, "format", self.artifact.format)
+
+
+@dataclass(frozen=True, slots=True)
+class RemotePlaybackTarget:
+    """Provider側deviceで再生し、audio bytesを要求しないtarget。"""
+
+    format: str = "wav"
+    output_mode: ProviderOutputMode = field(
+        default=ProviderOutputMode.REMOTE_PLAYBACK, init=False
+    )
+
+
+SynthesisTarget = MemoryTarget | ArtifactTarget | SharedFileTarget | RemotePlaybackTarget
 
 
 class ProviderError(RuntimeError):
@@ -117,6 +219,8 @@ class ProviderSynthesisRequest:
     voice: ProviderVoice | None = None
     utterance_id: str | None = None
     destination: str | None = None
+    target: SynthesisTarget | None = None
+    resolved_parameters: ResolvedVoiceParameters | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -124,6 +228,8 @@ class ProviderSynthesisRequest:
             raise ValueError("text must not be empty")
         if not isinstance(self.voice_intent, VoiceIntent):
             raise TypeError("voice_intent must be VoiceIntent")
+        if self.destination is None and isinstance(self.target, ArtifactTarget):
+            object.__setattr__(self, "destination", self.target.relative_path)
         object.__setattr__(self, "metadata", dict(self.metadata))
 
 
@@ -136,6 +242,7 @@ class ProviderSynthesisResult:
     sample_rate: int | None = None
     duration: float | None = None
     artifact: ArtifactRef | None = None
+    output_mode: ProviderOutputMode = ProviderOutputMode.AUDIO_BYTES
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -150,6 +257,7 @@ class TTSProviderPort(Protocol):
     """SynthesisService が必要とする provider の最小 async 契約。"""
 
     name: str
+    capabilities: ProviderCapabilities
 
     async def health(self) -> ProviderHealth: ...
 
@@ -265,14 +373,21 @@ def normalize_voice_list(values: Sequence[Any] | None, *, provider: str) -> list
 
 
 __all__ = [
+    "ArtifactTarget",
+    "MemoryTarget",
+    "ProviderCapabilities",
     "ProviderError",
     "ProviderErrorCategory",
     "ProviderHealth",
+    "ProviderOutputMode",
     "ProviderSynthesisRequest",
     "ProviderSynthesisResult",
     "ProviderVoice",
+    "RemotePlaybackTarget",
     "RETRYABLE_ERROR_CATEGORIES",
     "TTSProviderPort",
+    "SharedFileTarget",
+    "SynthesisTarget",
     "classify_provider_error",
     "normalize_health",
     "normalize_voice_list",

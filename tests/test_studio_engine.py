@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from yomiage.studio.engine import StudioEngine
+from yomiage.studio.models import SpeakerMapping
 from yomiage.tts.base import AudioResult, TTSProvider
 
 
@@ -112,7 +113,7 @@ class TestFullPipeline:
         output_dir = tmp_path / "output"
 
         engine = StudioEngine(config, output_dir=output_dir)
-        engine._create_providers = lambda m: {"mock": mock_provider}
+        engine._create_providers = lambda m, **_kwargs: {"mock": mock_provider}
 
         project = _run(engine.synth(
             script_path=script_file,
@@ -136,7 +137,7 @@ class TestFullPipeline:
         """YMM4モードでは各WAVに対応する.txtファイルが生成される."""
         output_dir = tmp_path / "output"
         engine = StudioEngine(config, output_dir=output_dir)
-        engine._create_providers = lambda m: {"mock": mock_provider}
+        engine._create_providers = lambda m, **_kwargs: {"mock": mock_provider}
 
         project = _run(engine.synth(
             script_path=script_file,
@@ -157,7 +158,7 @@ class TestFullPipeline:
         """plainモードでは.txtファイルが生成されない."""
         output_dir = tmp_path / "output"
         engine = StudioEngine(config, output_dir=output_dir)
-        engine._create_providers = lambda m: {"mock": mock_provider}
+        engine._create_providers = lambda m, **_kwargs: {"mock": mock_provider}
 
         project = _run(engine.synth(
             script_path=script_file,
@@ -177,7 +178,7 @@ class TestCaching:
         """2回目の合成ではキャッシュでスキップ."""
         output_dir = tmp_path / "output"
         engine = StudioEngine(config, output_dir=output_dir)
-        engine._create_providers = lambda m: {"mock": mock_provider}
+        engine._create_providers = lambda m, **_kwargs: {"mock": mock_provider}
 
         _run(engine.synth(script_path=script_file, provider="mock"))
         assert mock_provider.synthesize_count == 3
@@ -191,7 +192,7 @@ class TestCaching:
         """no_cache=True で毎回合成."""
         output_dir = tmp_path / "output"
         engine = StudioEngine(config, output_dir=output_dir)
-        engine._create_providers = lambda m: {"mock": mock_provider}
+        engine._create_providers = lambda m, **_kwargs: {"mock": mock_provider}
 
         _run(engine.synth(script_path=script_file, provider="mock"))
         _run(engine.synth(script_path=script_file, provider="mock", no_cache=True))
@@ -205,7 +206,7 @@ class TestMetadata:
         """metadata.json が正しい構造を持つ."""
         output_dir = tmp_path / "output"
         engine = StudioEngine(config, output_dir=output_dir)
-        engine._create_providers = lambda m: {"mock": mock_provider}
+        engine._create_providers = lambda m, **_kwargs: {"mock": mock_provider}
 
         project = _run(engine.synth(script_path=script_file, provider="mock"))
 
@@ -234,7 +235,7 @@ class TestSubtitles:
         """SRTのタイミングが正しく累計される."""
         output_dir = tmp_path / "output"
         engine = StudioEngine(config, output_dir=output_dir)
-        engine._create_providers = lambda m: {"mock": mock_provider}
+        engine._create_providers = lambda m, **_kwargs: {"mock": mock_provider}
 
         project = _run(engine.synth(
             script_path=script_file, provider="mock", default_pause=0.5
@@ -251,7 +252,7 @@ class TestSubtitles:
         """ASSファイルが正しく生成される."""
         output_dir = tmp_path / "output"
         engine = StudioEngine(config, output_dir=output_dir)
-        engine._create_providers = lambda m: {"mock": mock_provider}
+        engine._create_providers = lambda m, **_kwargs: {"mock": mock_provider}
 
         project = _run(engine.synth(script_path=script_file, provider="mock"))
 
@@ -260,3 +261,35 @@ class TestSubtitles:
         assert "[Script Info]" in content
         assert "[Events]" in content
         assert "Dialogue:" in content
+
+
+def test_f19_runtime_provider_override_builds_primary_and_fallback_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """設定defaultと実行時primaryが異なっても必要集合を同じ規則で作る。"""
+
+    captured: list[set[str]] = []
+
+    def capture(_config: dict, needed: set[str]) -> dict[str, MockTTSProvider]:
+        captured.append(set(needed))
+        return {name: MockTTSProvider() for name in needed}
+
+    monkeypatch.setattr("yomiage.studio.engine.create_studio_providers", capture)
+    engine = StudioEngine(
+        {
+            "tts": {"primary_provider": "voicevox", "fallback_provider": "voicevox"},
+            "studio": {"default_provider": "voicevox", "fallback_provider": "voicevox"},
+        },
+        output_dir=tmp_path,
+    )
+    mappings = {
+        "話者": SpeakerMapping(
+            speaker="話者", provider="voicepeak", voice_id="Japanese Female 1"
+        )
+    }
+
+    providers = engine._create_providers(mappings, primary="voicepeak")
+
+    assert captured == [{"voicepeak", "voicevox"}]
+    assert set(providers) == {"voicepeak", "voicevox"}

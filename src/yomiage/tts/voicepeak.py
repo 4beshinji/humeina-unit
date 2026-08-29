@@ -12,6 +12,7 @@ from pathlib import Path
 from loguru import logger
 
 from ..api.exceptions import SynthesisError
+from ..application.operations import ExternalProcessRunner, OperationDeadline
 from .audio_utils import concat_wav_bytes
 from .base import AudioResult, TTSProvider
 
@@ -30,7 +31,9 @@ class VoicepeakProvider(TTSProvider):
         self.max_chars = config.get("max_chars", MAX_CHARS_DEFAULT)
         self.pitch_scale = config.get("pitch_scale", 300)
         self.max_retries = config.get("max_retries", 2)
+        self.timeout = float(config.get("timeout", 120.0))
         self._tmpdir: str | None = None
+        self._process_runner = ExternalProcessRunner(lock=_VOICEPEAK_LOCK)
 
     @property
     def name(self) -> str:
@@ -49,13 +52,24 @@ class VoicepeakProvider(TTSProvider):
         self, text: str, voice: str = "neutral", speed: float = 1.0, **params
     ) -> AudioResult:
         narrator = params.get("narrator") or self.default_narrator
-        pitch = int(round(params.get("pitch", 0.0) * self.pitch_scale))
-        pitch = max(-300, min(300, pitch))
-        speed_int = int(max(50, min(200, speed * 100)))
-        emotions = params.get("emotions", {})
+        native = params.pop("_native_parameters", None)
+        if isinstance(native, dict):
+            pitch = max(-300, min(300, int(native.get("pitch", 0))))
+            speed_int = max(50, min(200, int(native.get("speed", 100))))
+            emotions = native.get("emotions", params.get("emotions", {}))
+        else:
+            pitch = int(round(params.get("pitch", 0.0) * self.pitch_scale))
+            pitch = max(-300, min(300, pitch))
+            speed_int = int(max(50, min(200, speed * 100)))
+            emotions = params.get("emotions", {})
 
         wav_bytes = await self._synthesize_cli(
-            text, narrator=narrator, speed=speed_int, pitch=pitch, emotions=emotions
+            text,
+            narrator=narrator,
+            speed=speed_int,
+            pitch=pitch,
+            emotions=emotions,
+            deadline=OperationDeadline.after(self.timeout),
         )
         return AudioResult(audio_data=wav_bytes, format="wav", sample_rate=44100)
 
@@ -79,19 +93,23 @@ class VoicepeakProvider(TTSProvider):
         speed: int = 100,
         pitch: int = 0,
         emotions: dict[str, int] | None = None,
+        deadline: OperationDeadline | None = None,
     ) -> bytes:
         """Run voicepeak CLI, handling text splitting and WAV concatenation.
 
         VoicePeak は同時に1プロセスしか実行できないため _VOICEPEAK_LOCK で排他制御する。
         失敗時は max_retries 回リトライする。
         """
+        deadline = deadline or OperationDeadline.after(self.timeout)
         chunks = self._split_text(text, self.max_chars)
         wav_parts: list[bytes] = []
 
         for chunk in chunks:
-            wav_parts.append(await self._synthesize_chunk(
-                chunk, narrator, speed, pitch, emotions
-            ))
+            wav_parts.append(
+                await self._synthesize_chunk(
+                    chunk, narrator, speed, pitch, emotions, deadline=deadline
+                )
+            )
 
         if len(wav_parts) == 1:
             return wav_parts[0]
@@ -104,41 +122,37 @@ class VoicepeakProvider(TTSProvider):
         speed: int,
         pitch: int,
         emotions: dict[str, int] | None,
+        *,
+        deadline: OperationDeadline,
     ) -> bytes:
         """単一チャンクを合成。ロック取得 + リトライ付き。"""
         args = self._build_cli_args(narrator, speed, pitch, emotions)
         last_err: Exception | None = None
 
         for attempt in range(1, self.max_retries + 2):  # max_retries+1 回試行
-            async with _VOICEPEAK_LOCK:
-                tmpdir = self._get_tmpdir()
-                tmpfile = Path(tmpdir) / f"chunk_{id(chunk) & 0xFFFFFF:06x}.wav"
-                tmpfile.unlink(missing_ok=True)
+            tmpdir = self._get_tmpdir()
+            tmpfile = Path(tmpdir) / f"chunk_{id(chunk) & 0xFFFFFF:06x}.wav"
+            tmpfile.unlink(missing_ok=True)
 
-                cmd = [self.voicepeak_path, "-s", chunk, "-o", str(tmpfile)] + args
-                proc = await asyncio.create_subprocess_exec(
-                    *cmd,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-                _, stderr = await proc.communicate()
+            cmd = [self.voicepeak_path, "-s", chunk, "-o", str(tmpfile)] + args
+            try:
+                result = await self._process_runner.run(cmd, deadline=deadline)
+                if result.returncode == 0 and tmpfile.exists():
+                    return tmpfile.read_bytes()
 
-                if proc.returncode == 0 and tmpfile.exists():
-                    data = tmpfile.read_bytes()
-                    tmpfile.unlink(missing_ok=True)
-                    return data
-
-                err_msg = stderr.decode(errors="replace").strip()
+                err_msg = result.stderr.decode(errors="replace").strip()
                 last_err = SynthesisError(
-                    f"VOICEPEAK failed (rc={proc.returncode}): {err_msg}",
-                    details={"engine": "voicepeak", "returncode": proc.returncode},
+                    f"VOICEPEAK failed (rc={result.returncode}): {err_msg}",
+                    details={"engine": "voicepeak", "returncode": result.returncode},
                 )
+            finally:
+                tmpfile.unlink(missing_ok=True)
 
             if attempt <= self.max_retries:
                 logger.warning(
                     f"VoicePeak attempt {attempt} failed, retrying: {chunk[:30]!r}"
                 )
-                await asyncio.sleep(0.5 * attempt)
+                await deadline.sleep(0.5 * attempt)
 
         raise last_err or SynthesisError("VoicePeak synthesis failed")
 
@@ -195,29 +209,25 @@ class VoicepeakProvider(TTSProvider):
 
     async def is_available(self) -> bool:
         try:
-            proc = await asyncio.create_subprocess_exec(
-                self.voicepeak_path, "--list-narrator",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+            result = await self._process_runner.run(
+                [self.voicepeak_path, "--list-narrator"],
+                deadline=OperationDeadline.after(min(5.0, self.timeout)),
             )
-            await proc.communicate()
-            return proc.returncode == 0
+            return result.returncode == 0
         except Exception:
             return False
 
     async def list_voices(self) -> list[dict]:
         try:
-            proc = await asyncio.create_subprocess_exec(
-                self.voicepeak_path, "--list-narrator",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+            result = await self._process_runner.run(
+                [self.voicepeak_path, "--list-narrator"],
+                deadline=OperationDeadline.after(min(5.0, self.timeout)),
             )
-            stdout, _ = await proc.communicate()
-            if proc.returncode != 0:
+            if result.returncode != 0:
                 return []
 
             voices = []
-            for line in stdout.decode(errors="replace").strip().splitlines():
+            for line in result.stdout.decode(errors="replace").strip().splitlines():
                 name = line.strip()
                 if name:
                     voices.append({"id": name, "name": name})
@@ -230,5 +240,3 @@ class VoicepeakProvider(TTSProvider):
         if self._tmpdir:
             shutil.rmtree(self._tmpdir, ignore_errors=True)
             self._tmpdir = None
-
-

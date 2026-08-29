@@ -254,3 +254,28 @@ def test_llm_provider_secret_is_masked_until_composition_boundary() -> None:
         settings.to_legacy_dict()["llm"]["providers"]["opencode_go"]["api_key"]
         == "cloud-secret"
     )
+
+
+def test_f18_pipeline_config_preserves_provider_extra_settings_round_trip() -> None:
+    from yomiage.api.config import PipelineConfig
+
+    raw = {
+        "tts": {"primary_provider": "voicepeak", "fallback_provider": "voicevox"},
+        "voicepeak": {
+            "path": "/opt/voicepeak",
+            "default_narrator": "Japanese Female 1",
+            "pitch_scale": 240,
+            "max_chars": 120,
+        },
+        "voicevox": {
+            "url": "http://127.0.0.1:50021",
+            "default_speaker": 47,
+            "speakers": {"gentle": 49},
+        },
+    }
+
+    config = PipelineConfig.from_dict(raw)
+
+    assert config.tts.to_provider_dict() == raw["voicepeak"]
+    assert config.tts_fallback is not None
+    assert config.tts_fallback.to_provider_dict() == raw["voicevox"]

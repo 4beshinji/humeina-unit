@@ -41,7 +41,7 @@ def slack_cmd(
                 await tts.start()
                 try:
                     await tts.enqueue(f"Slackメッセージです。{msg.text}", TTSParams())
-                    await tts.enqueue("", TTSParams())
+                    await tts.drain()
                 finally:
                     await tts.stop()
 

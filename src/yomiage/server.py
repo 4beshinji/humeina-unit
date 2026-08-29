@@ -21,12 +21,12 @@ from collections.abc import Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from loguru import logger
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
 from .adapters.persistence.sqlite import SQLiteJobRepository
 from .api.hooks import EventHooks
@@ -40,6 +40,7 @@ from .core.identity import new_job_id
 from .core.jobs import Job
 from .ports.repositories import JobRepository
 from .ports.sources import DNSResolutionError, URLPolicy, URLPolicyError, URLTarget
+from .ports.tts import ProviderError, ProviderErrorCategory
 
 
 class _AdmissionRejected(Exception):
@@ -75,7 +76,7 @@ class _AdmissionController:
     rate_limit: int
     rate_window_seconds: float
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    _leases: dict[str, str] = field(default_factory=dict)
+    _leases: dict[str, tuple[str, str | None]] = field(default_factory=dict)
     _requests: dict[str, list[float]] = field(default_factory=dict)
 
     async def check_rate(self, client_id: str) -> None:
@@ -99,17 +100,26 @@ class _AdmissionController:
         *,
         active_jobs: int = 0,
         queue_depth: int = 0,
+        exclusive_operation: str | None = None,
     ) -> str:
         """Reserve one admission slot before a Job or temporary artifact exists."""
 
         async with self._lock:
+            if exclusive_operation is not None and any(
+                operation == exclusive_operation
+                for _client, operation in self._leases.values()
+            ):
+                raise _AdmissionRejected(
+                    "operation_active",
+                    f"{exclusive_operation} operation is already active",
+                )
             reserved = len(self._leases)
             if queue_depth + reserved >= self.max_queue_size:
                 raise _AdmissionRejected("queue_full", "job queue limit exceeded")
             if active_jobs + queue_depth + reserved >= self.max_active_jobs:
                 raise _AdmissionRejected("active_jobs_limit", "active job limit exceeded")
             lease = secrets.token_urlsafe(16)
-            self._leases[lease] = client_id
+            self._leases[lease] = (client_id, exclusive_operation)
             return lease
 
     async def release(self, lease: str | None) -> None:
@@ -871,12 +881,63 @@ def _failed_health_report() -> HealthReport:
     )
 
 
+_OPERATION_READINESS_NAMES = (
+    "immediate_playback",
+    "batch_audio",
+    "video",
+    "slack",
+)
+_OPERATION_DEPENDENCY_NAMES = frozenset(
+    {"provider", "storage", "vm_mount", "ffmpeg", "llm", "slack", "slack_sdk"}
+)
+
+
+def _operation_readiness_payload(value: Any) -> dict[str, dict[str, Any]] | None:
+    """Normalize the public operation matrix without exposing dependency text."""
+
+    if not isinstance(value, Mapping):
+        return None
+    payload: dict[str, dict[str, Any]] = {}
+    for operation in _OPERATION_READINESS_NAMES:
+        raw = value.get(operation, {})
+        state = raw if isinstance(raw, Mapping) else {}
+        missing_value = state.get("missing", ())
+        missing_items = (
+            missing_value
+            if isinstance(missing_value, (list, tuple, set, frozenset))
+            else ()
+        )
+        missing: list[str] = []
+        for item in missing_items:
+            label = str(item)
+            if label in _OPERATION_DEPENDENCY_NAMES:
+                safe = label
+            elif label.startswith("codec:"):
+                codec = "".join(
+                    character
+                    for character in label.removeprefix("codec:")
+                    if character.isascii()
+                    and (character.isalnum() or character in "_.-")
+                )[:32]
+                safe = f"codec:{codec}" if codec else "codec"
+            else:
+                safe = "dependency"
+            if safe not in missing:
+                missing.append(safe)
+        payload[operation] = {
+            "ready": bool(state.get("ready", False)) and not missing,
+            "missing": missing,
+        }
+    return payload
+
+
 async def _submit_background_job(
     runtime: _Runtime,
     job: Job,
     operation: Any,
     *,
     lease: str | None = None,
+    retain_lease_until_complete: bool = False,
 ) -> Job:
     async def guarded_operation(item: Job) -> Any:
         try:
@@ -888,10 +949,10 @@ async def _submit_background_job(
     if runtime.supervisor is not None:
         try:
             result = await runtime.supervisor.submit(job, guarded_operation)
-            # The supervisor's queue/active registry owns capacity after submit.  Release the
-            # pre-submit lease immediately so a queued cancellation cannot strand an admission
-            # slot (the guarded callback also releases idempotently when it runs).
-            if runtime.admission is not None:
+            # Ordinary capacity transfers to the supervisor after submit.  An exclusive
+            # operation keeps its lease through queued/running states and its guarded callback
+            # releases it on every terminal path.
+            if runtime.admission is not None and not retain_lease_until_complete:
                 await runtime.admission.release(lease)
             return result
         except (TaskQueueFullError, SupervisorClosedError) as exc:
@@ -921,17 +982,26 @@ def _supervisor_counts(runtime: _Runtime) -> tuple[int, int]:
     return active, queue
 
 
-async def _reserve_job(runtime: _Runtime, request: Request) -> str | None:
+async def _reserve_job(
+    runtime: _Runtime,
+    request: Request,
+    *,
+    exclusive_operation: str | None = None,
+) -> str | None:
     admission = runtime.admission
     if admission is None:
         return None
     active, queue = _supervisor_counts(runtime)
     try:
         return await admission.reserve(
-            _client_id(request.scope), active_jobs=active, queue_depth=queue
+            _client_id(request.scope),
+            active_jobs=active,
+            queue_depth=queue,
+            exclusive_operation=exclusive_operation,
         )
     except _AdmissionRejected as exc:
-        raise HTTPException(429, detail={"code": exc.code, "message": exc.message}) from exc
+        status = 409 if exc.code == "operation_active" else 429
+        raise HTTPException(status, detail={"code": exc.code, "message": exc.message}) from exc
 
 
 async def _validate_url(runtime: _Runtime, url: str) -> URLTarget:
@@ -965,22 +1035,29 @@ class ReadRequest(BaseModel):
 
 
 class SynthesizeRequest(BaseModel):
-    text: str
+    text: str = Field(min_length=1)
     voice_id: str | None = None
-    speed: float = 1.0
+    speed: float = Field(default=1.0, gt=0.0, le=5.0)
     pitch: float = 0.0
     volume: float = 0.0
-    intonation: float = 1.0
+    intonation: float = Field(default=1.0, ge=0.0, le=2.0)
     preset: str | None = None
     emotion: str = "neutral"
-    intensity: float = 0.5
-    output_format: str = "wav"
+    intensity: float = Field(default=0.5, ge=0.0, le=1.0)
+    output_format: Literal["wav"] = "wav"
+
+    @field_validator("text")
+    @classmethod
+    def _text_must_contain_content(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("text must not be blank")
+        return value
 
 
 class BatchSynthesizeRequest(BaseModel):
     url: str
-    mode: str = "voicevox"
-    output_format: str = "wav"
+    mode: Literal["voisona", "voicevox", "voicepeak"] = "voicevox"
+    output_format: Literal["wav", "mp3", "flac"] = "wav"
     video: bool = False
     style: str | None = None
     allow_partial: bool = False
@@ -1095,6 +1172,23 @@ def create_app(
             headers.setdefault("WWW-Authenticate", "Bearer")
         return _error_response(status, code, message, headers=headers)
 
+    @application.exception_handler(ProviderError)
+    async def _provider_error_handler(_request: Request, exc: ProviderError) -> JSONResponse:
+        status = {
+            ProviderErrorCategory.TIMEOUT: 504,
+            ProviderErrorCategory.UNAVAILABLE: 503,
+            ProviderErrorCategory.RATE_LIMIT: 503,
+            ProviderErrorCategory.INVALID_REQUEST: 400,
+            ProviderErrorCategory.AUTHENTICATION: 502,
+            ProviderErrorCategory.INVALID_RESPONSE: 502,
+            ProviderErrorCategory.SYNTHESIS: 502,
+        }.get(exc.category, 502)
+        return _error_response(
+            status,
+            exc.category.value,
+            "TTS provider request failed",
+        )
+
     @application.get("/health")
     async def health(request: Request):
         runtime = _runtime(request)
@@ -1125,6 +1219,14 @@ def create_app(
         except Exception:
             report = _failed_health_report()
         payload = report.to_dict()
+        try:
+            operations = _operation_readiness_payload(
+                await _health_method(runtime, ("operation_readiness",))
+            )
+        except Exception:
+            operations = None
+        if operations is not None:
+            payload["operations"] = operations
         return JSONResponse(status_code=200 if report.ready else 503, content=payload)
 
     @application.get("/api/yomiage/status")
@@ -1143,14 +1245,20 @@ def create_app(
         if engine.is_running:
             raise HTTPException(409, "Already reading")
         target = await _validate_url(runtime, req.url)
-        lease = await _reserve_job(runtime, request)
+        lease = await _reserve_job(runtime, request, exclusive_operation="read")
         job = Job(id=new_job_id(), options={"kind": "read"})
 
         async def operation(_job: Job) -> None:
             await engine.read_url(target.url)
 
         try:
-            await _submit_background_job(runtime, job, operation, lease=lease)
+            await _submit_background_job(
+                runtime,
+                job,
+                operation,
+                lease=lease,
+                retain_lease_until_complete=True,
+            )
         except BaseException:
             if runtime.admission is not None:
                 await runtime.admission.release(lease)
@@ -1309,9 +1417,11 @@ def create_app(
         manager = _runtime(request).job_manager
         if manager is None:
             raise HTTPException(503, "Job manager not initialized")
+        if manager.get_job(job_id) is None:
+            raise HTTPException(404, "Job not found")
+        queue = manager.subscribe(job_id)
 
         async def event_stream():
-            queue = manager.subscribe(job_id)
             try:
                 while True:
                     event = await queue.get()

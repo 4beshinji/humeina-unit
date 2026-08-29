@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..application.synthesis import SynthesisRequest, SynthesisResult, SynthesisService
+from ..application.voice_parameters import VoiceResolutionContext
 from ..core.models import SegmentType, Utterance
 from ..core.plan import UtterancePlan
 from ..tts.playback import play_wav
@@ -25,6 +26,7 @@ AudioPlayer = Callable[[bytes], Awaitable[float | None] | float | None]
 UtteranceCallback = Callable[[Utterance, SynthesisResult], Awaitable[None] | None]
 RequestMetadataFactory = Callable[[Utterance], Mapping[str, Any]]
 DestinationFactory = Callable[[Utterance], str | None]
+ParameterContextFactory = Callable[[Utterance], VoiceResolutionContext]
 
 
 @dataclass(slots=True)
@@ -136,6 +138,7 @@ class UtterancePlaybackQueue:
         on_played: UtteranceCallback | None = None,
         metadata_factory: RequestMetadataFactory | None = None,
         destination_factory: DestinationFactory | None = None,
+        parameter_context_factory: ParameterContextFactory | None = None,
     ) -> list[SynthesisResult]:
         """計画を再生し、再生済み結果を順番に返す。
 
@@ -183,6 +186,19 @@ class UtterancePlaybackQueue:
                 run_id=run_id,
                 destination=destination,
             )
+            if parameter_context_factory is not None:
+                request = SynthesisRequest(
+                    text=request.text,
+                    voice_intent=request.voice_intent,
+                    utterance_id=request.utterance_id,
+                    provider=request.provider,
+                    work_id=request.work_id,
+                    run_id=request.run_id,
+                    scene=request.scene,
+                    parameter_context=parameter_context_factory(item),
+                    destination=request.destination,
+                    target=request.target,
+                )
             if metadata:
                 request = SynthesisRequest(
                     text=request.text,
@@ -191,7 +207,10 @@ class UtterancePlaybackQueue:
                     provider=request.provider,
                     work_id=request.work_id,
                     run_id=request.run_id,
+                    scene=request.scene,
+                    parameter_context=request.parameter_context,
                     destination=request.destination,
+                    target=request.target,
                     metadata=metadata,
                 )
             task = asyncio.create_task(self.service.synthesize(request))

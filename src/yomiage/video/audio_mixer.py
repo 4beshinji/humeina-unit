@@ -7,6 +7,7 @@ from pathlib import Path
 
 from loguru import logger
 
+from ..application.operations import ThreadProcessRunner
 from .asset_manager import AssetManager
 from .config import VideoConfig
 from .timeline import TimelineEvent
@@ -15,10 +16,17 @@ from .timeline import TimelineEvent
 class AudioMixer:
     """TTS音声 + BGM + SE のミキシング."""
 
-    def __init__(self, config: VideoConfig, asset_manager: AssetManager):
+    def __init__(
+        self,
+        config: VideoConfig,
+        asset_manager: AssetManager,
+        *,
+        process_runner: ThreadProcessRunner | None = None,
+    ):
         self.config = config
         self.audio_cfg = config.audio
         self.asset_manager = asset_manager
+        self.process_runner = process_runner
 
     def mix_chapter_audio(
         self,
@@ -101,7 +109,8 @@ class AudioMixer:
         ]
 
         logger.debug(f"AudioMixer: {' '.join(cmd[:10])}...")
-        result = subprocess.run(
+        run_process = self.process_runner.run if self.process_runner else subprocess.run
+        result = run_process(
             cmd, capture_output=True, text=True, timeout=300
         )
         if result.returncode != 0:

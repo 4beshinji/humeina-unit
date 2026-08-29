@@ -11,10 +11,15 @@ import aiohttp
 from loguru import logger
 
 from ..api.exceptions import (
+    SynthesisError,
     TTSError,
     map_aiohttp_error,
     map_client_error,
 )
+from ..api.exceptions import (
+    TimeoutError as TTSTimeoutError,
+)
+from ..application.operations import OperationDeadline
 from .base import AudioResult, TTSProvider
 
 API_BASE = "/api/talk/v1"
@@ -111,7 +116,12 @@ class VoisonaProvider(TTSProvider):
         return {k: v for k, v in params.items() if k == "style_weights" or v != defaults.get(k)}
 
     def _build_body(self, text: str, voice: str, speed: float, **params) -> dict:
-        global_params = self._build_params(voice, speed, **params)
+        native = params.pop("_native_parameters", None)
+        global_params = (
+            dict(native)
+            if isinstance(native, dict)
+            else self._build_params(voice, speed, **params)
+        )
         body: dict = {
             "language": self.language,
             "text": text,
@@ -130,9 +140,10 @@ class VoisonaProvider(TTSProvider):
 
         self._synthesizing = True
         wall_start = time.monotonic()
+        deadline = OperationDeadline.at(wall_start + POLL_TIMEOUT)
         try:
-            uuid = await self._post_synthesis(body)
-            return await self._poll_synthesis(uuid, wall_start)
+            uuid = await self._post_synthesis(body, deadline=deadline)
+            return await self._poll_synthesis(uuid, wall_start, deadline=deadline)
         finally:
             self._synthesizing = False
 
@@ -149,9 +160,16 @@ class VoisonaProvider(TTSProvider):
         wall_start = time.monotonic()
         return await self._poll_synthesis(uuid, wall_start)
 
-    async def _post_synthesis(self, body: dict) -> str:
-        try:
-            timeout = aiohttp.ClientTimeout(total=30)
+    async def _post_synthesis(
+        self,
+        body: dict,
+        *,
+        deadline: OperationDeadline | None = None,
+    ) -> str:
+        deadline = deadline or OperationDeadline.after(30.0)
+
+        async def post_once() -> dict:
+            timeout = aiohttp.ClientTimeout(total=min(30.0, deadline.remaining()))
             async with self.session.post(
                 f"{self._api_url}/speech-syntheses",
                 json=body,
@@ -165,7 +183,10 @@ class VoisonaProvider(TTSProvider):
                         resp.status,
                         f"speech-syntheses POST failed: {resp.status} {detail}",
                     )
-                result = await resp.json()
+                return await resp.json()
+
+        try:
+            result = await deadline.run(post_once())
             uuid = result["uuid"]
             logger.debug(f"VoiSona synthesis queued: {uuid}")
             return uuid
@@ -174,27 +195,35 @@ class VoisonaProvider(TTSProvider):
         except Exception as exc:
             raise map_client_error("voisona", exc)
 
-    async def _poll_synthesis(self, uuid: str, wall_start: float) -> AudioResult:
+    async def _poll_synthesis(
+        self,
+        uuid: str,
+        wall_start: float,
+        *,
+        deadline: OperationDeadline | None = None,
+    ) -> AudioResult:
         """共有セッションでポーリング.
 
         コネクションプールの limit_per_host で同時接続数を制御する。
         """
-        from ..api.exceptions import SynthesisError, TimeoutError
-
-        elapsed = 0.0
-        while elapsed < POLL_TIMEOUT:
-            await asyncio.sleep(POLL_INTERVAL)
-            elapsed += POLL_INTERVAL
+        deadline = deadline or OperationDeadline.at(wall_start + POLL_TIMEOUT)
+        while not deadline.expired():
             try:
-                timeout = aiohttp.ClientTimeout(total=15)
-                async with self.session.get(
-                    f"{self._api_url}/speech-syntheses/{uuid}",
-                    auth=self._auth(),
-                    timeout=timeout,
-                ) as resp:
-                    if resp.status != 200:
-                        continue
-                    status = await resp.json()
+                await deadline.sleep(POLL_INTERVAL)
+
+                async def get_status() -> tuple[int, dict]:
+                    timeout = aiohttp.ClientTimeout(total=min(15.0, deadline.remaining()))
+                    async with self.session.get(
+                        f"{self._api_url}/speech-syntheses/{uuid}",
+                        auth=self._auth(),
+                        timeout=timeout,
+                    ) as resp:
+                        if resp.status != 200:
+                            return resp.status, {}
+                        return resp.status, await resp.json()
+
+                response_status, status = await deadline.run(get_status())
+                if response_status == 200:
                     state = status.get("state")
                     if state == "succeeded":
                         duration = status.get("duration", 0.0)
@@ -214,11 +243,17 @@ class VoisonaProvider(TTSProvider):
                         )
             except TTSError:
                 raise
+            except asyncio.TimeoutError:
+                break
             except Exception as e:
-                logger.debug(f"Poll attempt failed ({elapsed:.0f}s): {e}")
+                logger.debug(
+                    "Poll attempt failed (remaining {:.2f}s): {}",
+                    deadline.remaining(),
+                    e,
+                )
 
         self._healthy = False
-        raise TimeoutError(
+        raise TTSTimeoutError(
             f"VoiSona synthesis timed out after {POLL_TIMEOUT}s",
             details={"engine": "voisona", "uuid": uuid},
         )
@@ -240,9 +275,10 @@ class VoisonaProvider(TTSProvider):
 
         self._synthesizing = True
         wall_start = time.monotonic()
+        deadline = OperationDeadline.at(wall_start + POLL_TIMEOUT)
         try:
-            uuid = await self._post_synthesis(body)
-            return await self._poll_synthesis(uuid, wall_start)
+            uuid = await self._post_synthesis(body, deadline=deadline)
+            return await self._poll_synthesis(uuid, wall_start, deadline=deadline)
         finally:
             self._synthesizing = False
 
