@@ -6,11 +6,14 @@ import asyncio
 from email.utils import parsedate_to_datetime
 from time import perf_counter
 from typing import Any
+from uuid import uuid4
 
 import aiohttp
 
 from ..models import LLMError, LLMErrorCategory, LLMResponse, LLMUsage
 from ..protocols import LLMProtocol, LLMTransport
+
+_OPENCODE_GO_USER_AGENT = "humeina-unit/0.1.0"
 
 
 def _retry_after(value: str | None) -> float | None:
@@ -57,6 +60,7 @@ class HTTPTransport(LLMTransport):
         api_key: str = "",
         timeout_seconds: float = 120.0,
         session: aiohttp.ClientSession | None = None,
+        opencode_session_id: str | None = None,
     ) -> None:
         self.provider = provider
         self.model = model
@@ -66,6 +70,9 @@ class HTTPTransport(LLMTransport):
         self.timeout_seconds = timeout_seconds
         self._session = session
         self._owns_session = session is None
+        self.opencode_session_id = opencode_session_id
+        if self.opencode_session_id is None and provider == "opencode_go":
+            self.opencode_session_id = str(uuid4())
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
@@ -79,6 +86,9 @@ class HTTPTransport(LLMTransport):
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
+        if self.opencode_session_id:
+            headers["User-Agent"] = _OPENCODE_GO_USER_AGENT
+            headers["x-opencode-session"] = self.opencode_session_id
         return headers
 
     async def _post(self, path: str, body: dict[str, Any]) -> tuple[dict[str, Any], float]:

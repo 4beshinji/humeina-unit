@@ -5,6 +5,7 @@ from __future__ import annotations
 import warnings
 from collections.abc import Mapping
 from typing import Any
+from uuid import uuid4
 
 from loguru import logger
 
@@ -80,7 +81,12 @@ def normalize_llm_config(config: Mapping[str, Any] | Any) -> dict[str, Any]:
     }
 
 
-def _transport(name: str, data: Mapping[str, Any]) -> LLMTransport:
+def _transport(
+    name: str,
+    data: Mapping[str, Any],
+    *,
+    opencode_session_id: str | None = None,
+) -> LLMTransport:
     provider_type = str(data.get("type", "llama_cpp"))
     model = str(data.get("model") or DEFAULT_LOCAL_MODEL)
     base_url = str(data.get("base_url") or data.get("url") or "").rstrip("/")
@@ -96,6 +102,8 @@ def _transport(name: str, data: Mapping[str, Any]) -> LLMTransport:
         "api_key": api_key,
         "timeout_seconds": timeout,
     }
+    if provider_type == "opencode_go":
+        common["opencode_session_id"] = opencode_session_id or str(uuid4())
     if provider_type in {"ollama", "ollama_legacy"}:
         return OllamaTransport(**common)
     if provider_type == "gemini":
@@ -130,8 +138,11 @@ def create_llm_service(
 
     llm = normalize_llm_config(config)
     provider_data = llm.get("providers") or {}
+    opencode_session_id = str(uuid4())
     transports = {
-        str(name): _transport(str(name), data)
+        str(name): _transport(
+            str(name), data, opencode_session_id=opencode_session_id
+        )
         for name, data in provider_data.items()
         if isinstance(data, Mapping) and data.get("enabled", True)
     }

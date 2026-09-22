@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
+from uuid import UUID
 
 import pytest
 from aiohttp import web
@@ -121,6 +122,31 @@ async def test_responses_contract_extracts_nested_text_and_usage() -> None:
     assert response.text == "done"
     assert response.usage == LLMUsage(8, 2, 5)
     assert calls[0]["headers"]["Authorization"] == "Bearer secret"
+
+
+async def test_opencode_go_requests_share_identifying_session_headers() -> None:
+    async def handler(_: web.Request) -> web.Response:
+        return web.json_response(
+            {
+                "choices": [{"message": {"content": "ok"}}],
+                "usage": {},
+            }
+        )
+
+    async with _server(handler, "/v1/chat/completions") as (base_url, calls):
+        transport = ChatCompletionsTransport(
+            provider="opencode_go", model="glm-5.3-flash", base_url=base_url
+        )
+        try:
+            await transport.complete(LLMRequest(task="test", prompt="first"))
+            await transport.complete(LLMRequest(task="test", prompt="second"))
+        finally:
+            await transport.close()
+
+    first_session = calls[0]["headers"]["x-opencode-session"]
+    assert UUID(first_session)
+    assert calls[1]["headers"]["x-opencode-session"] == first_session
+    assert calls[0]["headers"]["User-Agent"] == "humeina-unit/0.1.0"
 
 
 async def test_messages_contract_sets_anthropic_headers_and_usage() -> None:
