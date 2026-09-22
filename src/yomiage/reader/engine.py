@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import shutil
 import time
+from contextlib import nullcontext
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Mapping
@@ -127,6 +128,7 @@ class ReadingEngine:
         self._current_plan: UtterancePlan | None = None
         self._current_utterance_idx: int = 0
         self._character_db: CharacterDB | None = None
+        self._current_provider: str | None = None
 
     @property
     def is_running(self) -> bool:
@@ -149,7 +151,27 @@ class ReadingEngine:
             "total_utterances": (
                 len(self._current_plan.utterances) if self._current_plan else 0
             ),
+            "provider": self._current_provider,
         }
+
+    def _provider_scope(self, provider: str | None):
+        """新旧TTS managerの両方でrequest-local provider選択を適用する。"""
+
+        use_provider = getattr(self.tts, "use_provider", None)
+        return use_provider(provider) if callable(use_provider) else nullcontext()
+
+    @staticmethod
+    def _normalize_provider(provider: str | None) -> str | None:
+        """公開APIの ``auto`` をprovider未指定へ正規化する。"""
+
+        normalized = str(provider).strip().lower() if provider else None
+        return None if normalized == "auto" else normalized
+
+    def _status_provider(self, requested: str | None) -> str | None:
+        selected = getattr(self.tts, "selected_provider_name", None)
+        if isinstance(selected, str):
+            return selected
+        return requested or getattr(getattr(self.tts, "primary", None), "name", None)
 
     async def read_url(
         self,
@@ -157,35 +179,41 @@ class ReadingEngine:
         start_chunk: int = 0,
         *,
         start_utterance_id: str | None = None,
+        provider: str | None = None,
     ) -> None:
         """URLから読み上げを開始する。
 
         旧 ``start_chunk`` 引数は互換のため残す。新経路では計画生成後に
         ``start_utterance_id`` を優先し、chunk再分割に依存しない再開を行う。
         """
-        self._stop_event.clear()
-        self._running = True
+        provider = self._normalize_provider(provider)
+        with self._provider_scope(provider):
+            self._stop_event.clear()
+            self._running = True
+            self._current_provider = self._status_provider(provider)
 
-        # 作品IDを生成（URLハッシュ）
-        work_id = hashlib.md5(url.encode()).hexdigest()[:12]
-        self._character_db = CharacterDB(work_id, data_dir=self.data_dir / "characters")
+            # 作品IDを生成（URLハッシュ）
+            work_id = hashlib.md5(url.encode()).hexdigest()[:12]
+            self._character_db = CharacterDB(work_id, data_dir=self.data_dir / "characters")
 
-        try:
-            self._ensure_synthesis_service()
-            source = registry.resolve(url, policy=self.url_policy)
-            self._current_source = source
-            await self._read_from_source(
-                source,
-                url,
-                start_chunk,
-                start_utterance_id=start_utterance_id,
-            )
-        except Exception as e:
-            logger.error(f"Reading failed: {e}")
-            raise
-        finally:
-            await self._close_owned_synthesis_service()
-            self._running = False
+            try:
+                self._ensure_synthesis_service()
+                source = registry.resolve(url, policy=self.url_policy)
+                self._current_source = source
+                await self._read_from_source(
+                    source,
+                    url,
+                    start_chunk,
+                    start_utterance_id=start_utterance_id,
+                    provider=provider,
+                )
+            except Exception as e:
+                logger.error(f"Reading failed: {e}")
+                raise
+            finally:
+                await self._close_owned_synthesis_service()
+                self._running = False
+                self._current_provider = None
 
     async def resume_last(self) -> None:
         """最後のブックマークから再開."""
@@ -249,6 +277,7 @@ class ReadingEngine:
         start_chunk: int = 0,
         *,
         start_utterance_id: str | None = None,
+        provider: str | None = None,
     ) -> None:
         chapter_url = url
 
@@ -275,6 +304,7 @@ class ReadingEngine:
                 chapter_url=chapter_url,
                 start_utterance_id=start_utterance_id,
                 start_order=start_chunk,
+                provider=provider,
             )
 
             if self._stop_event.is_set():
@@ -396,30 +426,36 @@ class ReadingEngine:
         start_utterance_id: str | None = None,
         start_order: int = 0,
         run_id: str | None = None,
+        provider: str | None = None,
     ) -> list[Any]:
         """既存source取得を伴わずUtterancePlanを直接読み上げる公開入口。"""
 
         if not isinstance(plan, UtterancePlan):
             raise TypeError("plan must be UtterancePlan")
-        self._stop_event.clear()
-        self._running = True
-        try:
-            self._ensure_synthesis_service()
-            return await self._read_plan_for_chapter(
-                plan,
-                chapter=None,
-                chapter_url=chapter_url or source_url,
-                source_url=source_url,
-                chapter_index=chapter_index,
-                title=title,
-                work_title=work_title,
-                start_utterance_id=start_utterance_id,
-                start_order=start_order,
-                run_id=run_id,
-            )
-        finally:
-            await self._close_owned_synthesis_service()
-            self._running = False
+        provider = self._normalize_provider(provider)
+        with self._provider_scope(provider):
+            self._stop_event.clear()
+            self._running = True
+            self._current_provider = self._status_provider(provider)
+            try:
+                self._ensure_synthesis_service()
+                return await self._read_plan_for_chapter(
+                    plan,
+                    chapter=None,
+                    chapter_url=chapter_url or source_url,
+                    source_url=source_url,
+                    chapter_index=chapter_index,
+                    title=title,
+                    work_title=work_title,
+                    start_utterance_id=start_utterance_id,
+                    start_order=start_order,
+                    run_id=run_id,
+                    provider=provider,
+                )
+            finally:
+                await self._close_owned_synthesis_service()
+                self._running = False
+                self._current_provider = None
 
     async def read_text(
         self,
@@ -433,6 +469,7 @@ class ReadingEngine:
         start_utterance_id: str | None = None,
         start_order: int = 0,
         run_id: str | None = None,
+        provider: str | None = None,
     ) -> list[Any]:
         """本文を計画化してから読み上げる、URL不要の通常入口。"""
 
@@ -441,32 +478,37 @@ class ReadingEngine:
         clean_text = text
         if not clean_text.strip():
             return []
-        self._stop_event.clear()
-        self._running = True
-        work_id = hashlib.md5((source_url or clean_text).encode()).hexdigest()[:12]
-        self._character_db = CharacterDB(work_id, data_dir=self.data_dir / "characters")
-        try:
-            self._ensure_synthesis_service()
-            plan = await self._plan_text(
-                clean_text,
-                source_url=source_url,
-                chapter_index=chapter_index,
-            )
-            return await self._read_plan_for_chapter(
-                plan,
-                chapter=None,
-                chapter_url=chapter_url or source_url,
-                source_url=source_url,
-                chapter_index=chapter_index,
-                title=title,
-                work_title=work_title,
-                start_utterance_id=start_utterance_id,
-                start_order=start_order,
-                run_id=run_id,
-            )
-        finally:
-            await self._close_owned_synthesis_service()
-            self._running = False
+        provider = self._normalize_provider(provider)
+        with self._provider_scope(provider):
+            self._stop_event.clear()
+            self._running = True
+            self._current_provider = self._status_provider(provider)
+            work_id = hashlib.md5((source_url or clean_text).encode()).hexdigest()[:12]
+            self._character_db = CharacterDB(work_id, data_dir=self.data_dir / "characters")
+            try:
+                self._ensure_synthesis_service()
+                plan = await self._plan_text(
+                    clean_text,
+                    source_url=source_url,
+                    chapter_index=chapter_index,
+                )
+                return await self._read_plan_for_chapter(
+                    plan,
+                    chapter=None,
+                    chapter_url=chapter_url or source_url,
+                    source_url=source_url,
+                    chapter_index=chapter_index,
+                    title=title,
+                    work_title=work_title,
+                    start_utterance_id=start_utterance_id,
+                    start_order=start_order,
+                    run_id=run_id,
+                    provider=provider,
+                )
+            finally:
+                await self._close_owned_synthesis_service()
+                self._running = False
+                self._current_provider = None
 
     async def _read_plan_for_chapter(
         self,
@@ -481,6 +523,7 @@ class ReadingEngine:
         start_utterance_id: str | None = None,
         start_order: int = 0,
         run_id: str | None = None,
+        provider: str | None = None,
     ) -> list[Any]:
         service = self._ensure_synthesis_service()
         if chapter is not None:
@@ -565,6 +608,7 @@ class ReadingEngine:
         try:
             return await queue.play_plan(
                 plan,
+                provider=provider,
                 work_id=plan.plan_id,
                 run_id=run_id,
                 start_utterance_id=start_utterance_id,

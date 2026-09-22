@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Humeina Unit Reader</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <h1>Humeina Reader</h1>
+          <p id="connection" class="status pending">接続確認中…</p>
+        </div>
+        <button id="open-options" class="icon-button" title="設定" aria-label="設定を開く">⚙</button>
+      </header>
+
+      <label for="provider">音声エンジン</label>
+      <select id="provider">
+        <option value="auto">自動（フォールバックあり）</option>
+        <option value="voisona">VoiSona</option>
+        <option value="voicevox">VOICEVOX</option>
+      </select>
+
+      <button id="read-smart" class="primary">選択範囲 / ページを読み上げる</button>
+      <div class="secondary-actions">
+        <button id="read-page">ページ本文</button>
+        <button id="read-url">URLから取得</button>
+      </div>
+
+      <section class="playback" aria-label="再生操作">
+        <button id="pause" title="一時停止">一時停止</button>
+        <button id="resume" title="再開">再開</button>
+        <button id="stop" class="danger" title="停止">停止</button>
+      </section>
+
+      <div id="progress" class="progress" hidden>
+        <div class="progress-row">
+          <span id="reading-state">待機中</span>
+          <span id="reading-count"></span>
+        </div>
+        <progress id="reading-progress" max="100" value="0"></progress>
+      </div>
+      <p id="message" role="status" aria-live="polite"></p>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>

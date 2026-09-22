@@ -1,0 +1,54 @@
+{
+  "manifest_version": 3,
+  "name": "Humeina Unit Reader",
+  "description": "Firefoxで開いているページや選択範囲を、手元のVoiSona / VOICEVOXで読み上げます。",
+  "version": "0.1.0",
+  "icons": {
+    "32": "icons/icon.svg",
+    "48": "icons/icon.svg",
+    "96": "icons/icon.svg"
+  },
+  "permissions": [
+    "activeTab",
+    "menus",
+    "notifications",
+    "scripting",
+    "storage"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1/*",
+    "http://localhost/*"
+  ],
+  "background": {
+    "scripts": ["background.js"]
+  },
+  "action": {
+    "default_title": "Humeina Unit Reader",
+    "default_popup": "popup/popup.html",
+    "default_icon": "icons/icon.svg"
+  },
+  "options_ui": {
+    "page": "options/options.html",
+    "open_in_tab": true
+  },
+  "commands": {
+    "read-current-page": {
+      "suggested_key": {
+        "default": "Alt+Shift+R"
+      },
+      "description": "現在のページまたは選択範囲を読み上げる"
+    },
+    "stop-reading": {
+      "suggested_key": {
+        "default": "Alt+Shift+S"
+      },
+      "description": "読み上げを停止する"
+    }
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "humeina-unit-reader@local",
+      "strict_min_version": "128.0"
+    }
+  }
+}

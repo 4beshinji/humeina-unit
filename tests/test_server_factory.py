@@ -88,8 +88,9 @@ def test_lifespan_closes_each_injected_resource_once() -> None:
     assert engine.closed == repository.closed == supervisor.closed == 1
 
 
-def test_read_request_drops_the_legacy_noop_provider_field() -> None:
-    assert "provider" not in ReadRequest.model_fields
+def test_read_request_exposes_effective_provider_field() -> None:
+    assert ReadRequest(url="https://example.com").provider == "auto"
+    assert ReadRequest(url="https://example.com", provider="voicevox").provider == "voicevox"
 
 
 def test_failed_startup_closes_resources_built_before_supervisor() -> None:

@@ -1,0 +1,154 @@
+:root {
+  color-scheme: light dark;
+  font-family: system-ui, sans-serif;
+  font-size: 14px;
+}
+
+body {
+  margin: 0;
+  min-width: 330px;
+  background: #f7f5fb;
+  color: #252235;
+}
+
+main {
+  padding: 16px;
+}
+
+header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+
+h1 {
+  margin: 0 0 3px;
+  font-size: 18px;
+}
+
+label {
+  display: block;
+  margin-bottom: 5px;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+select,
+button {
+  border: 1px solid #cac4da;
+  border-radius: 8px;
+  background: #fff;
+  color: inherit;
+  font: inherit;
+}
+
+select {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+}
+
+button {
+  padding: 9px 11px;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  border-color: #6556a6;
+}
+
+button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.primary {
+  width: 100%;
+  border-color: #493a83;
+  background: #493a83;
+  color: #fff;
+  font-weight: 700;
+}
+
+.secondary-actions,
+.playback {
+  display: grid;
+  gap: 7px;
+  margin-top: 8px;
+}
+
+.secondary-actions {
+  grid-template-columns: 1fr 1fr;
+}
+
+.playback {
+  grid-template-columns: 1fr 1fr 1fr;
+  padding-top: 12px;
+  margin-top: 12px;
+  border-top: 1px solid #ddd7ea;
+}
+
+.danger {
+  color: #a52e3b;
+}
+
+.icon-button {
+  padding: 4px 7px;
+  border: 0;
+  background: transparent;
+  font-size: 18px;
+}
+
+.status,
+#message {
+  margin: 0;
+  font-size: 12px;
+}
+
+.status.connected {
+  color: #22705c;
+}
+
+.status.failed,
+#message.error {
+  color: #a52e3b;
+}
+
+.progress {
+  margin-top: 12px;
+}
+
+.progress-row {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 4px;
+  font-size: 12px;
+}
+
+progress {
+  width: 100%;
+}
+
+#message {
+  min-height: 2.8em;
+  margin-top: 10px;
+}
+
+@media (prefers-color-scheme: dark) {
+  body {
+    background: #211e2a;
+    color: #f5f2fb;
+  }
+
+  select,
+  button {
+    border-color: #575064;
+    background: #302b3b;
+  }
+
+  .primary {
+    background: #7463bc;
+  }
+}

@@ -7,6 +7,7 @@ CLI/API/SDK です。NLP 分析、発話計画、音声合成、バッチ成果�
 ## できること
 
 - URL（青空文庫・小説家になろう・カクヨム・一般公開 Web）の取得と読み上げ
+- Firefox拡張から、開いているページ本文・選択範囲をワンクリックで読み上げ
 - ルールベース分類、話者候補抽出、llama.cpp/OpenCode Go/Geminiによるシーン・感情分析
 - VoiSona Talk（Windows VM）、VOICEVOX（HTTP/Docker）、VOICEPEAK（ローカル CLI）の選択と
   fallback
@@ -103,6 +104,7 @@ output/works/{work_id}/
 | [Python SDK](docs/sdk-reference.md) | `TTSBridge`、`TextAnalyzer`、`Pipeline` |
 | [NLP パイプライン](docs/nlp-pipeline.md) | 分類・話者・シーン分析 |
 | [TTS Provider](docs/tts-providers.md) | VoiSona/VOICEVOX/VOICEPEAK |
+| [Firefox拡張](docs/firefox-extension.md) | 導入、権限、本文抽出、操作、トラブル対応 |
 | [virtiofs](docs/virtiofs-setup.md) | VoiSona VM の file destination |
 | [移行手順](docs/migration.md) | 旧 manifest/artifact の backup/import/rollback |
 | [ADR 索引](docs/adr/README.md) | 設計決定と実装タスクの対応 |

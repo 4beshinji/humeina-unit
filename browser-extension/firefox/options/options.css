@@ -1,0 +1,65 @@
+:root {
+  color-scheme: light dark;
+  font-family: system-ui, sans-serif;
+}
+
+body {
+  margin: 0;
+}
+
+main {
+  max-width: 660px;
+  margin: 36px auto;
+  padding: 0 24px;
+}
+
+h1 {
+  font-size: 25px;
+}
+
+form {
+  display: grid;
+  gap: 8px;
+  margin-top: 28px;
+}
+
+label {
+  margin-top: 10px;
+  font-weight: 700;
+}
+
+input,
+select,
+button {
+  box-sizing: border-box;
+  padding: 10px 12px;
+  border: 1px solid #aaa;
+  border-radius: 7px;
+  font: inherit;
+}
+
+.help {
+  margin: -2px 0 4px;
+  color: #686272;
+  font-size: 13px;
+}
+
+.actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+button {
+  cursor: pointer;
+}
+
+button[type="submit"] {
+  border-color: #493a83;
+  background: #493a83;
+  color: #fff;
+}
+
+#message.error {
+  color: #b12f3f;
+}

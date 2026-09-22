@@ -70,23 +70,55 @@ path、endpoint、credential、元のexception本文は含めません。
 
 ### `GET /api/yomiage/status`
 
-Reader の現在状態を返します（engine の実装状態に応じて chapter/chunk などが含まれます）。
+Reader の現在状態を返します（engine の実装状態に応じて chapter/chunk/provider などが含まれます）。
+
+### `GET /api/yomiage/capabilities`
+
+Firefox拡張などのクライアントが、設定済みProvider、本文上限、利用可能なReader機能を確認する
+ためのendpointです。`providers`は接続確認結果ではなく、起動時に構成されたProvider名です。
 
 ### `POST /api/yomiage/read`
 
 URL の読み上げを background job として開始します。
 
 ```json
-{"url": "https://www.aozora.gr.jp/cards/000879/files/127_15260.html"}
+{
+  "url": "https://www.aozora.gr.jp/cards/000879/files/127_15260.html",
+  "provider": "auto"
+}
 ```
 
 ```json
-{"status": "started", "url": "https://…", "job_id": "…"}
+{"status": "started", "url": "https://…", "provider": "auto", "job_id": "…"}
 ```
 
-`provider` フィールドは受け付けません（過去の no-op 引数との wire compatibility のため未知
-field は無視されます）。URL が policy に違反する場合は job/artifact を作成する前に `400` です。
-既に読み上げ中なら `409` になります。
+`provider`は`auto|voisona|voicevox`です。`auto`は設定されたprimary/fallbackを使い、明示指定は
+そのProviderだけを使います。起動時に構成されていないProviderは`400`です。URLがpolicyに
+違反する場合はjob/artifactを作成する前に`400`、既に読み上げ中なら`409`になります。
+
+### `POST /api/yomiage/read-text`
+
+ブラウザ内で抽出した本文を、URL Readerと同じNLP・発話計画・再生経路へ渡します。ログインが
+必要なページやJavaScript描画ページ、選択範囲の読み上げに使います。
+
+```json
+{
+  "text": "ブラウザから抽出した本文です。",
+  "source_url": "https://example.com/article",
+  "title": "記事タイトル",
+  "source_kind": "article",
+  "provider": "voicevox"
+}
+```
+
+`source_kind`は`article|selection`です。本文はjob optionsやログへ保存せず、`max_text_chars`を
+超えるとjob作成前に`413`を返します。`source_url`は出典・bookmark用であり、サーバーから再取得
+しません。
+
+### `GET /api/yomiage/jobs/{job_id}`
+
+Readerを含む永続jobの`state`、進捗、サニタイズ済みerrorを返します。Firefox拡張は受付後の
+Provider失敗もこのendpointで表示します。存在しないIDは`404`です。
 
 ### `POST /api/yomiage/pause`
 

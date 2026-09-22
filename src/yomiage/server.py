@@ -1020,20 +1020,63 @@ async def _validate_url(runtime: _Runtime, url: str) -> URLTarget:
         ) from exc
 
 
-async def _reserve_text_job(runtime: _Runtime, request: Request, text: str) -> str | None:
+async def _reserve_text_job(
+    runtime: _Runtime,
+    request: Request,
+    text: str,
+    *,
+    exclusive_operation: str | None = None,
+) -> str | None:
     if len(text) > (runtime.security.max_text_chars if runtime.security else 100_000):
         raise HTTPException(
             413,
             detail={"code": "text_too_large", "message": "text exceeds the configured limit"},
         )
-    return await _reserve_job(runtime, request)
+    return await _reserve_job(
+        runtime,
+        request,
+        exclusive_operation=exclusive_operation,
+    )
+
+
+def _validate_read_provider(engine: Any, requested: str) -> str | None:
+    """APIのprovider指定を、起動済みengineの構成に照らして検証する。"""
+
+    if requested == "auto":
+        return None
+    tts = getattr(engine, "tts", None)
+    configured = tuple(getattr(tts, "available_provider_names", ()))
+    if requested not in configured:
+        raise HTTPException(
+            400,
+            detail={
+                "code": "provider_not_configured",
+                "message": f"provider is not configured: {requested}",
+            },
+        )
+    return requested
 
 
 class ReadRequest(BaseModel):
     url: str
-    # ``provider`` used to be accepted but was never applied.  It is omitted
-    # intentionally; Pydantic's default ``extra='ignore'`` keeps old payloads
-    # wire-compatible while preventing a misleading no-op option.
+    provider: Literal["auto", "voisona", "voicevox"] = "auto"
+
+
+class ReadTextRequest(BaseModel):
+    """ブラウザ等が抽出した本文を通常の読み上げ計画へ渡す要求。"""
+
+    text: str = Field(min_length=1)
+    source_url: str | None = Field(default=None, max_length=4096)
+    title: str = Field(default="", max_length=500)
+    source_kind: Literal["article", "selection"] = "article"
+    provider: Literal["auto", "voisona", "voicevox"] = "auto"
+
+    @field_validator("text")
+    @classmethod
+    def _text_must_contain_content(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("text must not be blank")
+        return value
 
 
 class SynthesizeRequest(BaseModel):
@@ -1238,6 +1281,29 @@ def create_app(
             raise HTTPException(503, "Engine not initialized")
         return engine.current_status
 
+    @application.get("/api/yomiage/capabilities")
+    async def capabilities(request: Request):
+        runtime = _runtime(request)
+        engine = runtime.engine
+        if engine is None:
+            raise HTTPException(503, "Engine not initialized")
+        tts = getattr(engine, "tts", None)
+        providers = list(getattr(tts, "available_provider_names", ()))
+        primary = getattr(getattr(tts, "primary", None), "name", None)
+        return {
+            "providers": providers,
+            "default_provider": primary,
+            "max_text_chars": (
+                runtime.security.max_text_chars if runtime.security else 100_000
+            ),
+            "features": {
+                "read_url": True,
+                "read_text": callable(getattr(engine, "read_text", None)),
+                "playback_controls": True,
+                "job_status": True,
+            },
+        }
+
     @application.post("/api/yomiage/read")
     async def read(req: ReadRequest, request: Request):
         runtime = _runtime(request)
@@ -1246,12 +1312,19 @@ def create_app(
             raise HTTPException(503, "Engine not initialized")
         if engine.is_running:
             raise HTTPException(409, "Already reading")
+        provider = _validate_read_provider(engine, req.provider)
         target = await _validate_url(runtime, req.url)
         lease = await _reserve_job(runtime, request, exclusive_operation="read")
-        job = Job(id=new_job_id(), options={"kind": "read"})
+        job = Job(
+            id=new_job_id(),
+            options={"kind": "read", "provider": provider or "auto"},
+        )
 
         async def operation(_job: Job) -> None:
-            await engine.read_url(target.url)
+            if provider is None:
+                await engine.read_url(target.url)
+            else:
+                await engine.read_url(target.url, provider=provider)
 
         try:
             await _submit_background_job(
@@ -1265,7 +1338,96 @@ def create_app(
             if runtime.admission is not None:
                 await runtime.admission.release(lease)
             raise
-        return {"status": "started", "url": target.url, "job_id": job.id}
+        return {
+            "status": "started",
+            "url": target.url,
+            "provider": provider or "auto",
+            "job_id": job.id,
+        }
+
+    @application.post("/api/yomiage/read-text")
+    async def read_text(req: ReadTextRequest, request: Request):
+        runtime = _runtime(request)
+        engine = runtime.engine
+        if engine is None:
+            raise HTTPException(503, "Engine not initialized")
+        if engine.is_running:
+            raise HTTPException(409, "Already reading")
+        if not callable(getattr(engine, "read_text", None)):
+            raise HTTPException(501, "Text reading is not supported")
+        provider = _validate_read_provider(engine, req.provider)
+        lease = await _reserve_text_job(
+            runtime,
+            request,
+            req.text,
+            exclusive_operation="read",
+        )
+        job = Job(
+            id=new_job_id(),
+            options={
+                "kind": "read_text",
+                "provider": provider or "auto",
+                "source_kind": req.source_kind,
+                "character_count": len(req.text),
+            },
+        )
+
+        async def operation(_job: Job) -> None:
+            values: dict[str, Any] = {
+                "source_url": req.source_url,
+                "title": req.title,
+                "work_title": req.title,
+            }
+            if provider is not None:
+                values["provider"] = provider
+            await engine.read_text(req.text, **values)
+
+        try:
+            await _submit_background_job(
+                runtime,
+                job,
+                operation,
+                lease=lease,
+                retain_lease_until_complete=True,
+            )
+        except BaseException:
+            if runtime.admission is not None:
+                await runtime.admission.release(lease)
+            raise
+        return {
+            "status": "started",
+            "provider": provider or "auto",
+            "source_kind": req.source_kind,
+            "character_count": len(req.text),
+            "job_id": job.id,
+        }
+
+    @application.get("/api/yomiage/jobs/{job_id}")
+    async def get_job(job_id: str, request: Request):
+        repository = _runtime(request).repository
+        if repository is None:
+            raise HTTPException(503, "Job repository not initialized")
+        job = repository.get(job_id)
+        if inspect.isawaitable(job):
+            job = await job
+        if job is None:
+            raise HTTPException(404, "Job not found")
+        return {
+            "job_id": job.id,
+            "state": job.state.value,
+            "progress": {
+                "percent": job.progress.percent,
+                "message": job.progress.message,
+            },
+            "error": (
+                {
+                    "category": job.error_category.value if job.error_category else "unknown",
+                    "message": job.error_message or "job failed",
+                }
+                if job.error_message or job.error_category
+                else None
+            ),
+        }
 
     @application.post("/api/yomiage/pause")
     async def pause(request: Request):
@@ -1513,6 +1675,7 @@ app = create_app(dependencies=_legacy_dependencies())
 __all__ = [
     "BatchSynthesizeRequest",
     "ReadRequest",
+    "ReadTextRequest",
     "ServerDependencies",
     "SynthesizeRequest",
     "app",

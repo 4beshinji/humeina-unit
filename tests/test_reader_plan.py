@@ -163,6 +163,29 @@ async def test_unknown_resume_id_falls_back_to_start_order() -> None:
     assert [item.utterance_id for item in provider.calls] == ["u-0001", "u-0002"]
 
 
+@pytest.mark.asyncio
+async def test_playback_queue_routes_an_explicit_provider_without_fallback() -> None:
+    voisona = FakeProvider()
+    voisona.name = "voisona"
+    voicevox = FakeProvider()
+    voicevox.name = "voicevox"
+    service = SynthesisService(
+        {"voisona": voisona, "voicevox": voicevox},
+        primary="voisona",
+        fallback="voicevox",
+    )
+    queue = UtterancePlaybackQueue(service, play_audio=lambda _data: None)
+
+    await queue.play_plan(make_plan(), provider="voicevox")
+
+    assert voisona.calls == []
+    assert [item.utterance_id for item in voicevox.calls] == [
+        "u-0000",
+        "u-0001",
+        "u-0002",
+    ]
+
+
 def test_stop_is_safe_without_running_event_loop() -> None:
     queue = UtterancePlaybackQueue(object())  # type: ignore[arg-type]
 
@@ -348,6 +371,24 @@ class FakePlanner:
 
     async def plan(self, _text: str, **_kwargs) -> UtterancePlan:
         return self.plan_value
+
+
+@pytest.mark.asyncio
+async def test_read_text_treats_auto_as_no_provider_override(tmp_path: Path) -> None:
+    provider = FakeProvider()
+    service = SynthesisService(provider)
+    engine = ReadingEngine(
+        FakeTTSManager(provider),
+        synthesis_service=service,
+        planning_adapter=FakePlanner(make_plan()),
+        bookmark_manager=BookmarkManager(tmp_path / "bookmarks"),
+        playback_queue=UtterancePlaybackQueue(service, play_audio=lambda _data: None),
+    )
+
+    results = await engine.read_text("本文", provider="auto")
+
+    assert [result.provider for result in results] == ["fake", "fake", "fake"]
+    assert [item.utterance_id for item in provider.calls] == ["u-0000", "u-0001", "u-0002"]
 
 
 @pytest.mark.asyncio

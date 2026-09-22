@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import io
 import time
 import wave
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -64,6 +66,10 @@ class TTSManager:
         self._synth_task: asyncio.Task | None = None
         self._play_task: asyncio.Task | None = None
         self._owned_synthesis_tasks: set[asyncio.Task[AudioResult]] = set()
+        self._provider_override: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+            f"yomiage_provider_override_{id(self)}",
+            default=None,
+        )
 
     @property
     def service(self) -> "SynthesisService | None":
@@ -82,6 +88,42 @@ class TTSManager:
         """Whether an owned service already closed the legacy providers."""
 
         return self._closed_owned_service
+
+    @property
+    def available_provider_names(self) -> tuple[str, ...]:
+        """このmanagerで選択可能なprovider名を構成順で返す。"""
+
+        names = [str(self.primary.name)]
+        if self.fallback is not None and self.fallback.name not in names:
+            names.append(str(self.fallback.name))
+        return tuple(names)
+
+    @property
+    def selected_provider_name(self) -> str:
+        """現在のasync実行コンテキストで使うprovider名。"""
+
+        return self._provider_override.get() or str(self.primary.name)
+
+    @property
+    def provider_override_name(self) -> str | None:
+        """明示指定がある場合だけprovider名を返す。"""
+
+        return self._provider_override.get()
+
+    @contextmanager
+    def use_provider(self, provider: str | None):
+        """一回の読み上げ処理にだけprovider選択を適用する。"""
+
+        normalized = str(provider).strip().lower() if provider else None
+        if normalized == "auto":
+            normalized = None
+        if normalized is not None and normalized not in self.available_provider_names:
+            raise ValueError(f"provider is not configured: {normalized}")
+        token = self._provider_override.set(normalized)
+        try:
+            yield
+        finally:
+            self._provider_override.reset(token)
 
     def _attach_metrics(self, service: "SynthesisService") -> None:
         """Attach a collector only when a supplied service has no collector."""
@@ -232,6 +274,7 @@ class TTSManager:
     async def _do_synthesize(self, text: str, params: TTSParams) -> AudioResult:
         kwargs = self._build_kwargs(params)
         engine_name = self._select_provider().name
+        provider_override = self._provider_override.get()
 
         if self._hooks:
             self._hooks.emit_synthesis_start(text, engine_name, kwargs)
@@ -259,6 +302,7 @@ class TTSManager:
             result = await self._ensure_service().synthesize(
                 SynthesisRequest(
                     text=text,
+                    provider=provider_override,
                     voice_intent=intent,
                     parameter_context=VoiceResolutionContext(
                         overrides=VoiceOverrides.from_mapping(kwargs)
@@ -288,7 +332,12 @@ class TTSManager:
         # Provider selection/fallback is owned by SynthesisService.  This method remains as a
         # Reader compatibility hook for choosing playback strategy and never executes a second
         # fallback branch.
-        return self.primary
+        selected = self._provider_override.get()
+        if selected is None or selected == self.primary.name:
+            return self.primary
+        if self.fallback is not None and selected == self.fallback.name:
+            return self.fallback
+        raise ValueError(f"provider is not configured: {selected}")
 
     def _is_slow_provider(self) -> bool:
         return self._select_provider().is_slow

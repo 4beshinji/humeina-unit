@@ -131,6 +131,7 @@ class UtterancePlaybackQueue:
         self,
         plan: UtterancePlan,
         *,
+        provider: str | None = None,
         work_id: str | None = None,
         run_id: str | None = None,
         start_utterance_id: str | None = None,
@@ -186,6 +187,20 @@ class UtterancePlaybackQueue:
                 run_id=run_id,
                 destination=destination,
             )
+            if provider is not None:
+                request = SynthesisRequest(
+                    text=request.text,
+                    voice_intent=request.voice_intent,
+                    utterance_id=request.utterance_id,
+                    provider=provider,
+                    work_id=request.work_id,
+                    run_id=request.run_id,
+                    scene=request.scene,
+                    parameter_context=request.parameter_context,
+                    destination=request.destination,
+                    target=request.target,
+                    metadata=request.metadata,
+                )
             if parameter_context_factory is not None:
                 request = SynthesisRequest(
                     text=request.text,
