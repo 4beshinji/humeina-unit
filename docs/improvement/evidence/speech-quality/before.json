@@ -1,0 +1,641 @@
+{
+  "condition": "before",
+  "backend": "mock",
+  "cases": [
+    {
+      "id": "plain",
+      "text": "空は青かった。",
+      "tts_text": "空は青かった。",
+      "segments": [
+        {
+          "text": "空は青かった。",
+          "speaker": null,
+          "type": "narration"
+        }
+      ],
+      "sdk_segments": [
+        {
+          "text": "空は青かった。",
+          "speaker": null,
+          "type": "narration"
+        }
+      ],
+      "requests": 1,
+      "requested_output_tokens": 2048
+    },
+    {
+      "id": "parentheses",
+      "text": "設定(任意)を保存。",
+      "tts_text": "設定(任意)を保存。",
+      "segments": [
+        {
+          "text": "設定",
+          "speaker": null,
+          "type": "narration"
+        },
+        {
+          "text": "(任意)",
+          "speaker": null,
+          "type": "thought"
+        },
+        {
+          "text": "を保存。",
+          "speaker": null,
+          "type": "narration"
+        }
+      ],
+      "sdk_segments": [
+        {
+          "text": "設定(任意)を保存。",
+          "speaker": null,
+          "type": "thought"
+        }
+      ],
+      "requests": 1,
+      "requested_output_tokens": 2048
+    },
+    {
+      "id": "plain_quote",
+      "text": "「保存」を押す。",
+      "tts_text": "「保存」を押す。",
+      "segments": [
+        {
+          "text": "「保存」",
+          "speaker": null,
+          "type": "dialogue"
+        },
+        {
+          "text": "を押す。",
+          "speaker": null,
+          "type": "narration"
+        }
+      ],
+      "sdk_segments": [
+        {
+          "text": "「保存」を押す。",
+          "speaker": null,
+          "type": "dialogue"
+        }
+      ],
+      "requests": 1,
+      "requested_output_tokens": 2048
+    },
+    {
+      "id": "ruby_rb",
+      "text": "小鳥遊\nさん",
+      "tts_text": "小鳥遊\nさん",
+      "segments": [
+        {
+          "text": "小鳥遊",
+          "speaker": null,
+          "type": "narration"
+        },
+        {
+          "text": "さん",
+          "speaker": null,
+          "type": "narration"
+        }
+      ],
+      "sdk_segments": [
+        {
+          "text": "小鳥遊\nさん",
+          "speaker": null,
+          "type": "narration"
+        }
+      ],
+      "requests": 1,
+      "requested_output_tokens": 2048
+    },
+    {
+      "id": "ruby_implicit",
+      "text": "一日\nに会う。",
+      "tts_text": "一日\nに会う。",
+      "segments": [
+        {
+          "text": "一日",
+          "speaker": null,
+          "type": "narration"
+        },
+        {
+          "text": "に会う。",
+          "speaker": null,
+          "type": "narration"
+        }
+      ],
+      "sdk_segments": [
+        {
+          "text": "一日\nに会う。",
+          "speaker": null,
+          "type": "narration"
+        }
+      ],
+      "requests": 1,
+      "requested_output_tokens": 2048
+    },
+    {
+      "id": "ruby_occurrences",
+      "text": "一日\nは\n一日\n休む。",
+      "tts_text": "一日\nは\n一日\n休む。",
+      "segments": [
+        {
+          "text": "一日",
+          "speaker": null,
+          "type": "narration"
+        },
+        {
+          "text": "は",
+          "speaker": null,
+          "type": "narration"
+        },
+        {
+          "text": "一日",
+          "speaker": null,
+          "type": "narration"
+        },
+        {
+          "text": "休む。",
+          "speaker": null,
+          "type": "narration"
+        }
+      ],
+      "sdk_segments": [
+        {
+          "text": "一日\nは\n一日\n休む。",
+          "speaker": null,
+          "type": "narration"
+        }
+      ],
+      "requests": 1,
+      "requested_output_tokens": 2048
+    },
+    {
+      "id": "ruby_unmarked_occurrence",
+      "text": "生\nと生。",
+      "tts_text": "生\nと生。",
+      "segments": [
+        {
+          "text": "生",
+          "speaker": null,
+          "type": "narration"
+        },
+        {
+          "text": "と生。",
+          "speaker": null,
+          "type": "narration"
+        }
+      ],
+      "sdk_segments": [
+        {
+          "text": "生\nと生。",
+          "speaker": null,
+          "type": "narration"
+        }
+      ],
+      "requests": 1,
+      "requested_output_tokens": 2048
+    },
+    {
+      "id": "ruby_pairs",
+      "text": "山",
+      "tts_text": "山",
+      "segments": [
+        {
+          "text": "山",
+          "speaker": null,
+          "type": "narration"
+        }
+      ],
+      "sdk_segments": [
+        {
+          "text": "山",
+          "speaker": null,
+          "type": "narration"
+        }
+      ],
+      "requests": 1,
+      "requested_output_tokens": 2048
+    },
+    {
+      "id": "inline",
+      "text": "小鳥遊\nさん",
+      "tts_text": "小鳥遊\nさん",
+      "segments": [
+        {
+          "text": "小鳥遊",
+          "speaker": null,
+          "type": "narration"
+        },
+        {
+          "text": "さん",
+          "speaker": null,
+          "type": "narration"
+        }
+      ],
+      "sdk_segments": [
+        {
+          "text": "小鳥遊\nさん",
+          "speaker": null,
+          "type": "narration"
+        }
+      ],
+      "requests": 1,
+      "requested_output_tokens": 2048
+    },
+    {
+      "id": "nfkc_expand",
+      "text": "株式会社ABC",
+      "tts_text": "株式会社ABC",
+      "segments": [
+        {
+          "text": "株式会社ABC",
+          "speaker": null,
+          "type": "narration"
+        }
+      ],
+      "sdk_segments": [
+        {
+          "text": "株式会社ABC",
+          "speaker": null,
+          "type": "narration"
+        }
+      ],
+      "requests": 1,
+      "requested_output_tokens": 2048
+    },
+    {
+      "id": "nfkc_compose",
+      "text": "ガとガ",
+      "tts_text": "ガとガ",
+      "segments": [
+        {
+          "text": "ガとガ",
+          "speaker": null,
+          "type": "narration"
+        }
+      ],
+      "sdk_segments": [
+        {
+          "text": "ガとガ",
+          "speaker": null,
+          "type": "narration"
+        }
+      ],
+      "requests": 1,
+      "requested_output_tokens": 2048
+    },
+    {
+      "id": "nfkc_reading",
+      "text": "株式会社\n小鳥遊",
+      "tts_text": "株式会社\n小鳥遊",
+      "segments": [
+        {
+          "text": "株式会社",
+          "speaker": null,
+          "type": "narration"
+        },
+        {
+          "text": "小鳥遊",
+          "speaker": null,
+          "type": "narration"
+        }
+      ],
+      "sdk_segments": [
+        {
+          "text": "株式会社\n小鳥遊",
+          "speaker": null,
+          "type": "narration"
+        }
+      ],
+      "requests": 1,
+      "requested_output_tokens": 2048
+    },
+    {
+      "id": "builtin",
+      "text": "AIとAPI",
+      "tts_text": "AIとAPI",
+      "segments": [
+        {
+          "text": "AIとAPI",
+          "speaker": null,
+          "type": "narration"
+        }
+      ],
+      "sdk_segments": [
+        {
+          "text": "AIとAPI",
+          "speaker": null,
+          "type": "narration"
+        }
+      ],
+      "requests": 1,
+      "requested_output_tokens": 2048
+    },
+    {
+      "id": "case",
+      "text": "AIとai",
+      "tts_text": "AIとai",
+      "segments": [
+        {
+          "text": "AIとai",
+          "speaker": null,
+          "type": "narration"
+        }
+      ],
+      "sdk_segments": [
+        {
+          "text": "AIとai",
+          "speaker": null,
+          "type": "narration"
+        }
+      ],
+      "requests": 1,
+      "requested_output_tokens": 2048
+    },
+    {
+      "id": "word_boundary",
+      "text": "RAIL APIClient",
+      "tts_text": "RAIL APIClient",
+      "segments": [
+        {
+          "text": "RAIL APIClient",
+          "speaker": null,
+          "type": "narration"
+        }
+      ],
+      "sdk_segments": [
+        {
+          "text": "RAIL APIClient",
+          "speaker": null,
+          "type": "narration"
+        }
+      ],
+      "requests": 1,
+      "requested_output_tokens": 2048
+    },
+    {
+      "id": "unknown_english",
+      "text": "FoobarとQux",
+      "tts_text": "FoobarとQux",
+      "segments": [
+        {
+          "text": "FoobarとQux",
+          "speaker": null,
+          "type": "narration"
+        }
+      ],
+      "sdk_segments": [
+        {
+          "text": "FoobarとQux",
+          "speaker": null,
+          "type": "narration"
+        }
+      ],
+      "requests": 1,
+      "requested_output_tokens": 2048
+    },
+    {
+      "id": "no_person",
+      "text": "空は青かった。「きれいだね。」",
+      "tts_text": "空は青かった。「きれいだね。」",
+      "segments": [
+        {
+          "text": "空は青かった。",
+          "speaker": null,
+          "type": "narration"
+        },
+        {
+          "text": "「きれいだね。」",
+          "speaker": "空",
+          "type": "dialogue"
+        }
+      ],
+      "sdk_segments": [
+        {
+          "text": "空は青かった。「きれいだね。」",
+          "speaker": "空",
+          "type": "dialogue"
+        }
+      ],
+      "requests": 1,
+      "requested_output_tokens": 2048
+    },
+    {
+      "id": "multi_sentence_dialogue",
+      "text": "太郎は言った。「おはよう。今日は晴れだね。」花子はうなずいた。",
+      "tts_text": "太郎は言った。「おはよう。今日は晴れだね。」花子はうなずいた。",
+      "segments": [
+        {
+          "text": "太郎は言った。",
+          "speaker": null,
+          "type": "narration"
+        },
+        {
+          "text": "「おはよう。今日は晴れだね。」",
+          "speaker": "太郎",
+          "type": "dialogue"
+        },
+        {
+          "text": "花子はうなずいた。",
+          "speaker": null,
+          "type": "narration"
+        }
+      ],
+      "sdk_segments": [
+        {
+          "text": "太郎は言った。「おはよう。今日は晴れだね。」花子はうなずいた。",
+          "speaker": "太郎",
+          "type": "dialogue"
+        }
+      ],
+      "requests": 1,
+      "requested_output_tokens": 2048
+    },
+    {
+      "id": "two_speakers",
+      "text": "太郎は「おはよう」と言った。花子は「こんにちは」と答えた。",
+      "tts_text": "太郎は「おはよう」と言った。花子は「こんにちは」と答えた。",
+      "segments": [
+        {
+          "text": "太郎は",
+          "speaker": null,
+          "type": "narration"
+        },
+        {
+          "text": "「おはよう」",
+          "speaker": "太郎",
+          "type": "dialogue"
+        },
+        {
+          "text": "と言った。花子は",
+          "speaker": null,
+          "type": "narration"
+        },
+        {
+          "text": "「こんにちは」",
+          "speaker": "花子",
+          "type": "dialogue"
+        },
+        {
+          "text": "と答えた。",
+          "speaker": null,
+          "type": "narration"
+        }
+      ],
+      "sdk_segments": [
+        {
+          "text": "太郎は「おはよう」と言った。花子は「こんにちは」と答えた。",
+          "speaker": null,
+          "type": "narration"
+        }
+      ],
+      "requests": 1,
+      "requested_output_tokens": 2048
+    },
+    {
+      "id": "unknown_dialogue",
+      "text": "「誰だろう。」",
+      "tts_text": "「誰だろう。」",
+      "segments": [
+        {
+          "text": "「誰だろう。」",
+          "speaker": null,
+          "type": "dialogue"
+        }
+      ],
+      "sdk_segments": [
+        {
+          "text": "「誰だろう。」",
+          "speaker": null,
+          "type": "dialogue"
+        }
+      ],
+      "requests": 1,
+      "requested_output_tokens": 2048
+    },
+    {
+      "id": "multiline_dialogue",
+      "text": "太郎は言った。「おはよう。\n今日は晴れだね。」",
+      "tts_text": "太郎は言った。「おはよう。\n今日は晴れだね。」",
+      "segments": [
+        {
+          "text": "太郎は言った。「おはよう。",
+          "speaker": null,
+          "type": "narration"
+        },
+        {
+          "text": "今日は晴れだね。」",
+          "speaker": null,
+          "type": "narration"
+        }
+      ],
+      "sdk_segments": [
+        {
+          "text": "太郎は言った。「おはよう。\n今日は晴れだね。」",
+          "speaker": null,
+          "type": "narration"
+        }
+      ],
+      "requests": 1,
+      "requested_output_tokens": 2048
+    },
+    {
+      "id": "thought",
+      "text": "(困ったな)",
+      "tts_text": "(困ったな)",
+      "segments": [
+        {
+          "text": "(困ったな)",
+          "speaker": null,
+          "type": "thought"
+        }
+      ],
+      "sdk_segments": [
+        {
+          "text": "(困ったな)",
+          "speaker": null,
+          "type": "thought"
+        }
+      ],
+      "requests": 1,
+      "requested_output_tokens": 2048
+    },
+    {
+      "id": "script_parentheses",
+      "text": "設定(任意)です。",
+      "tts_text": "設定(任意)です。",
+      "segments": [
+        {
+          "text": "設定",
+          "speaker": null,
+          "type": "narration"
+        },
+        {
+          "text": "(任意)",
+          "speaker": null,
+          "type": "thought"
+        },
+        {
+          "text": "です。",
+          "speaker": null,
+          "type": "narration"
+        }
+      ],
+      "sdk_segments": [
+        {
+          "text": "設定(任意)です。",
+          "speaker": null,
+          "type": "thought"
+        }
+      ],
+      "requests": 1,
+      "requested_output_tokens": 2048
+    },
+    {
+      "id": "removed_note",
+      "text": "小鳥遊[#注記]さん",
+      "tts_text": "小鳥遊[#注記]さん",
+      "segments": [
+        {
+          "text": "小鳥遊[#注記]さん",
+          "speaker": null,
+          "type": "narration"
+        }
+      ],
+      "sdk_segments": [
+        {
+          "text": "小鳥遊[#注記]さん",
+          "speaker": null,
+          "type": "narration"
+        }
+      ],
+      "requests": 1,
+      "requested_output_tokens": 2048
+    }
+  ],
+  "batch_boundary_example": {
+    "sentences": [
+      "太郎は言った。",
+      "「おはよう。",
+      "今日は晴れだね。",
+      "」花子はうなずいた。"
+    ],
+    "assignments": {
+      "0": {
+        "type": "narration",
+        "speaker": null
+      },
+      "1": {
+        "type": "dialogue",
+        "speaker": "太郎"
+      },
+      "2": {
+        "type": "narration",
+        "speaker": null
+      },
+      "3": {
+        "type": "narration",
+        "speaker": null
+      }
+    }
+  }
+}

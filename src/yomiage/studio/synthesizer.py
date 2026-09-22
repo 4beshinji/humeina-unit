@@ -9,10 +9,13 @@ from pathlib import Path
 
 from loguru import logger
 
+from ..adapters.persistence.pronunciation import PronunciationDictionary
 from ..application.synthesis import SynthesisRequest, SynthesisService
 from ..application.voice_parameters import VoiceOverrides, VoiceResolutionContext
 from ..bootstrap import create_synthesis_service
 from ..core.models import VoiceIntent
+from ..nlp.text_processor import TextProcessor
+from ..settings import AnalysisSettings
 from ..tts.base import TTSProvider
 from .cache import SynthCache
 from .models import ScriptLine, SpeakerMapping, SynthResult
@@ -29,7 +32,13 @@ class StudioSynthesizer:
         *,
         synthesis_service: SynthesisService | None = None,
         cache: object | None = None,
+        analysis_settings: AnalysisSettings | None = None,
     ):
+        settings = analysis_settings or AnalysisSettings(llm_policy="off", content_kind="script")
+        self._dictionary = PronunciationDictionary(
+            settings.common_dictionary, settings.work_dictionary
+        )
+        self._processor = TextProcessor()
         self.providers = providers or {}
         self.default_provider = default_provider
         if synthesis_service is None:
@@ -64,7 +73,9 @@ class StudioSynthesizer:
         voice_intent = _voice_intent_from_params(line, params)
         result = await self._service.synthesize(
             SynthesisRequest(
-                text=line.text,
+                text=self._dictionary.apply(
+                    self._processor.process_document(line.text)
+                ).synthesis_text,
                 voice_intent=voice_intent,
                 # The configured primary provider may fall back; an explicitly different
                 # speaker mapping remains pinned to its requested provider.
@@ -120,30 +131,28 @@ class StudioSynthesizer:
                 duration = _get_wav_duration_from_file(wav_path)
                 logger.debug(f"Cache hit: line={line.index + 1}, chars={len(line.text)}")
             else:
-                logger.info(
-                    f"[{i + 1}/{len(lines)}] {line.speaker}: {line.text[:40]}"
-                )
+                logger.info(f"[{i + 1}/{len(lines)}] {line.speaker}: {line.text[:40]}")
                 duration = await self.synthesize_line(line, mapping, wav_path)
                 if cache:
                     cache.record(line, mapping, wav_path)
 
-            results.append(SynthResult(
-                line_index=line.index,
-                wav_path=wav_path,
-                txt_path=txt_path,
-                duration=duration,
-                speaker=line.speaker,
-                text=line.text,
-            ))
+            results.append(
+                SynthResult(
+                    line_index=line.index,
+                    wav_path=wav_path,
+                    txt_path=txt_path,
+                    duration=duration,
+                    speaker=line.speaker,
+                    text=line.text,
+                )
+            )
 
             if on_progress:
                 on_progress(i + 1, len(lines), line)
 
         return results
 
-    async def preview_line(
-        self, line: ScriptLine, mapping: SpeakerMapping
-    ) -> None:
+    async def preview_line(self, line: ScriptLine, mapping: SpeakerMapping) -> None:
         """1行をプレビュー再生."""
         from ..tts.playback import play_wav
 
@@ -153,7 +162,9 @@ class StudioSynthesizer:
         voice_intent = _voice_intent_from_params(line, params)
         result = await self._service.synthesize(
             SynthesisRequest(
-                text=line.text,
+                text=self._dictionary.apply(
+                    self._processor.process_document(line.text)
+                ).synthesis_text,
                 voice_intent=voice_intent,
                 provider=(
                     None

@@ -6,6 +6,7 @@ import inspect
 import tempfile
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
+from uuid import uuid4
 
 from ...application.voice_parameters import translate_provider_parameters
 from ...ports.tts import (
@@ -43,6 +44,18 @@ class LegacyTTSProviderAdapter:
     def __init__(self, provider: Any, *, name: str | None = None) -> None:
         self.provider = provider
         self.name = name or str(provider.name)
+        self.cache_version = getattr(provider, "cache_version", None) or getattr(
+            provider, "version", None
+        )
+        if self.cache_version is None:
+            self.cache_version = getattr(provider, "_unversioned_cache_id", None)
+            if self.cache_version is None:
+                self.cache_version = "unversioned-session:" + uuid4().hex
+                try:
+                    provider._unversioned_cache_id = self.cache_version
+                except AttributeError:
+                    # 属性を保持できない外部adapterはwrapper内だけで再利用する。
+                    pass
         output_modes = {ProviderOutputMode.AUDIO_BYTES}
         if isinstance(provider, TTSProvider) or isinstance(provider, FileSynthesisProvider):
             output_modes.add(ProviderOutputMode.LOCAL_FILE)
@@ -73,24 +86,6 @@ class LegacyTTSProviderAdapter:
 
     async def synthesize(self, request: ProviderSynthesisRequest) -> ProviderSynthesisResult:
         kwargs = dict(request.metadata)
-        if request.resolved_parameters is not None and self.name in {
-            "voisona",
-            "voicevox",
-            "voicepeak",
-        }:
-            for key in (
-                "speed",
-                "pitch",
-                "volume",
-                "intonation",
-                "huskiness",
-                "alp",
-                "style_weights",
-            ):
-                kwargs.pop(key, None)
-            kwargs["_native_parameters"] = dict(
-                translate_provider_parameters(self.name, request.resolved_parameters).values
-            )
         # Batch adapters pass a few execution-only values (run directory, VM mount, and
         # provider-specific voice override) through request metadata.  They must never leak
         # into the legacy provider's public kwargs.
@@ -107,6 +102,22 @@ class LegacyTTSProviderAdapter:
         voice = str(
             voice_override or (request.voice.id if request.voice is not None else "neutral")
         )
+        if request.resolved_parameters is not None and self.name in {
+            "voisona",
+            "voicevox",
+            "voicepeak",
+        }:
+            for key in (
+                "speed",
+                "pitch",
+                "volume",
+                "intonation",
+                "huskiness",
+                "alp",
+                "style_weights",
+            ):
+                kwargs.pop(key, None)
+            kwargs["_native_parameters"] = self._native_parameters(request, voice)
         kwargs.setdefault("speed", request.voice_intent.speaking_rate)
         kwargs.setdefault("pitch", request.voice_intent.pitch)
         kwargs.setdefault("volume", request.voice_intent.volume)
@@ -176,6 +187,78 @@ class LegacyTTSProviderAdapter:
             ),
             metadata=metadata,
         )
+
+    def _native_parameters(
+        self,
+        request: ProviderSynthesisRequest,
+        voice: str,
+    ) -> dict[str, Any]:
+        """canonical値へlegacy provider固有の設定baselineを一度だけ合成する。"""
+
+        resolved = request.resolved_parameters
+        if resolved is None:
+            return {}
+        values = dict(translate_provider_parameters(self.name, resolved).values)
+        if self.name == "voicevox":
+            values["speedScale"] = float(getattr(self.provider, "speed_scale", 1.0)) * float(
+                resolved.speaking_rate
+            )
+            values["pitchScale"] = float(getattr(self.provider, "pitch_scale", 0.0)) + float(
+                resolved.pitch
+            )
+            values["intonationScale"] = float(
+                getattr(self.provider, "intonation_scale", 1.0)
+            ) * float(resolved.intonation)
+        elif self.name == "voicepeak":
+            pitch_scale = float(getattr(self.provider, "pitch_scale", 300.0))
+            values["pitch"] = max(-300, min(300, round(float(resolved.pitch) * pitch_scale)))
+        elif self.name == "voisona":
+            baseline: dict[str, Any] = {
+                "speed": 1.0,
+                "pitch": 0.0,
+                "volume": 0.0,
+                "intonation": 1.0,
+                "huskiness": 0.0,
+                "alp": 0.0,
+            }
+            configured = getattr(self.provider, "_base_params", None)
+            if isinstance(configured, dict):
+                baseline.update(configured)
+            tones = getattr(self.provider, "_tone_overrides", None)
+            tone = tones.get(voice) if isinstance(tones, dict) else None
+            if isinstance(tone, dict):
+                baseline.update({key: value for key, value in tone.items() if value is not None})
+            values = {
+                "speed": max(
+                    0.2,
+                    min(5.0, float(baseline["speed"]) * float(resolved.speaking_rate)),
+                ),
+                "pitch": max(
+                    -600,
+                    min(600, float(baseline["pitch"]) + float(resolved.pitch)),
+                ),
+                "volume": max(
+                    -8,
+                    min(8, float(baseline["volume"]) + float(resolved.volume)),
+                ),
+                "intonation": max(
+                    0,
+                    min(
+                        2,
+                        float(baseline["intonation"]) * float(resolved.intonation),
+                    ),
+                ),
+                "huskiness": max(
+                    -20,
+                    min(20, float(baseline["huskiness"]) + float(resolved.huskiness)),
+                ),
+                "alp": max(-1, min(1, float(baseline["alp"]) + float(resolved.alp))),
+            }
+            if resolved.style_weights:
+                values["style_weights"] = resolved.style_weights
+            elif "style_weights" in baseline:
+                values["style_weights"] = baseline["style_weights"]
+        return values
 
     async def close(self) -> None:
         method = getattr(self.provider, "close", None)
@@ -266,8 +349,7 @@ class VoisonaFileProviderAdapter(LegacyTTSProviderAdapter):
                 ),
             )
 
-    @staticmethod
-    def _provider_kwargs(request: ProviderSynthesisRequest) -> dict[str, Any]:
+    def _provider_kwargs(self, request: ProviderSynthesisRequest) -> dict[str, Any]:
         kwargs = dict(request.metadata)
         for key in (
             "run_dir",
@@ -292,10 +374,8 @@ class VoisonaFileProviderAdapter(LegacyTTSProviderAdapter):
                 "style_weights",
             ):
                 kwargs.pop(key, None)
-            provider = str(getattr(request.voice, "provider", "") or "voisona")
-            kwargs["_native_parameters"] = dict(
-                translate_provider_parameters(provider, request.resolved_parameters).values
-            )
+            voice = str(request.voice.id if request.voice is not None else "neutral")
+            kwargs["_native_parameters"] = self._native_parameters(request, voice)
         kwargs.setdefault("speed", request.voice_intent.speaking_rate)
         kwargs.setdefault("pitch", request.voice_intent.pitch)
         kwargs.setdefault("volume", request.voice_intent.volume)

@@ -3,6 +3,7 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
+from ..core.text import TextDocument
 from ..ports.sources import URLPolicy
 from .http import HTTPFetcher
 
@@ -26,6 +27,7 @@ class Chapter:
     source_url: str
     chapter_index: int
     total_chapters: int | None = None
+    document: TextDocument | None = None
 
 
 class ContentSource(ABC):

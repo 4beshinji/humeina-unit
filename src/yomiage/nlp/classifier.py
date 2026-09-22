@@ -29,74 +29,73 @@ class TextClassifier:
     _DIALOGUE_PATTERN = re.compile(r"「([^」]*)」")
     _THOUGHT_PATTERN = re.compile(r"[（(]([^）)]*)[）)]")
     _INNER_THOUGHT_PATTERN = re.compile(r"『([^』]*)』")
-    _SCENE_BREAK_PATTERN = re.compile(
-        r"^\s*(?:[＊\*]{3,}|[-ー－]{3,}|[□■◇◆]{3,})\s*$"
-    )
+    _SCENE_BREAK_PATTERN = re.compile(r"^\s*(?:[＊\*]{3,}|[-ー－]{3,}|[□■◇◆]{3,})\s*$")
+
+    def __init__(self, content_kind: str = "novel"):
+        if content_kind not in {"plain", "novel", "script"}:
+            raise ValueError("unknown content kind")
+        self.content_kind = content_kind
 
     def classify(self, text: str) -> list[TextSegment]:
-        """テキストをセグメントに分類."""
-        lines = text.split("\n")
+        """TTS分割より前に構造と位置を確定する。複数行・複数文の台詞を保つ。"""
         segments: list[TextSegment] = []
-        idx = 0
 
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
+        def emit(start: int, end: int, kind: SegmentType) -> None:
+            while start < end and text[start].isspace():
+                start += 1
+            while end > start and text[end - 1].isspace():
+                end -= 1
+            if start == end:
+                return
+            value = text[start:end]
+            if self._SCENE_BREAK_PATTERN.fullmatch(value):
+                kind, value = SegmentType.SCENE_BREAK, ""
+            segments.append(
+                TextSegment(
+                    value,
+                    kind,
+                    len(segments),
+                    metadata={
+                        "normalized_start": start,
+                        "normalized_end": end,
+                    },
+                )
+            )
 
-            if self._SCENE_BREAK_PATTERN.match(line):
-                segments.append(TextSegment(text="", type=SegmentType.SCENE_BREAK, index=idx))
-                idx += 1
-                continue
-
-            # 行内の会話・心内語・地の文を分離
-            parts = self._split_line(line)
-            for part_text, part_type in parts:
-                if part_text.strip():
-                    segments.append(TextSegment(text=part_text, type=part_type, index=idx))
-                    idx += 1
-
+        brackets = {"「": ("」", SegmentType.DIALOGUE)}
+        if self.content_kind == "novel":
+            brackets.update(
+                {
+                    "（": ("）", SegmentType.THOUGHT),
+                    "(": (")", SegmentType.THOUGHT),
+                    "『": ("』", SegmentType.THOUGHT),
+                }
+            )
+        if self.content_kind == "plain":
+            brackets = {}
+        start = pos = 0
+        while pos < len(text):
+            if text[pos] in brackets:
+                closing, kind = brackets[text[pos]]
+                depth, end = 1, pos + 1
+                while end < len(text) and depth:
+                    if text[end] == text[pos]:
+                        depth += 1
+                    elif text[end] == closing:
+                        depth -= 1
+                    end += 1
+                if depth == 0:
+                    emit(start, pos, SegmentType.NARRATION)
+                    emit(pos, end, kind)
+                    start = pos = end
+                    continue
+            if text[pos] == "\n":
+                emit(start, pos + 1, SegmentType.NARRATION)
+                start = pos + 1
+            pos += 1
+        emit(start, len(text), SegmentType.NARRATION)
         return segments
 
     def _split_line(self, line: str) -> list[tuple[str, SegmentType]]:
-        """行を会話・心内語・地の文に分離."""
-        parts: list[tuple[str, SegmentType]] = []
-        pos = 0
-
-        while pos < len(line):
-            # 「」 会話文を探す
-            dialogue_match = self._DIALOGUE_PATTERN.search(line, pos)
-            # （）心内語を探す
-            thought_match = self._THOUGHT_PATTERN.search(line, pos)
-            # 『』心内語を探す
-            inner_match = self._INNER_THOUGHT_PATTERN.search(line, pos)
-
-            # 最も早く現れるものを選択
-            matches = []
-            if dialogue_match:
-                matches.append((dialogue_match.start(), dialogue_match, SegmentType.DIALOGUE))
-            if thought_match:
-                matches.append((thought_match.start(), thought_match, SegmentType.THOUGHT))
-            if inner_match:
-                matches.append((inner_match.start(), inner_match, SegmentType.THOUGHT))
-
-            if not matches:
-                remaining = line[pos:]
-                if remaining.strip():
-                    parts.append((remaining, SegmentType.NARRATION))
-                break
-
-            matches.sort(key=lambda x: x[0])
-            earliest_pos, match, seg_type = matches[0]
-
-            # マッチ前の地の文
-            if earliest_pos > pos:
-                before = line[pos:earliest_pos]
-                if before.strip():
-                    parts.append((before, SegmentType.NARRATION))
-
-            # マッチした部分（括弧を含む全体）
-            parts.append((match.group(0), seg_type))
-            pos = match.end()
-
-        return parts if parts else [(line, SegmentType.NARRATION)]
+        """旧呼び出し元向け。構造解析はclassifyに集約する。"""
+        return [(s.text, s.type) for s in self.classify(line)]

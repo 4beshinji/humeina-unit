@@ -13,6 +13,7 @@ from typing import Any, AsyncIterator, Iterable
 
 from loguru import logger
 
+from ..core.text import STATIC_READINGS as _STATIC_READINGS
 from ..nlp.llm_utils import extract_json
 from .budgeting import estimate_tokens
 from .cache import LLMCache
@@ -26,21 +27,6 @@ _RETRYABLE = {
     LLMErrorCategory.SERVER,
 }
 _ROMAN_TOKEN = re.compile(r"[A-Za-z][A-Za-z0-9.+#_/-]*")
-_STATIC_READINGS = {
-    "AI": "エーアイ",
-    "API": "エーピーアイ",
-    "BBC": "ビービーシー",
-    "CPU": "シーピーユー",
-    "GPU": "ジーピーユー",
-    "HTTP": "エイチティーティーピー",
-    "HTTPS": "エイチティーティーピーエス",
-    "JR": "ジェイアール",
-    "LLM": "エルエルエム",
-    "NLP": "エヌエルピー",
-    "ROCm": "ロックエム",
-    "TTS": "ティーティーエス",
-    "URL": "ユーアールエル",
-}
 
 
 @dataclass(slots=True)
@@ -104,6 +90,34 @@ class LLMService(LLMBackend):
                 result.append(provider)
         return [provider for provider in result if provider in self.transports]
 
+    def analysis_identity(self) -> dict:
+        """Planがモデル・ルーティングの変更を追跡するための、認証情報を含まない情報。"""
+        return {
+            "routes": self.routes,
+            "models": {
+                name: {
+                    "model": getattr(transport, "model", None),
+                    "protocol": type(transport).__name__,
+                }
+                for name, transport in self.transports.items()
+            },
+        }
+
+    @asynccontextmanager
+    async def ensure_job_scope(self, job_id: str) -> AsyncIterator[None]:
+        """外側のjob予算を保持し、SDK/Readerの独立呼び出しだけ新しい予算を作る。"""
+        if self._job_budget.get() is not None:
+            yield
+        else:
+            async with self.job_scope(job_id):
+                yield
+
+    def effective_output_limit(self, task: str, requested: int = 4096) -> int:
+        """窓の計画と物理要求に共通の出力上限を返す。"""
+        route = self.routes.get(task) or self.routes.get("default") or {}
+        limit = route.get("max_output_tokens", requested)
+        return min(requested, limit) if type(limit) is int else requested
+
     def _route_request(self, request: LLMRequest) -> LLMRequest:
         route = self.routes.get(request.task) or self.routes.get("default") or {}
         limit = route.get("max_output_tokens")
@@ -143,9 +157,7 @@ class LLMService(LLMBackend):
         for provider_index, provider in enumerate(providers):
             transport = self.transports[provider]
             if self._circuit_until.get(provider, 0.0) > time.monotonic():
-                last_error = LLMError(
-                    LLMErrorCategory.UNAVAILABLE, f"{provider} circuit is open"
-                )
+                last_error = LLMError(LLMErrorCategory.UNAVAILABLE, f"{provider} circuit is open")
                 continue
             for retry in range(self.max_retries + 1):
                 self._consume_budget(estimated)
@@ -163,9 +175,7 @@ class LLMService(LLMBackend):
                     await asyncio.sleep(delay)
                     continue
                 except Exception as exc:
-                    last_error = LLMError(
-                        LLMErrorCategory.UNKNOWN, f"{provider} generation failed"
-                    )
+                    last_error = LLMError(LLMErrorCategory.UNKNOWN, f"{provider} generation failed")
                     self._record_error(request.task, transport, last_error, retry)
                     self._mark_failure(provider)
                     logger.debug(f"Unexpected LLM transport error: {type(exc).__name__}")
@@ -228,9 +238,7 @@ class LLMService(LLMBackend):
         parsed = extract_json(response.text)
         if parsed == {} and response.text.strip() not in {"{}", "```json\n{}\n```"}:
             self._record_validation_failure(task, response)
-            raise LLMError(
-                LLMErrorCategory.INVALID_RESPONSE, "LLM returned invalid JSON"
-            )
+            raise LLMError(LLMErrorCategory.INVALID_RESPONSE, "LLM returned invalid JSON")
         if json_schema and not _matches_schema(parsed, json_schema):
             self._record_validation_failure(task, response)
             raise LLMError(
@@ -248,7 +256,7 @@ class LLMService(LLMBackend):
         readings = dict(_STATIC_READINGS)
         unknown: list[str] = []
         for term in terms:
-            cached = self.cache.get(self.cache.key("romanization", term.lower()))
+            cached = self.cache.get(self.cache.key("romanization", term))
             if isinstance(cached, str):
                 readings[term] = cached
             elif term not in readings:
@@ -289,12 +297,14 @@ class LLMService(LLMBackend):
                         continue
                     index = item.get("id")
                     reading = item.get("reading")
-                    if isinstance(index, int) and 0 <= index < len(unknown) and isinstance(
-                        reading, str
+                    if (
+                        isinstance(index, int)
+                        and 0 <= index < len(unknown)
+                        and isinstance(reading, str)
                     ):
                         term = unknown[index]
                         readings[term] = reading
-                        self.cache.put(self.cache.key("romanization", term.lower()), reading)
+                        self.cache.put(self.cache.key("romanization", term), reading)
         # 長い語句を先に置換し、部分一致による破損を避ける。
         ordered = sorted(readings.items(), key=lambda item: len(item[0]), reverse=True)
         result_texts: list[str] = []
@@ -349,9 +359,7 @@ class LLMService(LLMBackend):
         budget = self._job_budget.get()
         requests = budget.requests if budget is not None else self._requests
         tokens = (
-            budget.estimated_input_tokens
-            if budget is not None
-            else self._estimated_input_tokens
+            budget.estimated_input_tokens if budget is not None else self._estimated_input_tokens
         )
         if requests >= self.max_requests_per_job:
             raise LLMError(LLMErrorCategory.BUDGET, "LLM request budget exceeded")

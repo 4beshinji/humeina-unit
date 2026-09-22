@@ -38,6 +38,7 @@ from ..ports.tts import (
 from ..tts.audio_utils import validate_audio_bytes
 from ..utils.atomic_io import atomic_replace_file, atomic_write_wav
 from .operations import OperationDeadline
+from .speech_text import render_speech_text
 from .voice_parameters import VoiceResolutionContext, resolve_voice_parameters
 
 
@@ -122,7 +123,7 @@ class SynthesisRequest:
         destination: str | None = None,
     ) -> "SynthesisRequest":
         return cls(
-            text=utterance.text,
+            text=render_speech_text(utterance),
             voice_intent=utterance.voice_intent,
             utterance_id=utterance.id,
             work_id=work_id,
@@ -549,6 +550,7 @@ class SynthesisService:
                 # resolve their own concrete voice from the provider-independent intent.
                 for key in ("voice_id", "speaker_id", "voice", "default_voice"):
                     provider_metadata.pop(key, None)
+            provider_metadata.update(context.provider_options.get(name, {}))
             provider_request = ProviderSynthesisRequest(
                 text=req.text,
                 voice_intent=req.voice_intent,

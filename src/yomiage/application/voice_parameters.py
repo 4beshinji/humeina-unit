@@ -160,11 +160,15 @@ class VoiceResolutionContext:
     scene: Mapping[str, Any] = field(default_factory=dict)
     emotion: Mapping[str, Any] = field(default_factory=dict)
     overrides: VoiceOverrides = field(default_factory=VoiceOverrides)
+    provider_options: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "profile", dict(self.profile))
         object.__setattr__(self, "scene", dict(self.scene))
         object.__setattr__(self, "emotion", dict(self.emotion))
+        object.__setattr__(
+            self, "provider_options", {k: dict(v) for k, v in self.provider_options.items()}
+        )
 
 
 def _number(mapping: Mapping[str, Any] | None, *names: str, default: float) -> float:
@@ -241,9 +245,7 @@ def resolve_voice_parameters(
         intonation=explicit.intonation if explicit.intonation is not None else intonation,
         huskiness=explicit.huskiness if explicit.huskiness is not None else huskiness,
         alp=explicit.alp if explicit.alp is not None else alp,
-        style_weights=(
-            explicit.style_weights if explicit.style_weights is not None else style
-        ),
+        style_weights=(explicit.style_weights if explicit.style_weights is not None else style),
         emotion=resolved_emotion,
         intensity=intensity,
     )

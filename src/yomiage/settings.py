@@ -525,6 +525,41 @@ RuntimePaths = StorageSettings
 SettingsPaths = StorageSettings
 
 
+class AnalysisSettings(BaseModel):
+    """発話分析の設定。未指定の旧設定はnovel/fullとして読み取る。"""
+
+    model_config = ConfigDict(extra="forbid")
+    content_kind: Literal["plain", "novel", "script"] = "novel"
+    llm_policy: Literal["off", "selective", "full"] = "full"
+    common_dictionary: str | None = None
+    work_dictionary: str | None = None
+    suggest_readings: bool = False
+    reading_proposals: str | None = None
+    context_tokens: int = Field(default=32768, ge=1024)
+    context_safety_ratio: float = Field(default=0.8, gt=0, le=1)
+    max_output_tokens: int = Field(default=4096, ge=128)
+    max_items: int = Field(default=25, ge=1)
+    max_requests: int = Field(default=100, ge=1)
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_off(cls, value):
+        if isinstance(value, dict) and value.get("llm_policy") is False:
+            return {**value, "llm_policy": "off"}
+        return value
+
+    @classmethod
+    def from_config(cls, config) -> AnalysisSettings:
+        raw = config.get("analysis", {})
+        if isinstance(raw, cls):
+            return raw
+        # YAML 1.1ではoffがFalseに解釈されるため明示的に正規化する。
+        raw = dict(raw)
+        if raw.get("llm_policy") is False:
+            raw["llm_policy"] = "off"
+        return cls.model_validate(raw)
+
+
 class Settings(BaseModel):
     """アプリケーション全体の型付き設定。
 
@@ -541,6 +576,7 @@ class Settings(BaseModel):
         validation_alias=AliasChoices("providers", "provider"),
     )
     llm: LLMSettings = Field(default_factory=LLMSettings)
+    analysis: AnalysisSettings = Field(default_factory=AnalysisSettings)
     batch: BatchSettings = Field(default_factory=BatchSettings)
     server: ServerSettings = Field(default_factory=ServerSettings)
     storage: StorageSettings = Field(
@@ -703,6 +739,7 @@ class Settings(BaseModel):
         result["tts"] = self.tts.model_dump(mode="python")
         result.update(self.providers.to_legacy_dict())
         result["llm"] = self.llm.to_config_dict()
+        result["analysis"] = self.analysis.model_dump(mode="python")
         result["batch"] = self.batch.model_dump(mode="python")
         result["server"] = self.server.model_dump(mode="python")
         result["storage"] = self.storage.model_dump(mode="python")
@@ -741,14 +778,18 @@ def _normalize_paths_in_data(data: dict[str, Any], *, base_dir: Path) -> dict[st
     """Absolute化をモデルに渡す前に行う（config fileの相対パスを固定）。"""
 
     result = deepcopy(data)
-    sections = ["storage", "paths", "batch", "ex_voice", "video"]
+    sections = ["storage", "paths", "batch", "ex_voice", "video", "analysis"]
     for section_name in sections:
         section = result.get(section_name)
         if not isinstance(section, dict):
             continue
         for key in list(section):
-            if key in _PATH_FIELDS and isinstance(section[key], (str, Path)):
+            if key in (
+                _PATH_FIELDS | {"common_dictionary", "work_dictionary", "reading_proposals"}
+            ) and isinstance(section[key], (str, Path)):
                 section[key] = _absolute_path(section[key], base_dir=base_dir)
+                if section_name == "analysis":
+                    section[key] = str(section[key])
 
     for provider_name in _PROVIDER_NAMES:
         section = result.get(provider_name)
@@ -853,10 +894,18 @@ def _normalize_raw(data: dict[str, Any], *, base_dir: Path) -> dict[str, Any]:
     if isinstance(ex_voice, dict) and "wav_dir" in ex_voice and "exvoice_wav_dir" not in storage:
         storage["exvoice_wav_dir"] = ex_voice["wav_dir"]
 
+    analysis = result.get("analysis", {})
+    if isinstance(analysis, dict) and analysis.get("llm_policy") in ("off", False):
+        # 読み上げoffで旧backendの資格情報検証を起動条件にしない。
+        # news等の明示機能は自身のfactoryで必要なprovider設定を検証する。
+        llm = result.get("llm")
+        if isinstance(llm, dict):
+            llm["enabled"] = False
     return result
 
 
 __all__ = [
+    "AnalysisSettings",
     "AppSettings",
     "ApplicationSettings",
     "BatchSettings",

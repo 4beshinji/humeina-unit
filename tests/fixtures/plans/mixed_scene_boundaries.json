@@ -297,5 +297,902 @@
         "segment_type": "narration"
       }
     ]
+  },
+  "expected_plan_v2": {
+    "schema_version": 2,
+    "plan_id": "plan_33c79d074f97ba958a32",
+    "source_fingerprint": "670875f6e957c16fbf4de793b1f1c442c4394da093d2277beb90db912e21746d",
+    "config_fingerprint": "33c79d074f97ba958a3208862cb3e2857b2e0e8c91bf7cc4d6a330fe46f2ef0e",
+    "utterances": [
+      {
+        "id": "u-0000",
+        "order": 0,
+        "text": "朝の光が差し込んだ。",
+        "segment_type": "narration",
+        "speaker_id": null,
+        "scene": "daily",
+        "emotion": "neutral",
+        "intensity": 0.5,
+        "voice_intent": {
+          "archetype": null,
+          "gender": null,
+          "age_group": null,
+          "speaking_rate": 1.0,
+          "pitch": 0.0,
+          "volume": 0.0,
+          "intonation": 1.0,
+          "emotion": "neutral",
+          "intensity": 0.5,
+          "preferred_voice_profile": null
+        },
+        "source_ref": {
+          "url": "fixture://plans/mixed",
+          "chapter": null,
+          "start": 0,
+          "end": 10,
+          "locator": null
+        },
+        "text_content": {
+          "original": "朝の光が差し込んだ。",
+          "text": "朝の光が差し込んだ。",
+          "source_map": [
+            [
+              0,
+              1
+            ],
+            [
+              1,
+              2
+            ],
+            [
+              2,
+              3
+            ],
+            [
+              3,
+              4
+            ],
+            [
+              4,
+              5
+            ],
+            [
+              5,
+              6
+            ],
+            [
+              6,
+              7
+            ],
+            [
+              7,
+              8
+            ],
+            [
+              8,
+              9
+            ],
+            [
+              9,
+              10
+            ]
+          ],
+          "readings": [],
+          "conflicts": [],
+          "reading_targets": []
+        },
+        "speaker_origin": "default",
+        "unresolved_reason": null
+      },
+      {
+        "id": "u-0001",
+        "order": 1,
+        "text": "太郎は",
+        "segment_type": "narration",
+        "speaker_id": null,
+        "scene": "daily",
+        "emotion": "neutral",
+        "intensity": 0.5,
+        "voice_intent": {
+          "archetype": null,
+          "gender": null,
+          "age_group": null,
+          "speaking_rate": 1.0,
+          "pitch": 0.0,
+          "volume": 0.0,
+          "intonation": 1.0,
+          "emotion": "neutral",
+          "intensity": 0.5,
+          "preferred_voice_profile": null
+        },
+        "source_ref": {
+          "url": "fixture://plans/mixed",
+          "chapter": null,
+          "start": 11,
+          "end": 14,
+          "locator": null
+        },
+        "text_content": {
+          "original": "太郎は",
+          "text": "太郎は",
+          "source_map": [
+            [
+              0,
+              1
+            ],
+            [
+              1,
+              2
+            ],
+            [
+              2,
+              3
+            ]
+          ],
+          "readings": [],
+          "conflicts": [],
+          "reading_targets": []
+        },
+        "speaker_origin": "default",
+        "unresolved_reason": null
+      },
+      {
+        "id": "u-0002",
+        "order": 2,
+        "text": "「おはよう」",
+        "segment_type": "dialogue",
+        "speaker_id": "太郎",
+        "scene": "daily",
+        "emotion": "neutral",
+        "intensity": 0.5,
+        "voice_intent": {
+          "archetype": null,
+          "gender": null,
+          "age_group": null,
+          "speaking_rate": 1.0,
+          "pitch": 0.0,
+          "volume": 0.0,
+          "intonation": 1.0,
+          "emotion": "neutral",
+          "intensity": 0.5,
+          "preferred_voice_profile": null
+        },
+        "source_ref": {
+          "url": "fixture://plans/mixed",
+          "chapter": null,
+          "start": 14,
+          "end": 20,
+          "locator": null
+        },
+        "text_content": {
+          "original": "「おはよう」",
+          "text": "「おはよう」",
+          "source_map": [
+            [
+              0,
+              1
+            ],
+            [
+              1,
+              2
+            ],
+            [
+              2,
+              3
+            ],
+            [
+              3,
+              4
+            ],
+            [
+              4,
+              5
+            ],
+            [
+              5,
+              6
+            ]
+          ],
+          "readings": [],
+          "conflicts": [],
+          "reading_targets": []
+        },
+        "speaker_origin": "rule",
+        "unresolved_reason": null
+      },
+      {
+        "id": "u-0003",
+        "order": 3,
+        "text": "と言った。",
+        "segment_type": "narration",
+        "speaker_id": null,
+        "scene": "daily",
+        "emotion": "neutral",
+        "intensity": 0.5,
+        "voice_intent": {
+          "archetype": null,
+          "gender": null,
+          "age_group": null,
+          "speaking_rate": 1.0,
+          "pitch": 0.0,
+          "volume": 0.0,
+          "intonation": 1.0,
+          "emotion": "neutral",
+          "intensity": 0.5,
+          "preferred_voice_profile": null
+        },
+        "source_ref": {
+          "url": "fixture://plans/mixed",
+          "chapter": null,
+          "start": 20,
+          "end": 25,
+          "locator": null
+        },
+        "text_content": {
+          "original": "と言った。",
+          "text": "と言った。",
+          "source_map": [
+            [
+              0,
+              1
+            ],
+            [
+              1,
+              2
+            ],
+            [
+              2,
+              3
+            ],
+            [
+              3,
+              4
+            ],
+            [
+              4,
+              5
+            ]
+          ],
+          "readings": [],
+          "conflicts": [],
+          "reading_targets": []
+        },
+        "speaker_origin": "default",
+        "unresolved_reason": null
+      },
+      {
+        "id": "u-0004",
+        "order": 4,
+        "text": "(今日はいい日になりそうだ)",
+        "segment_type": "thought",
+        "speaker_id": null,
+        "scene": "daily",
+        "emotion": "neutral",
+        "intensity": 0.5,
+        "voice_intent": {
+          "archetype": null,
+          "gender": null,
+          "age_group": null,
+          "speaking_rate": 1.0,
+          "pitch": 0.0,
+          "volume": 0.0,
+          "intonation": 1.0,
+          "emotion": "neutral",
+          "intensity": 0.5,
+          "preferred_voice_profile": null
+        },
+        "source_ref": {
+          "url": "fixture://plans/mixed",
+          "chapter": null,
+          "start": 26,
+          "end": 40,
+          "locator": null
+        },
+        "text_content": {
+          "original": "(今日はいい日になりそうだ)",
+          "text": "(今日はいい日になりそうだ)",
+          "source_map": [
+            [
+              0,
+              1
+            ],
+            [
+              1,
+              2
+            ],
+            [
+              2,
+              3
+            ],
+            [
+              3,
+              4
+            ],
+            [
+              4,
+              5
+            ],
+            [
+              5,
+              6
+            ],
+            [
+              6,
+              7
+            ],
+            [
+              7,
+              8
+            ],
+            [
+              8,
+              9
+            ],
+            [
+              9,
+              10
+            ],
+            [
+              10,
+              11
+            ],
+            [
+              11,
+              12
+            ],
+            [
+              12,
+              13
+            ],
+            [
+              13,
+              14
+            ]
+          ],
+          "readings": [],
+          "conflicts": [],
+          "reading_targets": []
+        },
+        "speaker_origin": "default",
+        "unresolved_reason": null
+      },
+      {
+        "id": "u-0005",
+        "order": 5,
+        "text": "花子は",
+        "segment_type": "narration",
+        "speaker_id": null,
+        "scene": "daily",
+        "emotion": "neutral",
+        "intensity": 0.5,
+        "voice_intent": {
+          "archetype": null,
+          "gender": null,
+          "age_group": null,
+          "speaking_rate": 1.0,
+          "pitch": 0.0,
+          "volume": 0.0,
+          "intonation": 1.0,
+          "emotion": "neutral",
+          "intensity": 0.5,
+          "preferred_voice_profile": null
+        },
+        "source_ref": {
+          "url": "fixture://plans/mixed",
+          "chapter": null,
+          "start": 41,
+          "end": 44,
+          "locator": null
+        },
+        "text_content": {
+          "original": "花子は",
+          "text": "花子は",
+          "source_map": [
+            [
+              0,
+              1
+            ],
+            [
+              1,
+              2
+            ],
+            [
+              2,
+              3
+            ]
+          ],
+          "readings": [],
+          "conflicts": [],
+          "reading_targets": []
+        },
+        "speaker_origin": "default",
+        "unresolved_reason": null
+      },
+      {
+        "id": "u-0006",
+        "order": 6,
+        "text": "「本当に」",
+        "segment_type": "dialogue",
+        "speaker_id": "花子",
+        "scene": "daily",
+        "emotion": "neutral",
+        "intensity": 0.5,
+        "voice_intent": {
+          "archetype": null,
+          "gender": null,
+          "age_group": null,
+          "speaking_rate": 1.0,
+          "pitch": 0.0,
+          "volume": 0.0,
+          "intonation": 1.0,
+          "emotion": "neutral",
+          "intensity": 0.5,
+          "preferred_voice_profile": null
+        },
+        "source_ref": {
+          "url": "fixture://plans/mixed",
+          "chapter": null,
+          "start": 44,
+          "end": 49,
+          "locator": null
+        },
+        "text_content": {
+          "original": "「本当に」",
+          "text": "「本当に」",
+          "source_map": [
+            [
+              0,
+              1
+            ],
+            [
+              1,
+              2
+            ],
+            [
+              2,
+              3
+            ],
+            [
+              3,
+              4
+            ],
+            [
+              4,
+              5
+            ]
+          ],
+          "readings": [],
+          "conflicts": [],
+          "reading_targets": []
+        },
+        "speaker_origin": "rule",
+        "unresolved_reason": null
+      },
+      {
+        "id": "u-0007",
+        "order": 7,
+        "text": "と尋ねた。",
+        "segment_type": "narration",
+        "speaker_id": null,
+        "scene": "daily",
+        "emotion": "neutral",
+        "intensity": 0.5,
+        "voice_intent": {
+          "archetype": null,
+          "gender": null,
+          "age_group": null,
+          "speaking_rate": 1.0,
+          "pitch": 0.0,
+          "volume": 0.0,
+          "intonation": 1.0,
+          "emotion": "neutral",
+          "intensity": 0.5,
+          "preferred_voice_profile": null
+        },
+        "source_ref": {
+          "url": "fixture://plans/mixed",
+          "chapter": null,
+          "start": 49,
+          "end": 54,
+          "locator": null
+        },
+        "text_content": {
+          "original": "と尋ねた。",
+          "text": "と尋ねた。",
+          "source_map": [
+            [
+              0,
+              1
+            ],
+            [
+              1,
+              2
+            ],
+            [
+              2,
+              3
+            ],
+            [
+              3,
+              4
+            ],
+            [
+              4,
+              5
+            ]
+          ],
+          "readings": [],
+          "conflicts": [],
+          "reading_targets": []
+        },
+        "speaker_origin": "default",
+        "unresolved_reason": null
+      },
+      {
+        "id": "u-0008",
+        "order": 8,
+        "text": "夕暮れになった。",
+        "segment_type": "narration",
+        "speaker_id": null,
+        "scene": "daily",
+        "emotion": "neutral",
+        "intensity": 0.5,
+        "voice_intent": {
+          "archetype": null,
+          "gender": null,
+          "age_group": null,
+          "speaking_rate": 1.0,
+          "pitch": 0.0,
+          "volume": 0.0,
+          "intonation": 1.0,
+          "emotion": "neutral",
+          "intensity": 0.5,
+          "preferred_voice_profile": null
+        },
+        "source_ref": {
+          "url": "fixture://plans/mixed",
+          "chapter": null,
+          "start": 59,
+          "end": 67,
+          "locator": null
+        },
+        "text_content": {
+          "original": "夕暮れになった。",
+          "text": "夕暮れになった。",
+          "source_map": [
+            [
+              0,
+              1
+            ],
+            [
+              1,
+              2
+            ],
+            [
+              2,
+              3
+            ],
+            [
+              3,
+              4
+            ],
+            [
+              4,
+              5
+            ],
+            [
+              5,
+              6
+            ],
+            [
+              6,
+              7
+            ],
+            [
+              7,
+              8
+            ]
+          ],
+          "readings": [],
+          "conflicts": [],
+          "reading_targets": []
+        },
+        "speaker_origin": "default",
+        "unresolved_reason": null
+      }
+    ],
+    "warnings": [
+      {
+        "code": "SCENE_BREAK_SKIPPED",
+        "message": "scene break is a navigation marker and is not synthesized",
+        "severity": "info",
+        "utterance_id": null
+      },
+      {
+        "code": "NLP_FALLBACK",
+        "message": "rule-based values were used without LLM scene analysis",
+        "severity": "info",
+        "utterance_id": null
+      }
+    ],
+    "source_documents": [
+      {
+        "original": "朝の光が差し込んだ。\n太郎は「おはよう」と言った。\n(今日はいい日になりそうだ)\n花子は「本当に」と尋ねた。\n***\n夕暮れになった。",
+        "text": "朝の光が差し込んだ。\n太郎は「おはよう」と言った。\n(今日はいい日になりそうだ)\n花子は「本当に」と尋ねた。\n***\n夕暮れになった。",
+        "source_map": [
+          [
+            0,
+            1
+          ],
+          [
+            1,
+            2
+          ],
+          [
+            2,
+            3
+          ],
+          [
+            3,
+            4
+          ],
+          [
+            4,
+            5
+          ],
+          [
+            5,
+            6
+          ],
+          [
+            6,
+            7
+          ],
+          [
+            7,
+            8
+          ],
+          [
+            8,
+            9
+          ],
+          [
+            9,
+            10
+          ],
+          [
+            10,
+            11
+          ],
+          [
+            11,
+            12
+          ],
+          [
+            12,
+            13
+          ],
+          [
+            13,
+            14
+          ],
+          [
+            14,
+            15
+          ],
+          [
+            15,
+            16
+          ],
+          [
+            16,
+            17
+          ],
+          [
+            17,
+            18
+          ],
+          [
+            18,
+            19
+          ],
+          [
+            19,
+            20
+          ],
+          [
+            20,
+            21
+          ],
+          [
+            21,
+            22
+          ],
+          [
+            22,
+            23
+          ],
+          [
+            23,
+            24
+          ],
+          [
+            24,
+            25
+          ],
+          [
+            25,
+            26
+          ],
+          [
+            26,
+            27
+          ],
+          [
+            27,
+            28
+          ],
+          [
+            28,
+            29
+          ],
+          [
+            29,
+            30
+          ],
+          [
+            30,
+            31
+          ],
+          [
+            31,
+            32
+          ],
+          [
+            32,
+            33
+          ],
+          [
+            33,
+            34
+          ],
+          [
+            34,
+            35
+          ],
+          [
+            35,
+            36
+          ],
+          [
+            36,
+            37
+          ],
+          [
+            37,
+            38
+          ],
+          [
+            38,
+            39
+          ],
+          [
+            39,
+            40
+          ],
+          [
+            40,
+            41
+          ],
+          [
+            41,
+            42
+          ],
+          [
+            42,
+            43
+          ],
+          [
+            43,
+            44
+          ],
+          [
+            44,
+            45
+          ],
+          [
+            45,
+            46
+          ],
+          [
+            46,
+            47
+          ],
+          [
+            47,
+            48
+          ],
+          [
+            48,
+            49
+          ],
+          [
+            49,
+            50
+          ],
+          [
+            50,
+            51
+          ],
+          [
+            51,
+            52
+          ],
+          [
+            52,
+            53
+          ],
+          [
+            53,
+            54
+          ],
+          [
+            54,
+            55
+          ],
+          [
+            55,
+            56
+          ],
+          [
+            56,
+            57
+          ],
+          [
+            57,
+            58
+          ],
+          [
+            58,
+            59
+          ],
+          [
+            59,
+            60
+          ],
+          [
+            60,
+            61
+          ],
+          [
+            61,
+            62
+          ],
+          [
+            62,
+            63
+          ],
+          [
+            63,
+            64
+          ],
+          [
+            64,
+            65
+          ],
+          [
+            65,
+            66
+          ],
+          [
+            66,
+            67
+          ]
+        ],
+        "readings": [],
+        "conflicts": [],
+        "reading_targets": []
+      }
+    ]
   }
 }

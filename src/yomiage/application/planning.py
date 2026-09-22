@@ -14,8 +14,9 @@ from __future__ import annotations
 
 import asyncio
 import math
-from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Iterable, Mapping
+from contextlib import nullcontext
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import Enum
 from typing import TYPE_CHECKING, Any
@@ -30,6 +31,7 @@ from ..core.models import (
     VoiceIntent,
 )
 from ..core.plan import CURRENT_SCHEMA_VERSION, UtterancePlan
+from ..core.text import TextDocument
 
 if TYPE_CHECKING:
     from ..batch.manifest import BatchManifest
@@ -134,7 +136,7 @@ def _source_ref(
             pass
     if isinstance(value, Mapping):
         try:
-            return SourceRef.from_dict(value)
+            return SourceRef.from_dict({"url": source, "chapter": chapter, **value})
         except (TypeError, ValueError):
             # 不正な optional locator は本文を失敗させず、source URL だけを残す。
             pass
@@ -217,6 +219,9 @@ class _NormalizedSegment:
     voice_intent: VoiceIntent
     source_ref: SourceRef | None
     explicit_boundary: bool = False
+    text_content: TextDocument | None = None
+    speaker_origin: str = "default"
+    unresolved_reason: str | None = None
 
 
 def _intent_for(item: object, *, emotion: str, intensity: float) -> VoiceIntent:
@@ -268,10 +273,6 @@ def _normalize_item(
         return None
 
     speaker = _value(item, "speaker_id", "speaker", default=None)
-    if speaker is None:
-        candidates = _value(item, "speaker_candidates", default=None)
-        if isinstance(candidates, Sequence) and not isinstance(candidates, (str, bytes, bytearray)):
-            speaker = next((candidate for candidate in candidates if _as_text(candidate)), None)
     speaker_text = _as_text(speaker) or None
     scene = _as_text(_value(item, "scene", default="daily")) or "daily"
     emotion = _normalize_emotion(_value(item, "emotion", default=Emotion.NEUTRAL.value))
@@ -297,6 +298,13 @@ def _normalize_item(
         voice_intent=intent,
         source_ref=ref,
         explicit_boundary=explicit_boundary,
+        text_content=_value(item, "text_content", default=metadata.get("text_content")),
+        speaker_origin=_value(
+            item, "speaker_origin", default=metadata.get("speaker_origin", "default")
+        ),
+        unresolved_reason=_value(
+            item, "unresolved_reason", default=metadata.get("unresolved_reason")
+        ),
     )
 
 
@@ -422,6 +430,9 @@ class UtterancePlanner:
                 intensity=value.intensity,
                 voice_intent=value.voice_intent,
                 source_ref=value.source_ref,
+                text_content=value.text_content,
+                speaker_origin=value.speaker_origin,
+                unresolved_reason=value.unresolved_reason,
             )
             for order, value in enumerate(grouped)
         )
@@ -439,7 +450,7 @@ class UtterancePlanner:
             warnings.append(
                 PlanWarning(
                     code="NLP_FALLBACK",
-                    message="LLM scene analysis unavailable; rule-based values were used",
+                    message="rule-based values were used without LLM scene analysis",
                     severity="info",
                 )
             )
@@ -463,6 +474,7 @@ class UtterancePlanner:
             created_at=context.created_at or datetime.now(UTC),
             utterances=utterances,
             warnings=tuple(warnings),
+            source_documents=tuple(getattr(results, "source_documents", ())),
         )
 
     # Names used by different entrypoints during migration. Keep one implementation so all
@@ -475,6 +487,8 @@ class UtterancePlanner:
 
     @staticmethod
     def _can_merge(left: _NormalizedSegment, right: _NormalizedSegment) -> bool:
+        if left.text_content is not None or right.text_content is not None:
+            return False
         if left.explicit_boundary or right.explicit_boundary:
             return False
         return (
@@ -500,8 +514,8 @@ class UtterancePlanner:
     ) -> UtterancePlan:
         """TextProcessor/classifier/speaker/scene analyzer を通して plan を作る。"""
 
-        if not isinstance(text, str):
-            raise TypeError("text must be a string")
+        if not isinstance(text, (str, TextDocument)):
+            raise TypeError("text must be a string or TextDocument")
         fallback_used = self.analyzer is None
         if self.analyzer is None:
             from ..nlp.pipeline import NLPAnalyzer
@@ -516,27 +530,49 @@ class UtterancePlanner:
         analyze_for_plan = getattr(analyzer, "analyze_for_plan", None)
         analyze = analyze_for_plan if callable(analyze_for_plan) else analyzer.analyze_text
         fallback_used = self.analyzer is None
-        analyzed = await analyze(
-            text,
-            known_characters=known_characters,
-            character_db=character_db,
-        )
+        backend = getattr(getattr(analyzer, "scene_analyzer", None), "_backend", None)
+        scope = getattr(backend, "ensure_job_scope", None)
+        async with scope("utterance-plan") if callable(scope) else nullcontext():
+            analyzed = await analyze(
+                text,
+                known_characters=known_characters,
+                character_db=character_db,
+            )
         plan = self.build(
             analyzed,
-            source=source or text,
+            source=source or (text.original if isinstance(text, TextDocument) else text),
             config=config,
             source_kind=source_kind,
             **kwargs,
         )
+        document = getattr(analyzed, "document", None)
+        if isinstance(document, TextDocument):
+            # URLが同じでも本文・読み・分析結果が変われば新しいidentityを作る。
+            semantic = {
+                "source": source,
+                "document": document.to_dict(),
+                "utterances": [u.to_dict() for u in plan.utterances],
+                "analysis": analyzer.settings.model_dump(mode="json"),
+                "rules_version": "speech-quality-2",
+                "analysis_backend": backend.analysis_identity()
+                if callable(getattr(backend, "analysis_identity", None))
+                else {},
+                "config": core_identity.config_fingerprint(config or {}),
+            }
+            plan = replace(
+                plan,
+                source_documents=(document,),
+                source_fingerprint=core_identity.fingerprint(document.original, length=None),
+                config_fingerprint=core_identity.fingerprint(semantic, length=None),
+                plan_id=kwargs.get("plan_id") or "plan_" + core_identity.fingerprint(semantic),
+            )
         scene_analyzer = getattr(analyzer, "scene_analyzer", None)
-        fallback_used = fallback_used or bool(
-            getattr(scene_analyzer, "fallback_used", False)
-        )
+        fallback_used = fallback_used or bool(getattr(scene_analyzer, "fallback_used", False))
         if fallback_used and not any(item.code == "NLP_FALLBACK" for item in plan.warnings):
             plan = plan.with_warning(
                 PlanWarning(
                     code="NLP_FALLBACK",
-                    message="LLM scene analysis unavailable; rule-based values were used",
+                    message="rule-based values were used without LLM scene analysis",
                     severity="info",
                 )
             )
@@ -605,7 +641,7 @@ class ApiPlanningAdapter(ReaderPlanningAdapter):
         ``UtterancePlanner`` に集約し、後者で文字列列を誤って再解析しないようにする。
         """
 
-        if isinstance(value, str):
+        if isinstance(value, (str, TextDocument)):
             return await self.planner.from_text(value, **kwargs)
         return self.planner.build(value, **kwargs)
 

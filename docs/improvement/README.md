@@ -6,6 +6,8 @@
 
 関連文書:
 
+- [speech-quality-refactoring-plan.md](speech-quality-refactoring-plan.md):
+  2026-09-14の読み補正・合成品質・LLM計算コストのレビューと、SQ-001〜SQ-007の実装計画
 - [architecture-plan.md](architecture-plan.md):
   目標アーキテクチャ、移行原則、互換性方針
 - [work-ledger.md](work-ledger.md):

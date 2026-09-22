@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Mapping
 
+from .text import TextDocument
+
 
 class SegmentType(str, Enum):
     """Utterance が表す文章の種類."""
@@ -333,9 +335,7 @@ class SourceRef:
             raise ValueError("chapter must be >= 0")
 
         start_value = (
-            None
-            if resolved_start is None
-            else _int_value(resolved_start, "start", minimum=0)
+            None if resolved_start is None else _int_value(resolved_start, "start", minimum=0)
         )
         end_value = None if resolved_end is None else _int_value(resolved_end, "end", minimum=0)
         if start_value is not None and end_value is not None and end_value < start_value:
@@ -503,6 +503,9 @@ class Utterance:
     intensity: float = 0.5
     voice_intent: VoiceIntent = VoiceIntent()
     source_ref: SourceRef | None = None
+    text_content: TextDocument | None = None
+    speaker_origin: str = "default"
+    unresolved_reason: str | None = None
 
     def __init__(
         self,
@@ -516,6 +519,9 @@ class Utterance:
         intensity: float = 0.5,
         voice_intent: VoiceIntent | Mapping[str, Any] | None = None,
         source_ref: SourceRef | Mapping[str, Any] | None = None,
+        text_content: TextDocument | Mapping[str, Any] | None = None,
+        speaker_origin: str = "default",
+        unresolved_reason: str | None = None,
         *,
         speaker: str | None = None,
     ) -> None:
@@ -542,6 +548,19 @@ class Utterance:
             ref = SourceRef.from_dict(_mapping(source_ref, "source_ref"))
         object.__setattr__(self, "voice_intent", intent)
         object.__setattr__(self, "source_ref", ref)
+        if text_content is not None and not isinstance(text_content, TextDocument):
+            text_content = TextDocument.from_dict(dict(text_content))
+        if text_content is not None and text_content.text != self.text:
+            raise ValueError("utterance text must match text_content")
+        if speaker_origin not in {"explicit", "rule", "llm", "default"}:
+            raise ValueError("invalid speaker origin")
+        object.__setattr__(self, "text_content", text_content)
+        object.__setattr__(self, "speaker_origin", speaker_origin)
+        object.__setattr__(self, "unresolved_reason", unresolved_reason)
+
+    @property
+    def synthesis_text(self) -> str:
+        return self.text_content.synthesis_text if self.text_content is not None else self.text
 
     @property
     def speaker(self) -> str | None:
@@ -567,6 +586,9 @@ class Utterance:
             "intensity": self.intensity,
             "voice_intent": self.voice_intent.to_dict(),
             "source_ref": self.source_ref.to_dict() if self.source_ref is not None else None,
+            "text_content": self.text_content.to_dict() if self.text_content is not None else None,
+            "speaker_origin": self.speaker_origin,
+            "unresolved_reason": self.unresolved_reason,
         }
 
     @classmethod
@@ -591,6 +613,9 @@ class Utterance:
             intensity=raw.get("intensity", 0.5),
             voice_intent=raw.get("voice_intent"),
             source_ref=raw.get("source_ref"),
+            text_content=raw.get("text_content"),
+            speaker_origin=raw.get("speaker_origin", "default"),
+            unresolved_reason=raw.get("unresolved_reason"),
         )
 
 

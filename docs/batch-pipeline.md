@@ -127,3 +127,23 @@ Provider/format を変える場合は新しい run を作成してください�
 
 旧 layout の backup、read-only import、検証、切り替え、rollback は [migration.md](migration.md) に
 固定手順があります。
+
+## 原文と読み指定を保持する分析（SQ移行）
+
+新しいPhase AはReader・SDKと同じ`NLPAnalyzer.analyze_for_plan()`を使う。複数文の台詞を
+一つの論理発話として保存し、先頭文字列の部分一致で文と話者を対応付ける処理は廃止した。
+そのため新しいmanifestのエントリ数は従来の句点ごとの文数と一致しない場合がある。
+`SentenceEntry`の公開名は既存利用者向けに維持する。
+
+新しいBatch manifestはschema 3。`source_documents`、各entryの`text_content`・`source_ref`・
+`speaker_origin`・`unresolved_reason`を保存する。`text`は表示用のまま維持し、英字補正で上書きしない。
+辞書とルビはPhase Aで採用し、Phase Bは保存済みの読みから合成用本文を生成する。
+辞書を変更した場合はPhase Aを実行して新Plan/runを作る。保存済みPlanの再合成だけでは新辞書を取り込まない。
+
+既存のschema 1/2のmanifestは読み込み・再開可能。文番号とartifactをそのrun内で維持し、
+原文・ルビが存在しない旧データは補完しない。旧runのretry対象を新境界へ移し替えない。
+`single_pass`は人物発見を詳細応答に含め、性別・年代がある人物には決定的にアーキタイプを割り当てる。
+不明な人物の声を別のLLM要求で推測する処理は行わない。
+
+設定と戻し方は[analysis設定](configuration.md#analysis)、
+検証結果は[音声品質計画](improvement/speech-quality-refactoring-plan.md#9-実装と検証の記録)を参照。

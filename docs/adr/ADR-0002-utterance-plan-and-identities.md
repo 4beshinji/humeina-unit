@@ -59,3 +59,23 @@ DOM-001でモデルとvalidation、DOM-002/003で既存NLP結果・manifestと�
 - **文字数チャンクを共通モデルにする**: 話者・voice intentの境界が失われ、入口間の意味が一致しない。
 - **音声パスをPlanへ保存する**: Provider変更・再合成・並行runの分離を妨げる。
 - **URLだけをjob identityにする**: 同一作品の異なる設定・Provider・実行を区別できない。
+
+## SQ-002追補（2026-09-14）: 原文・読みとschema移行
+
+UtterancePlan schema 2を登録する。Planの`source_documents`は表示原文、正規化本文、
+文字ごとの原文範囲、位置付き読み、競合を保持する。Utteranceの`text_content`はその発話の
+原文・読み、`source_ref`は文書中の範囲を保持する。合成用本文は派生値とし、表示本文を上書きしない。
+
+schema 1からの読み取り移行は本文・ID・orderを保ち、`ORIGINAL_UNAVAILABLE`を記録する。
+失われた原文・ルビを推定しない。再取得・再解析は新しいPlanを生成する。
+Batch manifestは別のschema系列であり、新形式は3、旧形式1/2の文番号・run/artifactは維持する。
+
+新PlanのidentityはURLだけでなく本文・読み・解析設定・結果・モデル情報を含む。
+LLMの再推論結果が変わったPlanを同じidentityへ上書きしない。辞書変更後は新Planを生成する。
+Providerだけの切替では保存済みPlanを再利用できる。旧版アプリは新schemaを読み込めないため、
+ロールバックには旧設定と旧Plan/runを使う。
+
+旧Readerのprivateチャンク経路とSDKの最長セグメントによる合成を撤去した。
+EX voiceは通常Planの発話再生後へ接続した。`ParamMapper.map()`、旧Batch詳細分析helper、
+文字列前処理APIは0.1系の互換adapterとして維持し、通常のPlan解析では使用しない。
+削除する場合は次の公開API変更で案内する。

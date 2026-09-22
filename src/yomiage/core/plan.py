@@ -11,13 +11,26 @@ from .migration import (
     SchemaMigrationRegistry,
 )
 from .models import PlanWarning, Utterance
+from .text import TextDocument
 
-CURRENT_SCHEMA_VERSION = 1
+CURRENT_SCHEMA_VERSION = 2
 
-# DOM-003 keeps the registry explicit even while schema 1 is current.  A future schema must be
-# registered here before readers can accept it; otherwise it is rejected instead of being silently
-# truncated to the fields known by this version.
+# 既知のschemaだけを明示的に移行する。失われた原文やルビは復元しない。
 PLAN_SCHEMA_MIGRATIONS = SchemaMigrationRegistry(CURRENT_SCHEMA_VERSION)
+
+
+@PLAN_SCHEMA_MIGRATIONS.register(1, 2)
+def _migrate_original_text(data):
+    # 旧本文は維持する。正規化前の原文・失われたルビは補完しない。
+    data.setdefault("source_documents", [])
+    data.setdefault("warnings", []).append(
+        {
+            "code": "ORIGINAL_UNAVAILABLE",
+            "message": "schema 1 has no original text or ruby; fetch again into a new plan",
+            "severity": "info",
+        }
+    )
+    return data
 
 
 def _required_text(value: object, field_name: str) -> str:
@@ -105,6 +118,7 @@ def _coerce_warnings(
 class PlanValidationError(ValueError):
     """UtterancePlanの構造・順序が不正な場合のエラー."""
 
+
 @dataclass(frozen=True, slots=True)
 class UtterancePlan:
     """解析結果と合成実行を分離する immutable な発話計画."""
@@ -116,6 +130,8 @@ class UtterancePlan:
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     utterances: tuple[Utterance, ...] = field(default_factory=tuple)
     warnings: tuple[PlanWarning, ...] = field(default_factory=tuple)
+
+    source_documents: tuple[TextDocument, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "schema_version", _schema_version(self.schema_version))
@@ -131,6 +147,14 @@ class UtterancePlan:
             _required_text(self.config_fingerprint, "config_fingerprint"),
         )
         object.__setattr__(self, "created_at", _created_at(self.created_at))
+        object.__setattr__(
+            self,
+            "source_documents",
+            tuple(
+                d if isinstance(d, TextDocument) else TextDocument.from_dict(d)
+                for d in self.source_documents
+            ),
+        )
         utterances = _coerce_utterances(self.utterances)
         warnings = _coerce_warnings(self.warnings)
         self._validate_utterances(utterances)
@@ -170,6 +194,7 @@ class UtterancePlan:
             "created_at": self.created_at.isoformat(),
             "utterances": [item.to_dict() for item in self.utterances],
             "warnings": [item.to_dict() for item in self.warnings],
+            "source_documents": [d.to_dict() for d in self.source_documents],
         }
 
     @classmethod
@@ -203,6 +228,7 @@ class UtterancePlan:
             created_at=migrated["created_at"],
             utterances=migrated["utterances"],
             warnings=migrated["warnings"],
+            source_documents=migrated.get("source_documents", ()),
         )
 
     def to_json(self, *, indent: int | None = None) -> str:
@@ -230,6 +256,7 @@ class UtterancePlan:
             created_at=self.created_at,
             utterances=utterances,
             warnings=self.warnings,
+            source_documents=self.source_documents,
         )
 
     def with_warning(self, warning: PlanWarning | Mapping[str, Any]) -> UtterancePlan:
@@ -244,6 +271,7 @@ class UtterancePlan:
             created_at=self.created_at,
             utterances=self.utterances,
             warnings=(*self.warnings, item),
+            source_documents=self.source_documents,
         )
 
 

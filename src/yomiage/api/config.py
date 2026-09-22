@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 from ..config import load_config
 from ..settings import (
+    AnalysisSettings,
     ApplicationSettings,
     AppSettings,
     BatchSettings,
@@ -71,6 +72,7 @@ class AnalyzerConfig(BaseModel):
 
     llm: LLMConfig = Field(default_factory=LLMConfig)
     max_chunk_chars: int = 200
+    analysis: AnalysisSettings = Field(default_factory=AnalysisSettings)
 
 
 class PipelineConfig(BaseModel):
@@ -147,6 +149,7 @@ class PipelineConfig(BaseModel):
             )
         analyzer = AnalyzerConfig(
             llm=llm,
+            analysis=AnalysisSettings.from_config(data),
             max_chunk_chars=tts_cfg.get("max_chunk_chars", 200),
         )
 
@@ -157,8 +160,7 @@ class PipelineConfig(BaseModel):
             analyzer=analyzer,
             scene_params=data.get("scene_params"),
             lookahead=tts_cfg.get("lookahead_chunks", 3),
-            voice_profile_dir=Path(batch_cfg["voice_profile_dir"])
-            .expanduser()
+            voice_profile_dir=Path(batch_cfg["voice_profile_dir"]).expanduser()
             if batch_cfg.get("voice_profile_dir")
             else None,
             voice_profile_name=batch_cfg.get("default_voice_profile"),

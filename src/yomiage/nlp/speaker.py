@@ -2,8 +2,6 @@
 
 import re
 
-from loguru import logger
-
 from .classifier import SegmentType, TextSegment
 
 
@@ -47,59 +45,67 @@ class SpeakerExtractor:
         verbs_pattern = "|".join(self._SPEECH_VERBS)
         # 「セリフ」の前後で話者を探す
         # パターン1: 〇〇は「...」と言った
-        self._before_pattern = re.compile(
-            rf"([\w\u3000-\u9fff]+?){self._SUBJECT_MARKERS}"
-        )
+        self._before_pattern = re.compile(rf"([\w\u3000-\u9fff]+?){self._SUBJECT_MARKERS}")
         # パターン2: 「...」と〇〇が言った / 「...」〇〇は言った
         self._after_pattern = re.compile(
             rf"(?:と|って)?([\w\u3000-\u9fff]+?){self._SUBJECT_MARKERS}\s*(?:{verbs_pattern})"
         )
         # パターン3: 〇〇「...」（名前の直後に括弧）
-        self._direct_pattern = re.compile(
-            r"([\w\u3000-\u9fff]{2,})「"
-        )
+        self._direct_pattern = re.compile(r"([\w\u3000-\u9fff]{2,})「")
 
-    def extract(self, segments: list[TextSegment]) -> list[TextSegment]:
-        """セグメントリストに話者候補を付与."""
+    def extract(
+        self,
+        segments: list[TextSegment],
+        known_characters: list[str] | None = None,
+    ) -> list[TextSegment]:
+        """候補と確定話者を区別する。直前の主語だけでは確定しない。"""
+        verbs = "|".join(self._SPEECH_VERBS)
+        known = set(known_characters or ())
+        name_pattern = r"([^。！？!?、\s「」]+?)[はがも]"
         for i, seg in enumerate(segments):
             if seg.type != SegmentType.DIALOGUE:
+                seg.metadata.setdefault("speaker_origin", "default")
                 continue
-
+            if seg.metadata.get("speaker_origin") == "explicit":
+                continue
+            prev = (
+                segments[i - 1].text if i and segments[i - 1].type == SegmentType.NARRATION else ""
+            )
+            following = (
+                segments[i + 1].text
+                if i + 1 < len(segments) and segments[i + 1].type == SegmentType.NARRATION
+                else ""
+            )
             candidates: list[str] = []
-
-            # 前の地の文から話者を探す
-            if i > 0 and segments[i - 1].type == SegmentType.NARRATION:
-                prev_text = segments[i - 1].text
-                # 一つの分類セグメントに複数の発話導入（「空は青かった。太郎は…」）が
-                # 含まれることがある。最初の主語を採用すると古い文脈の話者へ戻るため、
-                # dialogue に最も近い最後の候補を優先する。
-                for m in reversed(list(self._before_pattern.finditer(prev_text))):
-                    name = self._clean_candidate(m.group(1))
-                    if name:
-                        candidates.append(name)
-                        break
-                m = self._direct_pattern.search(prev_text + seg.text)
-                if m:
-                    name = self._clean_candidate(m.group(1))
-                    if name not in candidates:
-                        candidates.append(name)
-
-            # 後の地の文から話者を探す
-            if i + 1 < len(segments) and segments[i + 1].type == SegmentType.NARRATION:
-                next_text = segments[i + 1].text
-                m = self._after_pattern.search(next_text)
-                if m:
-                    name = self._clean_candidate(m.group(1))
-                    if name not in candidates:
-                        candidates.append(name)
-
-            if candidates:
-                seg.speaker_candidates = candidates
-                logger.debug(
-                    "Speaker candidates found: "
-                    f"segment_chars={len(seg.text)}, count={len(candidates)}"
+            strong: list[str] = []
+            matches = list(re.finditer(name_pattern, prev))
+            if matches:
+                match = matches[-1]
+                name = self._clean_candidate(match.group(1))
+                candidates.append(name)
+                tail = prev[match.end() :].strip()
+                if re.fullmatch(rf"(?:{verbs})[^。！？!?]*[。！？!?]?", tail) or (
+                    not tail and (name in known or re.match(rf"^と(?:{verbs})", following))
+                ):
+                    strong.append(name)
+            direct = re.fullmatch(r"([^。！？!?、\s「」]+)", prev)
+            if direct and direct.group(1) in known:
+                strong.append(direct.group(1))
+            after = re.match(rf"^(?:と|って){name_pattern}\s*(?:{verbs})", following)
+            if after:
+                strong.append(self._clean_candidate(after.group(1)))
+            seg.speaker_candidates = list(dict.fromkeys(candidates + strong))
+            strong = list(dict.fromkeys(strong))
+            if len(strong) == 1:
+                seg.metadata.update(
+                    speaker=strong[0], speaker_origin="rule", unresolved_reason=None
                 )
-
+            else:
+                seg.metadata.update(
+                    speaker=None,
+                    speaker_origin="default",
+                    unresolved_reason="conflicting_speakers" if strong else "no_speaker_evidence",
+                )
         return segments
 
     @staticmethod

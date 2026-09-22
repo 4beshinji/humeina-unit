@@ -6,7 +6,9 @@ from urllib.parse import urldefrag
 from bs4 import BeautifulSoup, NavigableString, Tag
 from loguru import logger
 
+from ..core.text import TextDocument
 from ..nlp.math_processor import MathProcessor
+from ..nlp.text_processor import extract_html_document
 from ..ports.sources import URLPolicy
 from .base import Chapter, ContentSource
 from .http import HTTPFetcher
@@ -30,15 +32,33 @@ _MAX_TABLE_ROWS = 5
 
 # ノイズ要素のCSSセレクタ
 _NOISE_SELECTORS = [
-    "script", "style", "noscript", "iframe",
-    "nav", "header", "footer", "aside",
-    ".sidebar", ".widget", "[class*='hatena-module']",
-    "#comments", ".comments", ".comment-area", ".comment-box",
-    "[class*='ad-']", "[class*='advertisement']",
-    "[id*='ad-']", "#google_afc_user", ".google-afc-user-container",
-    ".breadcrumbs", ".breadcrumb",
-    ".social-share", ".share-buttons", ".sns-follow",
-    ".related-posts", ".pagination",
+    "script",
+    "style",
+    "noscript",
+    "iframe",
+    "nav",
+    "header",
+    "footer",
+    "aside",
+    ".sidebar",
+    ".widget",
+    "[class*='hatena-module']",
+    "#comments",
+    ".comments",
+    ".comment-area",
+    ".comment-box",
+    "[class*='ad-']",
+    "[class*='advertisement']",
+    "[id*='ad-']",
+    "#google_afc_user",
+    ".google-afc-user-container",
+    ".breadcrumbs",
+    ".breadcrumb",
+    ".social-share",
+    ".share-buttons",
+    ".sns-follow",
+    ".related-posts",
+    ".pagination",
     ".author-bio",
     ".customized-footer",
 ]
@@ -91,14 +111,18 @@ class GenericWebSource(ContentSource):
 
         # fragment (#anchor) があればその要素から次の同レベル見出しまでを抽出
         if fragment:
-            title, text = self._extract_section(soup, fragment)
+            title, document = self._extract_section(soup, fragment, preserve_readings=True)
+            text = document.text
         else:
             title = self._extract_title(soup)
             # trafilatura で本文抽出を試行 → 失敗時は BS4 フォールバック
-            text = self._extract_article(html, base_url)
+            text = None if soup.find("ruby") else self._extract_article(html, base_url)
             if not text or len(text.strip()) < 50:
                 logger.debug("trafilatura extraction insufficient, falling back to BS4")
-                text = self._extract_article_bs4(soup)
+                document = self._extract_article_bs4(soup, preserve_readings=True)
+                text = document.text
+            else:
+                document = TextDocument.plain(text)
 
         if not text or not text.strip():
             raise RuntimeError(f"Could not extract article content from {url}")
@@ -107,6 +131,7 @@ class GenericWebSource(ContentSource):
             title=title,
             text=text,
             raw_html=html,
+            document=document,
             source_url=url,
             chapter_index=0,
         )
@@ -122,9 +147,9 @@ class GenericWebSource(ContentSource):
         entries = []
         idx = 0
         for heading in soup.find_all(["h1", "h2", "h3"]):
-            anchor = heading.get("id") or (
-                heading.find("a", attrs={"name": True}) or {}
-            ).get("name", "")
+            anchor = heading.get("id") or (heading.find("a", attrs={"name": True}) or {}).get(
+                "name", ""
+            )
             if not anchor:
                 continue
             title = heading.get_text(strip=True)
@@ -143,7 +168,7 @@ class GenericWebSource(ContentSource):
                 return toc[i + 1].url
         return None
 
-    def _extract_section(self, soup: BeautifulSoup, fragment: str) -> tuple[str, str]:
+    def _extract_section(self, soup: BeautifulSoup, fragment: str, *, preserve_readings=False):
         """指定アンカーのセクションを抽出.
 
         anchor id を持つ要素（または子に持つ見出し）から
@@ -159,16 +184,18 @@ class GenericWebSource(ContentSource):
 
         if anchor_el is None:
             logger.warning(f"Anchor #{fragment} not found, falling back to full page")
-            return self._extract_title(soup), self._extract_article_bs4(soup)
+            return self._extract_title(soup), self._extract_article_bs4(
+                soup, preserve_readings=preserve_readings
+            )
 
         # anchor_el 自体が見出しでなければ直近の見出し先祖を探す
-        heading = anchor_el if anchor_el.name in ("h1","h2","h3","h4","h5","h6") else None
+        heading = anchor_el if anchor_el.name in ("h1", "h2", "h3", "h4", "h5", "h6") else None
         if heading is None:
-            heading = anchor_el.find(["h1","h2","h3","h4","h5","h6"])
+            heading = anchor_el.find(["h1", "h2", "h3", "h4", "h5", "h6"])
         if heading is None:
             # anchor_el の兄弟や親から見出しを探す
             for sib in anchor_el.next_siblings:
-                if sib.name in ("h1","h2","h3","h4","h5","h6"):
+                if sib.name in ("h1", "h2", "h3", "h4", "h5", "h6"):
                     heading = sib
                     break
 
@@ -178,15 +205,20 @@ class GenericWebSource(ContentSource):
         heading_level = int(heading.name[1]) if heading else 2
 
         # 開始要素: anchor_el（見出しでなければそれを含む親コンテナ）
-        start = anchor_el if anchor_el.name in ("h1","h2","h3","h4","h5","h6") else anchor_el.parent
+        start = (
+            anchor_el
+            if anchor_el.name in ("h1", "h2", "h3", "h4", "h5", "h6")
+            else anchor_el.parent
+        )
 
         # 以降の兄弟を収集（次の同レベル以上の見出しまで）
         from bs4 import Tag as _Tag
+
         collected: list[_Tag] = [start]
         for sib in start.next_siblings:
             if not isinstance(sib, _Tag):
                 continue
-            if sib.name in ("h1","h2","h3","h4","h5","h6"):
+            if sib.name in ("h1", "h2", "h3", "h4", "h5", "h6"):
                 sib_level = int(sib.name[1])
                 if sib_level <= heading_level:
                     break
@@ -194,11 +226,12 @@ class GenericWebSource(ContentSource):
 
         # 仮コンテナに入れて clean_for_tts
         from bs4 import BeautifulSoup as _BS
+
         container = _BS("<div></div>", "lxml").div
         for el in collected:
             container.append(el.__copy__())
 
-        text = self._clean_for_tts(container)
+        text = self._clean_for_tts(container, preserve_readings=preserve_readings)
         return title, text
 
     async def _fetch_html(self, url: str) -> str:
@@ -247,7 +280,7 @@ class GenericWebSource(ContentSource):
             logger.warning(f"trafilatura extraction failed: {e}")
             return None
 
-    def _extract_article_bs4(self, soup: BeautifulSoup) -> str:
+    def _extract_article_bs4(self, soup: BeautifulSoup, *, preserve_readings=False):
         """BeautifulSoup ヒューリスティクスで本文抽出."""
         # ノイズ除去
         self._remove_noise(soup)
@@ -267,7 +300,7 @@ class GenericWebSource(ContentSource):
             container = soup.body or soup
 
         # TTS 用クリーニング
-        return self._clean_for_tts(container)
+        return self._clean_for_tts(container, preserve_readings=preserve_readings)
 
     def _find_largest_text_div(self, soup: BeautifulSoup) -> Tag | None:
         best = None
@@ -279,7 +312,7 @@ class GenericWebSource(ContentSource):
                 best = div
         return best
 
-    def _clean_for_tts(self, container: Tag) -> str:
+    def _clean_for_tts(self, container: Tag, *, preserve_readings=False):
         """HTML コンテナを TTS 用テキストに変換."""
         # 1. ノイズ除去（コンテナ内にも残っている可能性）
         self._remove_noise(container)
@@ -288,7 +321,8 @@ class GenericWebSource(ContentSource):
         self._replace_code_blocks(container)
 
         # 3. テーブル処理
-        self._linearize_tables(container)
+        if not container.find("ruby"):
+            self._linearize_tables(container)
 
         # 4. 見出し変換
         self._handle_headings(container)
@@ -297,17 +331,13 @@ class GenericWebSource(ContentSource):
         self._handle_lists(container)
 
         # 6. ルビ処理
-        self._handle_ruby(container)
 
         # 7. 画像除去
         for img in container.find_all("img"):
             img.decompose()
 
-        # テキスト抽出
-        text = container.get_text("\n")
-        # 連続空行を整理
-        text = re.sub(r"\n{3,}", "\n\n", text)
-        return text.strip()
+        document = extract_html_document(container)
+        return document if preserve_readings else document.text.strip()
 
     def _remove_noise(self, soup: BeautifulSoup | Tag) -> None:
         for selector in _NOISE_SELECTORS:
@@ -347,26 +377,16 @@ class GenericWebSource(ContentSource):
                 continue
 
             if len(rows) > _MAX_TABLE_ROWS:
-                cols = max(
-                    (len(row.find_all(["td", "th"])) for row in rows), default=0
-                )
-                table.replace_with(
-                    NavigableString(f"\n表省略、{len(rows)}行{cols}列。\n")
-                )
+                cols = max((len(row.find_all(["td", "th"])) for row in rows), default=0)
+                table.replace_with(NavigableString(f"\n表省略、{len(rows)}行{cols}列。\n"))
             else:
                 # ヘッダ行を取得
-                headers = [
-                    th.get_text(strip=True) for th in rows[0].find_all("th")
-                ]
+                headers = [th.get_text(strip=True) for th in rows[0].find_all("th")]
                 lines: list[str] = []
                 for row in rows:
-                    cells = [
-                        c.get_text(strip=True) for c in row.find_all(["td", "th"])
-                    ]
+                    cells = [c.get_text(strip=True) for c in row.find_all(["td", "th"])]
                     if headers and row.find("td"):
-                        pairs = [
-                            f"{h}は{c}" for h, c in zip(headers, cells) if c
-                        ]
+                        pairs = [f"{h}は{c}" for h, c in zip(headers, cells) if c]
                         if pairs:
                             lines.append("、".join(pairs) + "。")
                     elif cells:
@@ -378,7 +398,9 @@ class GenericWebSource(ContentSource):
             for heading in soup.find_all(tag_name):
                 text = heading.get_text(strip=True)
                 if text:
-                    heading.replace_with(NavigableString(f"\n\n{text}\n\n"))
+                    heading.insert_before(NavigableString("\n\n"))
+                    heading.insert_after(NavigableString("\n\n"))
+                    heading.unwrap()
                 else:
                     heading.decompose()
 
@@ -389,12 +411,14 @@ class GenericWebSource(ContentSource):
                 # 末尾に句点がなければ追加
                 if not text.endswith(("。", "、", ".", "!", "！", "?", "？")):
                     text += "。"
-                li.replace_with(NavigableString(text + "\n"))
+                if li.find("ruby"):
+                    li.append(NavigableString("。\n"))
+                else:
+                    li.replace_with(NavigableString(text + "\n"))
             else:
                 li.decompose()
 
     def _handle_ruby(self, soup: Tag) -> None:
+        """旧拡張向けの表示本文adapter。通常取得はextract_html_documentを使う。"""
         for ruby in soup.find_all("ruby"):
-            rb = ruby.find("rb")
-            if rb:
-                ruby.replace_with(NavigableString(rb.get_text()))
+            ruby.replace_with(NavigableString(extract_html_document(ruby).original))

@@ -153,6 +153,73 @@ async def test_f07_fallback_re_resolves_voice_and_native_parameters() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("provider_name", "configured", "expected"),
+    [
+        (
+            "voicevox",
+            {"speed_scale": 0.8, "pitch_scale": 0.15, "intonation_scale": 0.9},
+            {"speedScale": 0.8, "pitchScale": 0.15, "intonationScale": 0.9},
+        ),
+        ("voicepeak", {"pitch_scale": 180}, {"speed": 100, "pitch": 0}),
+        (
+            "voisona",
+            {
+                "_base_params": {
+                    "speed": 0.8,
+                    "pitch": 10,
+                    "volume": -1,
+                    "intonation": 0.9,
+                    "huskiness": 2,
+                    "alp": 0.1,
+                },
+                "_tone_overrides": {"warm": {"pitch": 40, "style_weights": [0.2, 0.8]}},
+            },
+            {"speed": 0.8, "pitch": 40, "volume": -1, "intonation": 0.9},
+        ),
+    ],
+)
+async def test_legacy_adapter_preserves_provider_parameter_baselines(
+    provider_name: str,
+    configured: dict[str, object],
+    expected: dict[str, float | int],
+) -> None:
+    class _ConfiguredLegacy:
+        def __init__(self) -> None:
+            self.name = provider_name
+            self.calls: list[dict[str, object]] = []
+            for key, value in configured.items():
+                setattr(self, key, value)
+
+        async def is_available(self) -> bool:
+            return True
+
+        async def list_voices(self) -> list[dict[str, str]]:
+            voice_id = "warm" if provider_name == "voisona" else f"{provider_name}-voice"
+            return [{"id": voice_id, "name": voice_id}]
+
+        async def synthesize(self, _text: str, **kwargs: object) -> AudioResult:
+            self.calls.append(kwargs)
+            return AudioResult(wav_bytes())
+
+        async def close(self) -> None:
+            return None
+
+    legacy = _ConfiguredLegacy()
+    service = SynthesisService(LegacyTTSProviderAdapter(legacy))
+
+    await service.synthesize("configured baseline")
+
+    native = legacy.calls[0]["_native_parameters"]
+    assert isinstance(native, dict)
+    for key, value in expected.items():
+        assert native[key] == pytest.approx(value)
+    if provider_name == "voisona":
+        assert native["style_weights"] == [0.2, 0.8]
+    await service.close()
+
+
+@pytest.mark.asyncio
 async def test_f07_voicepeak_native_values_and_narrator_reach_cli_exactly_once() -> None:
     class _Runner:
         def __init__(self) -> None:

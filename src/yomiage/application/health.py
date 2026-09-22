@@ -411,6 +411,10 @@ class HealthChecker:
         return None
 
     async def _llm_check(self) -> HealthCheck:
+        from ..settings import AnalysisSettings
+
+        if AnalysisSettings.from_config(self.config).llm_policy == "off":
+            return HealthCheck(True, "disabled")
         candidate = self._llm_candidate()
         if candidate is None:
             return HealthCheck(False, "not_configured")

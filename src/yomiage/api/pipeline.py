@@ -8,18 +8,22 @@ from typing import TYPE_CHECKING
 
 from loguru import logger
 
-from ..application.synthesis import SynthesisService
+from ..application.planning import UtterancePlanner
+from ..application.speech_text import render_speech_text
+from ..application.synthesis import SynthesisRequest, SynthesisService
+from ..application.voice_parameters import resolve_voice_parameters
+from ..core.models import VoiceIntent
+from ..core.text import TextDocument
 from ..nlp.llm_backend import create_llm_backend
 from ..nlp.pipeline import NLPAnalyzer
 from ..reader.character_db import CharacterDB
 from ..reader.param_mapper import ParamMapper
 from ..tts.base import TTSParams
-from .bridge import TTSBridge
+from .bridge import TTSBridge, _to_api_synthesis_result
 from .models import AnalysisResult, PipelineChunk
 from .profile_resolver import resolve_voice_profile
 
 if TYPE_CHECKING:
-    from ..tools.voice_profile import VoiceProfile
     from .config import PipelineConfig
 
 
@@ -43,9 +47,20 @@ class Pipeline:
     ):
         self._config = config
 
+        self._voice_profile = (
+            resolve_voice_profile(
+                config.voice_profile_name,
+                search_dirs=[config.voice_profile_dir] if config.voice_profile_dir else None,
+            )
+            if config.voice_profile_name
+            else None
+        )
+
         # TTS Bridge
         if synthesis_service is None:
-            self._bridge = TTSBridge.from_config(config.tts, config.tts_fallback)
+            self._bridge = TTSBridge.from_config(
+                config.tts, config.tts_fallback, voice_profile=self._voice_profile
+            )
         else:
             self._bridge = TTSBridge(synthesis_service)
         self._synthesis_service = self._bridge.service
@@ -53,11 +68,15 @@ class Pipeline:
         # LLM-based scene analyzer (optional)
         llm_cfg = config.analyzer.llm
         try:
-            llm = create_llm_backend(
-                llm_cfg.backend,
-                url=llm_cfg.url,
-                api_key=llm_cfg.api_key,
-                model=llm_cfg.model,
+            llm = (
+                None
+                if config.analyzer.analysis.llm_policy == "off"
+                else create_llm_backend(
+                    llm_cfg.backend,
+                    url=llm_cfg.url,
+                    api_key=llm_cfg.api_key,
+                    model=llm_cfg.model,
+                )
             )
         except Exception as e:
             logger.warning(f"LLM backend init failed, using rule-based only: {e}")
@@ -67,24 +86,15 @@ class Pipeline:
         self._analyzer = NLPAnalyzer(
             llm=llm,
             max_chunk_chars=config.analyzer.max_chunk_chars,
+            analysis_settings=config.analyzer.analysis,
         )
 
         # Parameter mapper
-        self._param_mapper = ParamMapper(config.scene_params)
-
-        # VoiceProfile (optional)
-        self._voice_profile: "VoiceProfile | None" = None
-        if config.voice_profile_name:
-            self._voice_profile = resolve_voice_profile(
-                config.voice_profile_name,
-                search_dirs=[config.voice_profile_dir]
-                if config.voice_profile_dir
-                else None,
-            )
-            if self._voice_profile:
-                logger.info(
-                    f"Loaded voice profile: {self._voice_profile.display_name}"
-                )
+        self._param_mapper = (
+            ParamMapper(config.scene_params)
+            if config.scene_params is not None
+            else ParamMapper.from_config_file()
+        )
 
         # Character DB (in-memory, no file persistence)
         self._character_db: CharacterDB | None = None
@@ -117,7 +127,7 @@ class Pipeline:
 
     async def process(
         self,
-        text: str,
+        text: str | TextDocument,
         *,
         characters: dict[str, dict] | None = None,
     ) -> list[PipelineChunk]:
@@ -129,7 +139,7 @@ class Pipeline:
 
     async def stream(
         self,
-        text: str,
+        text: str | TextDocument,
         *,
         characters: dict[str, dict] | None = None,
     ) -> AsyncIterator[PipelineChunk]:
@@ -141,87 +151,65 @@ class Pipeline:
                 profile_with_name = {"name": name, **profile}
                 self._character_db.get_or_create(name, profile_hint=profile_with_name)
 
-        # Analyze text through unified NLP pipeline
-        chunk_analyses = await self._analyzer.analyze_text(
+        plan = await UtterancePlanner(self._analyzer).from_text(
             text,
+            known_characters=self._character_db.known_names,
             character_db=self._character_db,
         )
-
-        for chunk_analysis in chunk_analyses:
-            chunk = chunk_analysis.chunk
-            analyzed = chunk_analysis.segments
-
-            # 支配的セグメントを選択
-            dominant = max(analyzed, key=lambda s: len(s.text)) if analyzed else None
-            if not dominant:
-                continue
-
-            # パラメータマッピング
-            tts_params = self._param_mapper.map(dominant, self._character_db)
-
-            # VoiceProfile があればキャラクターアーキタイプからパラメータを計算
-            if self._voice_profile and self._character_db:
-                tts_params = self._apply_voice_profile(
-                    tts_params, dominant, self._character_db
+        self.last_plan = plan
+        for utterance in plan.utterances:
+            character = self._character_db.characters.get(utterance.speaker_id)
+            intent = VoiceIntent(
+                archetype=character.personality if character else None,
+                gender=character.gender if character else None,
+                age_group=character.age_group if character else None,
+                preferred_voice_profile=character.voice_id if character else None,
+                emotion=utterance.emotion,
+                intensity=utterance.intensity,
+            )
+            context = self._param_mapper.context_for(
+                utterance,
+                self._character_db,
+                voice_profile=self._voice_profile,
+                provider=self._bridge.engine_name,
+            )
+            resolved = resolve_voice_parameters(
+                intent,
+                profile=context.profile,
+                scene=context.scene,
+                emotion=context.emotion,
+            )
+            result = await self._bridge.service.synthesize(
+                SynthesisRequest(
+                    text=render_speech_text(utterance),
+                    voice_intent=intent,
+                    utterance_id=utterance.id,
+                    scene=utterance.scene,
+                    parameter_context=context,
                 )
-
-            # TTS合成
-            synth_result = await self._bridge.synthesize(
-                chunk.text, params=tts_params
             )
-
-            # 結果を構築
-            analysis = AnalysisResult(
-                text=dominant.text,
-                segment_type=dominant.type.value,
-                speaker=dominant.speaker,
-                scene=dominant.scene,
-                emotion=dominant.emotion,
-                intensity=dominant.intensity,
-            )
-
             yield PipelineChunk(
-                text=chunk.text,
-                analysis=analysis,
-                audio=synth_result,
-                tts_params=_params_to_dict(tts_params),
+                text=utterance.text,
+                analysis=AnalysisResult(
+                    text=utterance.text,
+                    segment_type=utterance.segment_type.value,
+                    speaker=utterance.speaker_id,
+                    scene=utterance.scene,
+                    emotion=utterance.emotion.value,
+                    intensity=utterance.intensity,
+                ),
+                audio=_to_api_synthesis_result(result),
+                tts_params={
+                    "speed": resolved.speaking_rate,
+                    "pitch": resolved.pitch,
+                    "volume": resolved.volume,
+                    "intonation": resolved.intonation,
+                },
             )
-
-    def _apply_voice_profile(
-        self,
-        params: TTSParams,
-        segment,
-        character_db: CharacterDB,
-    ) -> TTSParams:
-        """VoiceProfile を使って TTSParams を上書き."""
-        if not self._voice_profile or not segment.speaker:
-            return params
-
-        char = character_db.characters.get(segment.speaker)
-        if not char or not char.base_params:
-            return params
-
-        archetype = char.base_params.get("_archetype")
-        if not archetype or archetype not in self._voice_profile.presets:
-            return params
-
-        profile_params = self._voice_profile.compute_params(
-            preset=archetype,
-            emotion=segment.emotion,
-            intensity=segment.intensity,
-        )
-        for key, value in profile_params.items():
-            if key == "style_weights":
-                params.style_weights = value
-            elif hasattr(params, key):
-                setattr(params, key, value)
-        return params
 
     # --- sync ラッパー ---
 
-    def process_sync(
-        self, text: str, **kwargs: object
-    ) -> list[PipelineChunk]:
+    def process_sync(self, text: str, **kwargs: object) -> list[PipelineChunk]:
         """process の同期版."""
         return asyncio.run(self.process(text, **kwargs))
 
@@ -229,6 +217,10 @@ class Pipeline:
         """内部で生成したSDK service/providerを解放する。"""
 
         await self._bridge.close()
+        scene = self._analyzer.scene_analyzer
+        close = getattr(scene._backend, "close", None) if scene else None
+        if callable(close):
+            await close()
 
     async def __aenter__(self) -> "Pipeline":
         return self

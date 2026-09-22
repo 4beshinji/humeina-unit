@@ -107,6 +107,7 @@ output/works/{work_id}/
 | [移行手順](docs/migration.md) | 旧 manifest/artifact の backup/import/rollback |
 | [ADR 索引](docs/adr/README.md) | 設計決定と実装タスクの対応 |
 | [改善ロードマップ](docs/improvement/README.md) | 作業計画と受入条件 |
+| [読み補正・合成品質の改善計画](docs/improvement/speech-quality-refactoring-plan.md) | 設計所見、LLM利用削減、段階的なリファクタリング |
 
 ## 開発時の検証
 

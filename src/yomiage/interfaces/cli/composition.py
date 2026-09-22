@@ -49,10 +49,13 @@ def create_reading_engine(
     from .common import _compat_helper
 
     tts = _compat_helper("_create_tts_manager")(config, provider_override)
+    from ...settings import AnalysisSettings
+
+    analysis_settings = AnalysisSettings.from_config(config)
     tts_cfg = config.get("tts", {})
     max_chars = tts_cfg.get("max_chunk_chars", 200)
 
-    llm = create_llm_service(config)
+    llm = create_llm_service(config) if analysis_settings.llm_policy != "off" else None
 
     scene_params = config.get("scene_params")
     param_mapper = (
@@ -87,7 +90,8 @@ def create_reading_engine(
     engine = ReadingEngine(
         tts_manager=tts,
         splitter=TextSplitter(max_chars=max_chars),
-        scene_analyzer=SceneAnalyzer(llm),
+        scene_analyzer=SceneAnalyzer(llm) if llm is not None else None,
+        analysis_settings=analysis_settings,
         param_mapper=param_mapper,
         auto_advance=config.get("reader", {}).get("auto_advance", True),
         lookahead_chunks=tts_cfg.get("lookahead_chunks", 5),

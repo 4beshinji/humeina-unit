@@ -7,6 +7,7 @@ from urllib.parse import urlsplit
 from bs4 import BeautifulSoup
 from loguru import logger
 
+from ..nlp.text_processor import extract_html_document
 from ..ports.sources import URLPolicy
 from .base import Chapter, ChapterInfo, ContentSource
 from .http import HTTPFetcher
@@ -93,9 +94,7 @@ class NarouSource(ContentSource):
                 title = link.get_text(strip=True)
                 full_url = f"https://ncode.syosetu.com{href}"
                 if not any(c.url == full_url for c in chapters):
-                    chapters.append(
-                        ChapterInfo(title=title, url=full_url, index=idx)
-                    )
+                    chapters.append(ChapterInfo(title=title, url=full_url, index=idx))
 
             # 次ページがあるか
             next_link = soup.find("a", href=f"/{ncode}/?p={page + 1}")
@@ -146,19 +145,14 @@ class NarouSource(ContentSource):
         if not novel_view:
             raise RuntimeError(f"Could not find novel text in {url}")
 
-        # ルビ処理
-        for ruby in novel_view.find_all("ruby"):
-            rb = ruby.find("rb")
-            if rb:
-                ruby.replace_with(rb.get_text())
-
-        text = novel_view.get_text("\n")
-        text = re.sub(r"\n{3,}", "\n\n", text).strip()
+        document = extract_html_document(novel_view)
+        text = document.text
 
         return Chapter(
             title=title,
             text=text,
             raw_html=html,
+            document=document,
             source_url=url,
             chapter_index=chapter_num,
         )

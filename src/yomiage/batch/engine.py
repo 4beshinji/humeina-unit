@@ -12,6 +12,7 @@ from loguru import logger
 
 from ..adapters.persistence.filesystem import FilesystemArtifactStore
 from ..application.operations import ThreadProcessRunner, run_blocking_process_operation
+from ..application.speech_text import render_speech_text
 from ..application.synthesis import SynthesisRequest, SynthesisService
 from ..application.voice_parameters import VoiceOverrides, VoiceResolutionContext
 from ..config import get_tts_config
@@ -19,7 +20,6 @@ from ..core.identity import new_job_id, new_run_id
 from ..core.models import Utterance, VoiceIntent
 from ..llm import LLMBackend
 from ..llm.factory import create_llm_service, normalize_llm_config
-from ..nlp.text_processor import TextProcessor
 from ..ports.artifacts import ArtifactRef, ArtifactStore, ArtifactValidationError
 from ..ports.sources import URLPolicy
 from ..reader.character_db import CharacterDB
@@ -27,6 +27,7 @@ from ..reader.param_mapper import ParamMapper
 from ..runtime_paths import data_dir as default_data_dir
 from ..runtime_paths import output_dir as default_output_dir
 from ..runtime_paths import profile_dir as configured_profile_dir
+from ..settings import AnalysisSettings
 from .analyzer import BatchAnalyzer
 from .concatenator import Concatenator
 from .manifest import BatchManifest, SentenceEntry
@@ -77,7 +78,12 @@ class BatchEngine:
         self.url_policy = url_policy
 
         batch_cfg = config.get("batch", {})
-        self.llm = llm or create_llm_service(config, metrics=metrics)
+        self.analysis_settings = AnalysisSettings.from_config(config)
+        self.llm = (
+            None
+            if self.analysis_settings.llm_policy == "off"
+            else (llm or create_llm_service(config, metrics=metrics))
+        )
         self._owns_llm = llm is None
         llm_cfg = normalize_llm_config(config)
         providers = llm_cfg.get("providers", {})
@@ -153,9 +159,7 @@ class BatchEngine:
             logger.debug(f"No VOICEPEAK profile found for {narrator_name}")
         return profile
 
-    def _create_synthesizer(
-        self, character_db: CharacterDB | None = None
-    ) -> BatchSynthesizer:
+    def _create_synthesizer(self, character_db: CharacterDB | None = None) -> BatchSynthesizer:
         if self.mode == "voisona":
             from ..bootstrap import create_tts_provider
             from .voisona_synth import VoisonaBatchSynthesizer
@@ -332,16 +336,48 @@ class BatchEngine:
         primary_name = getattr(getattr(service, "primary_provider", None), "name", None)
         if primary_name == self.mode:
             provider_name = None
+        context = VoiceResolutionContext(overrides=VoiceOverrides.from_mapping(canonical_params))
+        if entry.text_content is not None:
+            context = self.param_mapper.context_for(
+                utterance,
+                character_db,
+                voice_profile=self.voice_profile,
+                provider=self.mode,
+                overrides=entry.tts_params,
+                pitch_scale=self.config.get("voicepeak", {}).get("pitch_scale", 300.0),
+            )
+            character = character_db.characters.get(entry.speaker) if character_db else None
+            intent = VoiceIntent(
+                archetype=character.personality if character else None,
+                gender=character.gender if character else None,
+                age_group=character.age_group if character else None,
+                preferred_voice_profile=character.voice_id if character else None,
+                emotion=utterance.emotion,
+                intensity=utterance.intensity,
+            )
+            # adapterが補正済み値と誤認しないよう旧builderの数値を除く。
+            metadata = {
+                key: value
+                for key, value in metadata.items()
+                if key
+                in {
+                    "run_dir",
+                    "output_root",
+                    "vm_mount",
+                    "entry_index",
+                    "sentence_index",
+                    "utterance_id",
+                    "voice_id",
+                }
+            }
         return SynthesisRequest(
-            text=utterance.text,
+            text=render_speech_text(utterance),
             voice_intent=intent,
             utterance_id=str(entry.index),
             provider=provider_name,
             work_id=manifest.work_id if manifest.run_id else None,
             run_id=manifest.run_id,
-            parameter_context=VoiceResolutionContext(
-                overrides=VoiceOverrides.from_mapping(canonical_params)
-            ),
+            parameter_context=context,
             destination=f"{entry.index:04d}.wav",
             metadata=metadata,
         )
@@ -356,6 +392,7 @@ class BatchEngine:
         """Phase A: 全文分析してマニフェスト生成."""
         analyzer = BatchAnalyzer(
             llm=self.llm,
+            analysis_settings=self.analysis_settings,
             analysis_window_chars=self.analysis_window_chars,
             analysis_window_sentences=self.analysis_window_sentences,
             context_tokens=self.llm_context_tokens,
@@ -411,11 +448,7 @@ class BatchEngine:
 
         # The old synthesizer remains available as a compatibility parameter builder and
         # fallback for legacy manifests.  Canonical runs use only the shared application service.
-        synth = (
-            None
-            if self.synthesis_service is not None
-            else self._create_synthesizer(char_db)
-        )
+        synth = None if self.synthesis_service is not None else self._create_synthesizer(char_db)
         service = self._create_synthesis_service(synth)
         if service is None:
             if synth is None or not await synth.is_available():
@@ -461,14 +494,12 @@ class BatchEngine:
 
         total = len(targets) or 1
         count = 0
-        await self._romanize_entries(targets)
+
         for entry in targets:
             # シーンブレーク
             if entry.segment_type == "scene_break":
                 silence_file = f"{entry.index:04d}.wav"
-                await synth.generate_silence(
-                    self.silence_duration, work_dir / silence_file
-                )
+                await synth.generate_silence(self.silence_duration, work_dir / silence_file)
                 try:
                     artifact = self._publish_artifact(
                         manifest,
@@ -577,10 +608,7 @@ class BatchEngine:
         manifest.refresh_completion_status(self.output_dir)
 
         manifest.save(self.output_dir)
-        logger.info(
-            f"Synthesis {manifest.completion_status}: "
-            f"{manifest.progress_str()}"
-        )
+        logger.info(f"Synthesis {manifest.completion_status}: {manifest.progress_str()}")
         return manifest
 
     async def _synthesize_with_service(
@@ -642,10 +670,6 @@ class BatchEngine:
             )
             self._restore_artifact_entries(manifest, work_dir)
 
-        await self._romanize_entries(
-            manifest.failed_sentences if retry_failed else manifest.pending_sentences
-        )
-
         # merge_adjacent=False is intentional: the old Batch manifest is already sentence
         # segmented, and resume/retry needs a stable 1:1 entry↔utterance↔artifact mapping.
         plan = manifest.to_utterance_plan(config=self.config, merge_adjacent=False)
@@ -657,9 +681,7 @@ class BatchEngine:
                 continue
             utterance_by_index[entry.index] = next(plan_utterances)
 
-        targets = (
-            manifest.failed_sentences if retry_failed else manifest.pending_sentences
-        )
+        targets = manifest.failed_sentences if retry_failed else manifest.pending_sentences
         logger.info(
             f"{'Retrying' if retry_failed else 'Synthesizing'} {len(targets)} "
             f"{self.mode} sentences through SynthesisService"
@@ -1027,9 +1049,7 @@ class BatchEngine:
         manifest = BatchManifest.load(self.output_dir, work_id, run_id=run_id)
         completion_status = manifest.compute_completion_status(self.output_dir)
         if completion_status in {"partial", "failed"}:
-            logger.warning(
-                f"Skipping video generation for incomplete {completion_status} run"
-            )
+            logger.warning(f"Skipping video generation for incomplete {completion_status} run")
             return None
         work_dir = manifest.output_dir(self.output_dir)
 
@@ -1078,7 +1098,8 @@ class BatchEngine:
                 sub_gen.generate_srt(events, out_path)
             else:
                 sub_gen.generate_ass(
-                    events, out_path,
+                    events,
+                    out_path,
                     title=f"{manifest.work_title} - {ch_title}",
                     chapter_title=ch_title,
                 )
@@ -1144,20 +1165,6 @@ class BatchEngine:
                 return video_output
 
         return audio_output
-
-    async def _romanize_entries(self, entries: list[SentenceEntry]) -> None:
-        """英字を含む全対象文を一回の重複排除済みbatchで変換する。"""
-
-        targets = [
-            entry
-            for entry in entries
-            if _has_speakable_text(entry.text) and TextProcessor.has_alphabet(entry.text)
-        ]
-        if not targets:
-            return
-        converted = await self.llm.romanize_many([entry.text for entry in targets])
-        for entry, text in zip(targets, converted, strict=True):
-            entry.text = text
 
     async def close(self) -> None:
         """このengineが所有するLLM資源を閉じる。"""

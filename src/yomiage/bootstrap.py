@@ -99,6 +99,9 @@ def create_reading_engine(
 ) -> ReadingEngine:
     """Construct the Reader composition at the application bootstrap boundary."""
 
+    from .settings import AnalysisSettings
+
+    analysis_settings = AnalysisSettings.from_config(config)
     tts_cfg = config.get("tts", {})
     if not isinstance(tts_cfg, Mapping):
         tts_cfg = {}
@@ -114,7 +117,8 @@ def create_reading_engine(
         hooks=hooks,
         metrics=metrics,
     )
-    llm = create_llm_service(config, metrics=metrics)
+    llm = (create_llm_service(config, metrics=metrics)
+           if analysis_settings.llm_policy != "off" else None)
     scene_params = config.get("scene_params")
     param_mapper = (
         ParamMapper(dict(scene_params))
@@ -127,7 +131,8 @@ def create_reading_engine(
     engine = ReadingEngine(
         tts_manager=tts_manager,
         splitter=TextSplitter(max_chars=int(tts_cfg.get("max_chunk_chars", 200))),
-        scene_analyzer=SceneAnalyzer(llm),
+        scene_analyzer=SceneAnalyzer(llm) if llm is not None else None,
+        analysis_settings=analysis_settings,
         param_mapper=param_mapper,
         auto_advance=bool(reader_cfg.get("auto_advance", True)),
         lookahead_chunks=int(tts_cfg.get("lookahead_chunks", 5)),

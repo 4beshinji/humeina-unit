@@ -24,6 +24,7 @@ from yomiage.ports.tts import (
     ProviderVoice,
 )
 from yomiage.tts.base import AudioResult
+from yomiage.tts.shared_directory import VoisonaSharedDirectory
 
 
 def wav_bytes(*, duration: float = 0.01, sample_rate: int = 16_000) -> bytes:
@@ -158,6 +159,8 @@ class FileLegacyFakeProvider(LegacyFakeProvider):
     def __init__(self, root: Path, **kwargs: Any) -> None:
         super().__init__(name="voisona", **kwargs)
         self.root = Path(root)
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.shared_directory = VoisonaSharedDirectory.from_config({"shared_dir": self.root})
         self.file_calls: list[dict[str, Any]] = []
 
     async def synthesize(self, text: str, **kwargs: Any) -> AudioResult:

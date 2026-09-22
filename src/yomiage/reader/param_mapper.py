@@ -42,6 +42,70 @@ class ParamMapper:
                 data = yaml.safe_load(file) or {}
         return cls(data)
 
+    def context_for(
+        self,
+        utterance,
+        character_db=None,
+        *,
+        voice_profile=None,
+        provider=None,
+        overrides=None,
+        pitch_scale=300.0,
+    ):
+        """プロファイルを一度解決し、共通resolverへsceneと明示上書きを渡す。"""
+        from dataclasses import replace
+
+        from ..application.voice_parameters import VoiceOverrides, VoiceResolutionContext
+
+        profile = {}
+        character = (
+            character_db.characters.get(utterance.speaker_id)
+            if character_db and utterance.speaker_id
+            else None
+        )
+        if character:
+            profile = {
+                k: v for k, v in (character.base_params or {}).items() if not k.startswith("_")
+            }
+        emotion = self.emotion_styles.get(utterance.emotion, {})
+        if isinstance(emotion, (list, tuple)):
+            emotion = {"style_weights": emotion}
+        if voice_profile is not None:
+            preset = utterance.voice_intent.archetype
+            if character:
+                preset = (character.base_params or {}).get("_archetype") or preset
+            if not preset or preset not in voice_profile.presets:
+                preset = "narrator"
+            profile = voice_profile.compute_params(
+                preset,
+                emotion=utterance.emotion.value,
+                intensity=utterance.intensity,
+                noise_seed=utterance.speaker_id,
+            )
+            # プロファイル側で解決した感情を二重に補正しない。
+            emotion = {}
+        explicit = VoiceOverrides.from_mapping(overrides or {})
+        if "style_weights" in profile and explicit.style_weights is None:
+            explicit = replace(explicit, style_weights=tuple(profile["style_weights"]))
+        options = {}
+        if provider == "voicepeak":
+            # 既存YAMLのnative値を入口でcanonical設定へ読み替える。出力変換はadapterだけ。
+            if "speed" in profile:
+                profile["speed"] = float(profile["speed"]) / 100.0
+            if "pitch" in profile:
+                profile["pitch"] = float(profile["pitch"]) / pitch_scale if pitch_scale else 0.0
+            if "emotions" in profile:
+                options[provider] = {"emotions": profile["emotions"]}
+        if provider == "voicevox" and profile.get("style_id") is not None:
+            options[provider] = {"voice_id": str(profile["style_id"])}
+        return VoiceResolutionContext(
+            profile=profile,
+            scene=self.scenes.get(utterance.scene, {}),
+            emotion=emotion,
+            overrides=explicit,
+            provider_options=options,
+        )
+
     def map(
         self,
         segment: AnalyzedSegment,
@@ -71,9 +135,7 @@ class ParamMapper:
             intensity = segment.intensity
             if intensity < 1.0:
                 neutral = self.emotion_styles.get("neutral", [1.0, 0.0, 0.0, 0.0, 0.0])
-                style = [
-                    n * (1 - intensity) + s * intensity for n, s in zip(neutral, style)
-                ]
+                style = [n * (1 - intensity) + s * intensity for n, s in zip(neutral, style)]
             params.style_weights = style
 
         return params
@@ -111,44 +173,31 @@ class ParamMapper:
         if style:
             if intensity < 1.0:
                 neutral = self.emotion_styles.get("neutral", [1.0, 0.0, 0.0, 0.0, 0.0])
-                style = [
-                    n * (1 - intensity) + s * intensity for n, s in zip(neutral, style)
-                ]
+                style = [n * (1 - intensity) + s * intensity for n, s in zip(neutral, style)]
             params.style_weights = style
 
         return params
 
-    def apply_scene_mods(
-        self, params: dict, scene: str, speed_default: float = 1.0
-    ) -> None:
+    def apply_scene_mods(self, params: dict, scene: str, speed_default: float = 1.0) -> None:
         """dict 形式のパラメータにシーン修飾子を適用.
 
         batch synthesizer 等、TTSParams ではなく dict を使う箇所向け.
         """
         scene_mods = self.scenes.get(scene, {})
         if scene_mods:
-            params["speed"] = params.get("speed", speed_default) * scene_mods.get(
-                "speed", 1.0
-            )
-            params["volume"] = params.get("volume", 0.0) + scene_mods.get(
-                "volume", 0.0
-            )
+            params["speed"] = params.get("speed", speed_default) * scene_mods.get("speed", 1.0)
+            params["volume"] = params.get("volume", 0.0) + scene_mods.get("volume", 0.0)
 
-    def apply_emotion_style(
-        self, params: dict, emotion: str, intensity: float
-    ) -> None:
+    def apply_emotion_style(self, params: dict, emotion: str, intensity: float) -> None:
         """dict 形式のパラメータに感情スタイルウェイトを適用."""
         if "style_weights" in params:
             return
         emotion_style = self.emotion_styles.get(emotion)
         if emotion_style:
             if intensity < 1.0:
-                neutral = self.emotion_styles.get(
-                    "neutral", [1.0, 0.0, 0.0, 0.0, 0.0]
-                )
+                neutral = self.emotion_styles.get("neutral", [1.0, 0.0, 0.0, 0.0, 0.0])
                 emotion_style = [
-                    n * (1 - intensity) + s * intensity
-                    for n, s in zip(neutral, emotion_style)
+                    n * (1 - intensity) + s * intensity for n, s in zip(neutral, emotion_style)
                 ]
             params["style_weights"] = emotion_style
 

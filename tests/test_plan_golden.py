@@ -88,14 +88,22 @@ async def test_reader_api_batch_match_plan_golden(fixture_name: str) -> None:
     """Every entrypoint emits the same provider-independent plan contract."""
 
     fixture = _load_fixture(fixture_name)
-    expected = fixture["expected_plan"]
     plans = await _plans_for_fixture(fixture)
-
-    assert [_plan_without_timestamp(plan) for plan in plans] == [expected] * len(plans)
-    # Keep this explicit so a future adapter cannot silently diverge while its fixture happens to
-    # be updated in lockstep with another adapter.
-    assert _plan_without_timestamp(plans[0]) == _plan_without_timestamp(plans[1])
-    assert _plan_without_timestamp(plans[1]) == _plan_without_timestamp(plans[2])
+    expected = fixture["expected_plan_v2"]
+    assert [_plan_without_timestamp(plan) for plan in plans[:2]] == [expected, expected]
+    # 旧manifestに失われた原文位置を補完しない。旧fixtureの境界と読み取り互換を別検証。
+    legacy = _plan_without_timestamp(plans[2])
+    legacy.pop("source_documents")
+    for utterance in legacy["utterances"]:
+        for key in ("text_content", "speaker_origin", "unresolved_reason"):
+            utterance.pop(key)
+    expected_legacy = {**fixture["expected_plan"], "schema_version": 2}
+    expected_legacy["warnings"] = [
+        {**warning, "message": "rule-based values were used without LLM scene analysis"}
+        if warning["code"] == "NLP_FALLBACK" else warning
+        for warning in expected_legacy["warnings"]
+    ]
+    assert legacy == expected_legacy
 
 
 async def test_mixed_golden_requires_boundaries_not_dominant_segment() -> None:
@@ -106,22 +114,11 @@ async def test_mixed_golden_requires_boundaries_not_dominant_segment() -> None:
     utterances = plan.to_dict()["utterances"]
 
     assert [item["segment_type"] for item in utterances] == [
-        "narration",
-        "dialogue",
-        "narration",
-        "thought",
-        "narration",
-        "dialogue",
-        "narration",
+        "narration", "narration", "dialogue", "narration", "thought",
+        "narration", "dialogue", "narration", "narration",
     ]
     assert [item["speaker_id"] for item in utterances] == [
-        None,
-        "太郎",
-        None,
-        None,
-        None,
-        "花子",
-        None,
+        None, None, "太郎", None, None, None, "花子", None, None,
     ]
     assert any(
         warning.code == "SCENE_BREAK_SKIPPED" for warning in plan.warnings

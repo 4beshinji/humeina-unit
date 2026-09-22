@@ -7,6 +7,7 @@ from urllib.parse import urlsplit
 from bs4 import BeautifulSoup
 from loguru import logger
 
+from ..nlp.text_processor import extract_html_document
 from ..ports.sources import URLPolicy
 from .base import Chapter, ChapterInfo, ContentSource
 from .http import HTTPFetcher
@@ -114,14 +115,8 @@ class KakuyomuSource(ContentSource):
         if not body:
             raise RuntimeError(f"Could not find episode body in {url}")
 
-        # ルビ処理
-        for ruby in body.find_all("ruby"):
-            rb = ruby.find("rb")
-            if rb:
-                ruby.replace_with(rb.get_text())
-
-        text = body.get_text("\n")
-        text = re.sub(r"\n{3,}", "\n\n", text).strip()
+        document = extract_html_document(body)
+        text = document.text
 
         # チャプターインデックスをTOCから推定
         chapter_index = 0
@@ -135,6 +130,7 @@ class KakuyomuSource(ContentSource):
             title=title,
             text=text,
             raw_html=html,
+            document=document,
             source_url=url,
             chapter_index=chapter_index,
             total_chapters=len(toc) if toc else None,

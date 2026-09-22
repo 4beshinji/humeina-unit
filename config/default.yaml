@@ -1,3 +1,17 @@
+# 読み上げ解析。旧設定の範囲を保つ初期値。一般文章はplain/offを明示できる。
+analysis:
+  content_kind: novel  # plain / novel / script
+  llm_policy: full     # "off" / selective / full
+  common_dictionary: null
+  work_dictionary: null
+  suggest_readings: false  # 未指定の英字語句をLLM候補にする場合のみtrue
+  reading_proposals: null  # 未確認候補の保存先。確認済み辞書とは別のYAML
+  context_tokens: 32768
+  context_safety_ratio: 0.8
+  max_output_tokens: 4096
+  max_items: 25
+  max_requests: 100
+
 tts:
   primary_provider: voisona
   fallback_provider: voicevox

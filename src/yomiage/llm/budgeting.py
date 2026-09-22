@@ -34,6 +34,8 @@ def split_by_token_budget(
     *,
     output_tokens_per_item: int = 64,
     fixed_output_tokens: int = 128,
+    max_output_tokens: int = 4096,
+    overhead_tokens: int = 512,
 ) -> list[list[str]]:
     """入力・予想出力・最大項目数の小さい制約でbatchを分割する。"""
 
@@ -46,9 +48,10 @@ def split_by_token_budget(
         item_tokens = estimate_tokens(item)
         prospective_count = len(current) + 1
         output_tokens = fixed_output_tokens + prospective_count * output_tokens_per_item
-        limit = budget.input_limit(output_tokens=output_tokens)
+        limit = budget.input_limit(output_tokens=output_tokens, overhead_tokens=overhead_tokens)
         if current and (
             input_tokens + item_tokens > limit or prospective_count > budget.max_items
+            or output_tokens > max_output_tokens
         ):
             batches.append(current)
             current = []

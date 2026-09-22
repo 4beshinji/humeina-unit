@@ -6,11 +6,16 @@ TextProcessor → TextSplitter → TextClassifier → SpeakerExtractor → Scene
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from .classifier import TextClassifier
+from ..adapters.persistence.pronunciation import PronunciationDictionary
+from ..core.text import TextDocument
+from ..llm.budgeting import TokenBudget
+from ..settings import AnalysisSettings
+from .classifier import SegmentType, TextClassifier
+from .pronunciation import propose_readings
 from .scene_analyzer import AnalyzedSegment, SceneAnalyzer
 from .speaker import SpeakerExtractor
 from .splitter import Chunk, TextSplitter
@@ -27,6 +32,14 @@ class ChunkAnalysis:
 
     chunk: Chunk
     segments: list[AnalyzedSegment]
+
+
+class PlanAnalysis(list[AnalyzedSegment]):
+    """同時実行でも結果と入力文書の対応を失わない解析結果。"""
+
+    def __init__(self, segments, document: TextDocument):
+        super().__init__(segments)
+        self.document = document
 
 
 class NLPAnalyzer:
@@ -48,16 +61,40 @@ class NLPAnalyzer:
         speaker_extractor: SpeakerExtractor | None = None,
         scene_analyzer: SceneAnalyzer | None = None,
         math_dict_path: Path | None = None,
+        analysis_settings: AnalysisSettings | None = None,
     ):
-        self._processor = text_processor or TextProcessor(
-            math_dict_path=math_dict_path
+        self.settings = analysis_settings or AnalysisSettings(
+            llm_policy="full" if (llm is not None or scene_analyzer is not None) else "off"
         )
+        self._dictionary = PronunciationDictionary(
+            self.settings.common_dictionary, self.settings.work_dictionary
+        )
+        self._processor = text_processor or TextProcessor(math_dict_path=math_dict_path)
         self._splitter = splitter or TextSplitter(max_chars=max_chunk_chars)
-        self._classifier = classifier or TextClassifier()
+        self._classifier = classifier or TextClassifier(self.settings.content_kind)
         self._speaker_extractor = speaker_extractor or SpeakerExtractor()
-        self._scene_analyzer = scene_analyzer
-        if scene_analyzer is None and llm is not None:
-            self._scene_analyzer = SceneAnalyzer(llm)
+        self._scene_analyzer = None
+        if self.settings.llm_policy != "off":
+            self._scene_analyzer = scene_analyzer
+            if scene_analyzer is not None and analysis_settings is not None:
+                scene_analyzer.budget = TokenBudget(
+                    self.settings.context_tokens,
+                    self.settings.context_safety_ratio,
+                    self.settings.max_items,
+                )
+                scene_analyzer.max_output_tokens = self.settings.max_output_tokens
+                scene_analyzer.max_requests = self.settings.max_requests
+            if scene_analyzer is None and llm is not None:
+                self._scene_analyzer = SceneAnalyzer(
+                    llm,
+                    budget=TokenBudget(
+                        self.settings.context_tokens,
+                        self.settings.context_safety_ratio,
+                        self.settings.max_items,
+                    ),
+                    max_output_tokens=self.settings.max_output_tokens,
+                    max_requests=self.settings.max_requests,
+                )
 
     @property
     def scene_analyzer(self) -> SceneAnalyzer | None:
@@ -98,7 +135,7 @@ class NLPAnalyzer:
         return [
             AnalyzedSegment.from_segment(
                 seg,
-                speaker=seg.speaker_candidates[0] if seg.speaker_candidates else None,
+                speaker=seg.metadata.get("speaker"),
             )
             for seg in segments
         ]
@@ -117,26 +154,11 @@ class NLPAnalyzer:
             known_characters: 既知キャラクター名リスト
             character_db: 新キャラ検出時に更新する CharacterDB
         """
-        segments = self._classifier.classify(chunk.text)
-        segments = self._speaker_extractor.extract(segments)
-
-        if self._scene_analyzer:
-            analyzed = await self._scene_analyzer.analyze_batch(
-                segments,
-                known_characters=known_characters,
-            )
-            if character_db is not None:
-                self._update_character_db(character_db, analyzed)
-        else:
-            analyzed = [
-                AnalyzedSegment.from_segment(
-                    seg,
-                    speaker=seg.speaker_candidates[0] if seg.speaker_candidates else None,
-                )
-                for seg in segments
-            ]
-
-        return analyzed
+        return await self.analyze_for_plan(
+            chunk.text,
+            known_characters=known_characters,
+            character_db=character_db,
+        )
 
     async def analyze_text(
         self,
@@ -150,21 +172,19 @@ class NLPAnalyzer:
         Returns:
             チャンクごとの分析結果リスト
         """
-        clean = self._processor.process(text)
-        if not clean:
-            return []
-
-        chunks = self._splitter.split(clean)
+        analyzed = await self.analyze_for_plan(
+            text,
+            known_characters=known_characters,
+            character_db=character_db,
+        )
         results: list[ChunkAnalysis] = []
-        for chunk in chunks:
-            if chunk.is_scene_break or not chunk.text.strip():
+        for seg in analyzed:
+            if seg.type == SegmentType.SCENE_BREAK:
                 continue
-            analyzed = await self.analyze_chunk(
-                chunk,
-                known_characters=known_characters,
-                character_db=character_db,
-            )
-            results.append(ChunkAnalysis(chunk=chunk, segments=analyzed))
+            # 分類と話者は全文構造から確定済み。後段分割で再分類しない。
+            for chunk in self._splitter.split(seg.text):
+                chunk.index = len(results)
+                results.append(ChunkAnalysis(chunk, [replace(seg, text=chunk.text)]))
         return results
 
     async def analyze_for_plan(
@@ -174,42 +194,69 @@ class NLPAnalyzer:
         known_characters: list[str] | None = None,
         character_db: CharacterDB | None = None,
     ) -> list[AnalyzedSegment]:
-        """発話計画用に、TTS文字数分割を行わず全文を分析する.
+        """原文・辞書・構造を先に確定し、方針に応じて必要な対象だけを窓分析する。
 
-        ``analyze_text`` は既存の Reader/CLI の互換性のため、TTSへ渡すチャンクへ先に
-        分割する。この順序で長い ``「...」`` を渡すと引用符の途中で切れ、後続チャンクが
-        地の文として分類されるため、発話者境界を復元できない。UtterancePlan はTTS実行
-        より前の契約なので、ここでは TextProcessor → classifier → speaker → scene の
-        論理セグメントだけを作り、文字数制限は後段へ委ねる。
-
-        LLMへ渡す単位は論理セグメントであり、``TextSplitter.max_chars`` には依存しない。
-        空のscene breakも結果へ残すので、planning adapterが警告として記録できる。
+        TTS文字数分割はこの後で行う。本文照合や再分類で話者境界を復元しない。
         """
 
-        if not isinstance(text, str):
-            raise TypeError("text must be a string")
-        clean = self._processor.process(text)
-        if not clean:
-            return []
-
-        segments = self._classifier.classify(clean)
-        segments = self._speaker_extractor.extract(segments)
-        if self._scene_analyzer:
-            analyzed = await self._scene_analyzer.analyze_batch(
-                segments,
-                known_characters=known_characters,
+        if not isinstance(text, (str, TextDocument)):
+            raise TypeError("text must be a string or TextDocument")
+        document = self._dictionary.apply(self._processor.process_document(text))
+        if self._scene_analyzer is not None:
+            document = await propose_readings(
+                document, self._scene_analyzer._backend, self.settings
             )
-            if character_db is not None:
-                self._update_character_db(character_db, analyzed)
-            return analyzed
-
-        return [
-            AnalyzedSegment.from_segment(
-                seg,
-                speaker=seg.speaker_candidates[0] if seg.speaker_candidates else None,
+        if not document.text:
+            return PlanAnalysis([], document)
+        segments = self._classifier.classify(document.text)
+        segments = self._speaker_extractor.extract(segments, known_characters)
+        for seg in segments:
+            if seg.type == SegmentType.SCENE_BREAK:
+                continue
+            a, b = seg.metadata["normalized_start"], seg.metadata["normalized_end"]
+            seg.metadata.update(
+                text_content=document.slice(a, b),
+                source_ref={
+                    "start": document.source_map[a][0],
+                    "end": document.source_map[b - 1][1],
+                },
             )
+        analyzed = [
+            AnalyzedSegment.from_segment(seg, speaker=seg.metadata.get("speaker"))
             for seg in segments
         ]
+        if self._scene_analyzer is not None:
+            selected = [
+                seg
+                for seg in segments
+                if seg.type != SegmentType.SCENE_BREAK
+                and (
+                    self.settings.llm_policy == "full"
+                    or (
+                        seg.type in {SegmentType.DIALOGUE, SegmentType.THOUGHT}
+                        and not seg.metadata.get("speaker")
+                    )
+                )
+            ]
+            if selected:
+                if self.settings.llm_policy == "selective":
+                    for seg in selected:
+                        before = segments[seg.index - 1].text[-200:] if seg.index else ""
+                        after = (
+                            segments[seg.index + 1].text[:200]
+                            if seg.index + 1 < len(segments)
+                            else ""
+                        )
+                        seg.metadata["analysis_context"] = before + "\n" + after
+                updates = await self._scene_analyzer.analyze_batch(
+                    selected,
+                    known_characters=known_characters,
+                )
+                by_id = {seg.index: seg for seg in updates}
+                analyzed = [by_id.get(seg.index, seg) for seg in analyzed]
+        if character_db is not None:
+            self._update_character_db(character_db, analyzed)
+        return PlanAnalysis(analyzed, document)
 
     # Descriptive aliases keep the migration boundary discoverable to callers that do not know
     # whether the input is a Reader chunk stream or a plan-level analysis.

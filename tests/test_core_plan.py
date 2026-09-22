@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 import pytest
 
 from yomiage.core.models import PlanWarning, Utterance
-from yomiage.core.plan import PlanValidationError, UtterancePlan
+from yomiage.core.plan import CURRENT_SCHEMA_VERSION, PlanValidationError, UtterancePlan
 
 
 def _utterance(identifier: str, order: int) -> Utterance:
@@ -23,7 +23,7 @@ def _utterance(identifier: str, order: int) -> Utterance:
 def test_plan_dict_and_json_roundtrip() -> None:
     created_at = datetime(2026, 7, 30, 12, 0, tzinfo=UTC)
     plan = UtterancePlan(
-        schema_version=1,
+        schema_version=CURRENT_SCHEMA_VERSION,
         plan_id="plan-1",
         source_fingerprint="source-hash",
         config_fingerprint="config-hash",
@@ -52,7 +52,7 @@ def test_plan_rejects_missing_schema_version() -> None:
 def test_plan_rejects_duplicate_or_out_of_order_utterances() -> None:
     with pytest.raises(PlanValidationError):
         UtterancePlan(
-            schema_version=1,
+            schema_version=CURRENT_SCHEMA_VERSION,
             plan_id="plan-1",
             source_fingerprint="source-hash",
             config_fingerprint="config-hash",
@@ -60,7 +60,7 @@ def test_plan_rejects_duplicate_or_out_of_order_utterances() -> None:
         )
     with pytest.raises(PlanValidationError):
         UtterancePlan(
-            schema_version=1,
+            schema_version=CURRENT_SCHEMA_VERSION,
             plan_id="plan-1",
             source_fingerprint="source-hash",
             config_fingerprint="config-hash",
@@ -70,7 +70,7 @@ def test_plan_rejects_duplicate_or_out_of_order_utterances() -> None:
 
 def test_plan_is_immutable_and_updates_explicitly() -> None:
     plan = UtterancePlan(
-        schema_version=1,
+        schema_version=CURRENT_SCHEMA_VERSION,
         plan_id="plan-1",
         source_fingerprint="source-hash",
         config_fingerprint="config-hash",

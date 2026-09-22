@@ -85,7 +85,8 @@ async def test_standard_batch_sends_body_once_without_discovery_pass(
 
     assert len(llm.prompts) == 1
     assert "新しい登場人物を抽出" not in llm.prompts[0]
-    assert len(manifest.sentences) == 3
+    assert len(manifest.sentences) == 1
+    assert manifest.sentences[0].text == "太郎は歩いた。太郎は笑った。太郎は帰った。"
     assert manifest.characters["太郎"]["gender"] == "male"
     assert manifest.characters["太郎"]["base_params"]["_archetype"] == "male_adult"
 

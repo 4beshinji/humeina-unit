@@ -1,10 +1,9 @@
 """青空文庫コンテンツソース."""
 
-import re
-
 from bs4 import BeautifulSoup
 from loguru import logger
 
+from ..nlp.text_processor import extract_html_document
 from ..ports.sources import URLPolicy
 from .base import Chapter, ContentSource
 from .http import HTTPFetcher
@@ -38,7 +37,8 @@ class AozoraSource(ContentSource):
         # 青空文庫はShift-JIS or UTF-8
         raw_html = self._decode(response.body)
 
-        title, text = self._parse(raw_html)
+        title, document = self._parse_document(raw_html)
+        text = document.text
         logger.info(f"Fetched: {title} ({len(text)} chars)")
 
         return Chapter(
@@ -48,6 +48,7 @@ class AozoraSource(ContentSource):
             source_url=url,
             chapter_index=0,
             total_chapters=1,
+            document=document,
         )
 
     def _decode(self, data: bytes) -> str:
@@ -59,6 +60,10 @@ class AozoraSource(ContentSource):
         return data.decode("utf-8", errors="replace")
 
     def _parse(self, html: str) -> tuple[str, str]:
+        title, document = self._parse_document(html)
+        return title, document.text
+
+    def _parse_document(self, html: str):
         soup = BeautifulSoup(html, "lxml")
 
         # タイトル取得
@@ -74,13 +79,7 @@ class AozoraSource(ContentSource):
             main_text = soup.find("body")
 
         if not main_text:
-            return title, ""
-
-        # ルビ処理: <ruby><rb>漢字</rb><rp>(</rp><rt>かんじ</rt><rp>)</rp></ruby>
-        for ruby in main_text.find_all("ruby"):
-            rb = ruby.find("rb")
-            if rb:
-                ruby.replace_with(rb.get_text())
+            return title, extract_html_document("")
 
         # 注記除去
         for note in main_text.find_all("span", class_="notes"):
@@ -88,13 +87,7 @@ class AozoraSource(ContentSource):
         for note in main_text.find_all("div", class_="bibliographical_information"):
             note.decompose()
 
-        # テキスト抽出
-        text = main_text.get_text("\n")
-        # 連続空行を1つに
-        text = re.sub(r"\n{3,}", "\n\n", text)
-        text = text.strip()
-
-        return title, text
+        return title, extract_html_document(main_text)
 
 
 def _is_host(url: str, hosts: set[str]) -> bool:

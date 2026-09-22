@@ -2,19 +2,25 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from typing import Any
 
 from loguru import logger
 
-from ..core.identity import build_identity
-from ..llm import LLMBackend, LLMError, LLMErrorCategory
-from ..llm.budgeting import TokenBudget, split_by_token_budget
-from ..nlp.classifier import SegmentType, TextClassifier
+from ..core.identity import (
+    build_identity,
+    fingerprint,
+)
+from ..llm import LLMBackend
+from ..llm.budgeting import TokenBudget
+from ..nlp.classifier import SegmentType, TextClassifier, TextSegment
+from ..nlp.pipeline import NLPAnalyzer
+from ..nlp.scene_analyzer import SceneAnalyzer
 from ..nlp.speaker import SpeakerExtractor
-from ..nlp.splitter import TextSplitter
 from ..nlp.text_processor import TextProcessor
 from ..ports.sources import URLPolicy
 from ..reader.character_db import CharacterDB
+from ..settings import AnalysisSettings
 from ..sources import registry
 from ..sources.base import ChapterInfo
 from .manifest import BatchManifest, ChapterMeta, SentenceEntry
@@ -41,23 +47,6 @@ JSON配列で回答（新規キャラクターのみ）:
 
 既知キャラクターの別名を発見した場合:
 {{"merge": [{{"known_name": "既知名", "new_alias": "新しい別名"}}]}}"""
-
-CHAR_VOICE_SYSTEM = """\
-あなたはTTSパラメータ設計者です。キャラクターの特徴に基づいて、\
-最も近いアーキタイプを選んでください。JSON形式で回答してください。"""
-
-CHAR_VOICE_PROMPT = """\
-キャラクター一覧:
-{characters}
-
-各キャラクターに最も近いアーキタイプを選んでください:
-  male_child（男児）, male_young（若い男性）, male_adult（成人男性）, male_elder（老年男性）,
-  female_child（女児）, female_young（若い女性）, female_adult（成人女性）,
-  female_elder（老年女性）,
-  narrator（ナレーター）
-
-JSON配列で回答:
-[{{"name": "キャラ名", "archetype": "female_young"}}]"""
 
 # --- 通常1-pass詳細分析prompt ---
 
@@ -95,7 +84,7 @@ class BatchAnalyzer:
 
     def __init__(
         self,
-        llm: LLMBackend,
+        llm: LLMBackend | None,
         text_processor: TextProcessor | None = None,
         classifier: TextClassifier | None = None,
         speaker_extractor: SpeakerExtractor | None = None,
@@ -106,17 +95,23 @@ class BatchAnalyzer:
         analysis_strategy: str = "single_pass",
         voice_profile: Any = None,
         url_policy: URLPolicy | None = None,
+        analysis_settings: AnalysisSettings | None = None,
     ):
+        self.settings = analysis_settings or AnalysisSettings(
+            context_tokens=context_tokens,
+            context_safety_ratio=context_safety_ratio,
+            max_items=analysis_window_sentences,
+        )
         self.llm = llm
         self.processor = text_processor or TextProcessor()
-        self.classifier = classifier or TextClassifier()
+        self.classifier = classifier or TextClassifier(self.settings.content_kind)
         self.speaker_extractor = speaker_extractor or SpeakerExtractor()
         self.window_chars = analysis_window_chars
         self.window_sentences = analysis_window_sentences
         self.token_budget = TokenBudget(
-            context_tokens=context_tokens,
-            safety_ratio=context_safety_ratio,
-            max_items=analysis_window_sentences,
+            context_tokens=self.settings.context_tokens,
+            safety_ratio=self.settings.context_safety_ratio,
+            max_items=self.settings.max_items,
         )
         self.analysis_strategy = analysis_strategy
         self.voice_profile = voice_profile
@@ -126,7 +121,18 @@ class BatchAnalyzer:
         self,
         url: str,
         mode: str = "voisona",
-        output_dir: str = "output",
+        output_dir: str | None = None,
+        chapter_range: tuple[int, int] | None = None,
+    ) -> BatchManifest:
+        scope = getattr(self.llm, "ensure_job_scope", None)
+        async with scope("batch-analysis") if callable(scope) else nullcontext():
+            return await self._analyze_impl(url, mode, output_dir, chapter_range)
+
+    async def _analyze_impl(
+        self,
+        url: str,
+        mode: str = "voisona",
+        output_dir: str | None = None,
         chapter_range: tuple[int, int] | None = None,
     ) -> BatchManifest:
         """URL → 全文分析 → BatchManifest を生成."""
@@ -186,7 +192,8 @@ class BatchAnalyzer:
         for ch_info in toc:
             logger.info(f"Fetching chapter {ch_info.index + 1}: {ch_info.title}")
             chapter = await source.fetch_chapter(ch_info.url)
-            clean_text = self.processor.process(chapter.text)
+            document = chapter.document or self.processor.process_document(chapter.text)
+            clean_text = document.text
 
             if not clean_text:
                 logger.warning(f"Empty chapter: {ch_info.title}")
@@ -199,94 +206,82 @@ class BatchAnalyzer:
                 sentence_start=0,
                 sentence_end=0,
             )
-            all_chapter_texts.append((ch_meta, clean_text))
+            all_chapter_texts.append((ch_meta, document))
 
             # 品質比較用の明示的exhaustiveモードだけ旧人物発見passを行う。
-            if self.analysis_strategy == "exhaustive":
+            if self.analysis_strategy == "exhaustive" and self.settings.llm_policy == "full":
                 for window in self._split_windows(clean_text, self.window_chars):
                     await self._discover_characters(window, char_db)
 
         global_idx = 0
-        context = "物語の冒頭"
-
-        splitter = TextSplitter(max_chars=500)
-
-        for ch_meta, clean_text in all_chapter_texts:
-            ch_meta.sentence_start = global_idx
-
-            # 文単位に分割（splitterの_split_sentencesを公開メソッドとして利用）
-            sentences = splitter.split_sentences(clean_text)
-
-            # ルールベースパイプライン適用
-            segments = self.classifier.classify(clean_text)
-            segments = self.speaker_extractor.extract(segments)
-
-            # セグメントを文に対応付け
-            seg_map = self._map_segments_to_sentences(sentences, segments)
-
-            # 入力・予想JSON出力・最大項目数からbatchを動的に決める。
-            batches = split_by_token_budget(
-                sentences,
-                self.token_budget,
-                output_tokens_per_item=96,
-                fixed_output_tokens=512,
+        scene = (
+            SceneAnalyzer(
+                self.llm,
+                budget=self.token_budget,
+                max_output_tokens=self.settings.max_output_tokens,
+                max_requests=self.settings.max_requests,
+                id_key="id",
             )
-            win_start = 0
-            for win_sentences in batches:
-                win_seg_info = [
-                    seg_map.get(win_start + j, {}) for j in range(len(win_sentences))
-                ]
-
-                analysis = await self._analyze_detail_resilient(
-                    win_sentences, win_seg_info, char_db, context
-                )
-
-                for j, sent_text in enumerate(win_sentences):
-                    seg_info = win_seg_info[j]
-                    llm_info = analysis.get(j, {})
-
-                    # セグメントタイプ判定
-                    seg_type = seg_info.get("type", "narration")
-
-                    speaker = llm_info.get("speaker") or seg_info.get("speaker")
-                    new_character = llm_info.get("new_character")
-                    if isinstance(new_character, dict) and new_character.get("name"):
-                        char_db.get_or_create(
-                            str(new_character["name"]),
-                            profile_hint={
-                                "gender": new_character.get("gender"),
-                                "age_group": new_character.get("age_group"),
-                                "personality": new_character.get("personality"),
-                            },
-                        )
-                    if speaker:
-                        char_db.get_or_create(speaker)
-
-                    entry = SentenceEntry(
+            if self.llm is not None and self.settings.llm_policy != "off"
+            else None
+        )
+        nlp = NLPAnalyzer(
+            text_processor=self.processor,
+            classifier=self.classifier,
+            speaker_extractor=self.speaker_extractor,
+            scene_analyzer=scene,
+            analysis_settings=self.settings,
+        )
+        documents = []
+        for ch_meta, document in all_chapter_texts:
+            ch_meta.sentence_start = global_idx
+            analyzed = await nlp.analyze_for_plan(
+                document,
+                known_characters=char_db.known_names,
+                character_db=char_db,
+            )
+            documents.append(analyzed.document.to_dict())
+            for seg in analyzed:
+                if seg.type == SegmentType.SCENE_BREAK:
+                    continue
+                content = seg.metadata.get("text_content")
+                manifest.sentences.append(
+                    SentenceEntry(
                         index=global_idx,
-                        text=sent_text,
+                        text=seg.text,
                         chapter_index=ch_meta.index,
-                        segment_type=seg_type,
-                        speaker=speaker,
-                        scene=llm_info.get("scene", "daily"),
-                        emotion=llm_info.get("emotion", "neutral"),
-                        intensity=llm_info.get("intensity", 0.5),
-                        viewpoint_character=llm_info.get("viewpoint"),
+                        segment_type=seg.type.value,
+                        speaker=seg.speaker,
+                        scene=seg.scene,
+                        emotion=seg.emotion,
+                        intensity=seg.intensity,
+                        text_content=content.to_dict() if content is not None else None,
+                        source_ref={
+                            "url": ch_meta.url,
+                            "chapter": ch_meta.index,
+                            **seg.metadata.get("source_ref", {}),
+                        },
+                        speaker_origin=seg.metadata.get("speaker_origin", "default"),
+                        unresolved_reason=seg.metadata.get("unresolved_reason"),
                     )
-                    manifest.sentences.append(entry)
-                    global_idx += 1
-
-                # コンテキスト更新
-                if win_sentences:
-                    context = "".join(win_sentences[-3:])
-                win_start += len(win_sentences)
-
+                )
+                global_idx += 1
             ch_meta.sentence_end = global_idx
             manifest.chapters.append(ch_meta)
-            logger.info(
-                f"Chapter {ch_meta.index + 1} analyzed: "
-                f"{ch_meta.sentence_end - ch_meta.sentence_start} sentences"
-            )
+        manifest.source_documents = documents
+        semantic = {
+            "documents": documents,
+            "analysis": self.settings.model_dump(),
+            "strategy": self.analysis_strategy,
+            "rules_version": "speech-quality-2",
+            "analysis_backend": self.llm.analysis_identity()
+            if callable(getattr(self.llm, "analysis_identity", None))
+            else {},
+            "sentences": [vars(s) for s in manifest.sentences],
+        }
+        manifest.source_fingerprint = fingerprint(documents, length=None)
+        manifest.config_fingerprint = fingerprint(semantic, length=None)
+        manifest.plan_id = "plan_" + fingerprint(semantic)
 
         if char_db.characters:
             await self._generate_voice_params(char_db, mode)
@@ -294,13 +289,13 @@ class BatchAnalyzer:
         # キャラクター情報をマニフェストに保存
         from dataclasses import asdict
 
-        manifest.characters = {
-            name: asdict(char) for name, char in char_db.characters.items()
-        }
+        manifest.characters = {name: asdict(char) for name, char in char_db.characters.items()}
         manifest.analysis_complete = True
 
         # マニフェスト保存
-        base_dir = Path(output_dir)
+        from ..runtime_paths import output_dir as default_output_dir
+
+        base_dir = Path(output_dir or default_output_dir()).expanduser().resolve()
         manifest.save(base_dir)
         logger.info(
             f"Analysis complete: {len(manifest.sentences)} sentences, "
@@ -360,41 +355,20 @@ class BatchAnalyzer:
             # エイリアスマージ（将来の拡張用）
             pass
 
-    async def _generate_voice_params(
-        self, char_db: CharacterDB, mode: str = "voisona"
-    ) -> None:
-        """LLMでキャラクターごとのアーキタイプを選択し、VoiceProfileからパラメータを割当."""
+    async def _generate_voice_params(self, char_db: CharacterDB, mode: str = "voisona") -> None:
+        """性別・年代からアーキタイプを決め、VoiceProfileの設定を割り当てる。"""
         from ..tools.voice_profile import ARCHETYPE_NAMES
 
-        chars_desc = []
         deterministic: list[tuple[str, Any, str]] = []
-        unresolved: list[tuple[str, Any]] = []
         for name, char in char_db.characters.items():
             archetype = self._deterministic_archetype(char.gender, char.age_group)
             if archetype:
                 deterministic.append((name, char, archetype))
-            else:
-                unresolved.append((name, char))
-                chars_desc.append(
-                    f"- {name}: {char.gender or '不明'}, {char.age_group or '不明'}, "
-                    f"{char.personality or '不明'}"
-                )
 
         result: list[dict[str, str]] = [
-            {"name": name, "archetype": archetype}
-            for name, _, archetype in deterministic
+            {"name": name, "archetype": archetype} for name, _, archetype in deterministic
         ]
-        if unresolved:
-            prompt = CHAR_VOICE_PROMPT.format(characters="\n".join(chars_desc))
-            try:
-                generated = await self.llm.generate_json(
-                    prompt, system=CHAR_VOICE_SYSTEM, task="character_analysis"
-                )
-            except Exception as e:
-                logger.warning(f"Voice param generation failed: {e}")
-                generated = []
-            if isinstance(generated, list):
-                result.extend(entry for entry in generated if isinstance(entry, dict))
+        # 性別・年代が不明な人物は保留する。数値やアーキタイプを別LLM要求で推測しない。
 
         # Track archetype usage for noise differentiation
         archetype_count: dict[str, int] = {}
@@ -412,17 +386,11 @@ class BatchAnalyzer:
                 archetype = "female_young"
 
             if mode == "voicevox":
-                self._assign_voicevox_params(
-                    char, archetype, name, archetype_count
-                )
+                self._assign_voicevox_params(char, archetype, name, archetype_count)
             elif mode == "voicepeak":
-                self._assign_voicepeak_params(
-                    char, archetype, name, archetype_count
-                )
+                self._assign_voicepeak_params(char, archetype, name, archetype_count)
             else:
-                self._assign_voisona_params(
-                    char, archetype, name, archetype_count
-                )
+                self._assign_voisona_params(char, archetype, name, archetype_count)
 
         char_db._save()
         logger.info(f"Voice archetypes assigned for {len(result)} characters")
@@ -528,100 +496,6 @@ class BatchAnalyzer:
             char.base_params = suggested
             char.base_params["_archetype"] = archetype
 
-    def _map_segments_to_sentences(
-        self, sentences: list[str], segments: list
-    ) -> dict[int, dict]:
-        """文リストとセグメント分類結果を対応付け."""
-        seg_map: dict[int, dict] = {}
-        seg_idx = 0
-
-        for sent_idx, sent in enumerate(sentences):
-            info: dict = {"type": "narration", "speaker": None}
-
-            # 最も近いセグメントを探す
-            while seg_idx < len(segments):
-                seg = segments[seg_idx]
-                if seg.type == SegmentType.SCENE_BREAK:
-                    seg_idx += 1
-                    continue
-
-                # テキストの一致を確認
-                if seg.text and seg.text[:20] in sent or sent[:20] in seg.text:
-                    info["type"] = seg.type.value
-                    if seg.speaker_candidates:
-                        info["speaker"] = seg.speaker_candidates[0]
-                    seg_idx += 1
-                    break
-
-                seg_idx += 1
-                if seg_idx > sent_idx + 5:
-                    break
-
-            seg_map[sent_idx] = info
-
-        return seg_map
-
-    async def _analyze_detail(
-        self,
-        sentences: list[str],
-        seg_info: list[dict],
-        char_db: CharacterDB,
-        context: str,
-        *,
-        retry_missing: bool = True,
-    ) -> dict[int, dict]:
-        """文ウィンドウの詳細LLM分析."""
-        chars_str = ", ".join(char_db.known_names) if char_db.known_names else "なし"
-
-        sent_lines = []
-        for i, sent in enumerate(sentences):
-            seg_type = seg_info[i].get("type", "narration") if i < len(seg_info) else "narration"
-            sent_lines.append(f"[{i}] ({seg_type}) {sent}")
-
-        prompt = DETAIL_ANALYSIS_PROMPT.format(
-            characters=chars_str,
-            context=context[:200],
-            sentences="\n".join(sent_lines),
-        )
-
-        try:
-            result = await self.llm.generate_json(
-                prompt,
-                system=DETAIL_ANALYSIS_SYSTEM,
-                task="scene_analysis",
-                json_schema=DETAIL_ANALYSIS_SCHEMA,
-            )
-        except LLMError as e:
-            if e.category == LLMErrorCategory.CONTEXT_LENGTH:
-                raise
-            logger.warning(f"Detail analysis failed: {e}")
-            return {}
-        except Exception as e:
-            logger.warning(f"Detail analysis failed: {e}")
-            return {}
-
-        analysis: dict[int, dict] = {}
-        if isinstance(result, list):
-            for r in result:
-                if isinstance(r, dict) and "id" in r:
-                    analysis[r["id"]] = r
-
-        # 正常なIDは採用済みとし、欠落した文だけを短いrequestで一度再問い合わせする。
-        missing = [index for index in range(len(sentences)) if index not in analysis]
-        if retry_missing and analysis and missing:
-            missing_result = await self._analyze_detail_resilient(
-                [sentences[index] for index in missing],
-                [seg_info[index] for index in missing],
-                char_db,
-                context,
-                retry_missing=False,
-            )
-            for local_index, value in missing_result.items():
-                if isinstance(local_index, int) and 0 <= local_index < len(missing):
-                    analysis[missing[local_index]] = value
-
-        return analysis
-
     async def _analyze_detail_resilient(
         self,
         sentences: list[str],
@@ -631,33 +505,38 @@ class BatchAnalyzer:
         *,
         retry_missing: bool = True,
     ) -> dict[int, dict]:
-        """context超過時だけ同じProvider上でbatchを二分する。"""
-
-        try:
-            return await self._analyze_detail(
-                sentences,
-                seg_info,
-                char_db,
-                context,
-                retry_missing=retry_missing,
+        """旧Batch呼び出し元用adapter。窓と応答検証はSceneAnalyzerに集約する。"""
+        if self.llm is None or self.settings.llm_policy == "off":
+            return {}
+        scene = SceneAnalyzer(
+            self.llm,
+            budget=self.token_budget,
+            max_output_tokens=self.settings.max_output_tokens,
+            max_requests=self.settings.max_requests,
+            id_key="id",
+        )
+        segments = [
+            TextSegment(
+                text,
+                SegmentType(seg_info[i].get("type", "narration")),
+                i,
+                metadata={
+                    "speaker": seg_info[i].get("speaker"),
+                    "speaker_origin": "rule" if seg_info[i].get("speaker") else "default",
+                },
             )
-        except LLMError as error:
-            if error.category != LLMErrorCategory.CONTEXT_LENGTH or len(sentences) <= 1:
-                logger.warning(f"Detail analysis failed: {error}")
-                return {}
-        middle = len(sentences) // 2
-        left = await self._analyze_detail_resilient(
-            sentences[:middle],
-            seg_info[:middle],
-            char_db,
-            context,
-            retry_missing=retry_missing,
-        )
-        right = await self._analyze_detail_resilient(
-            sentences[middle:],
-            seg_info[middle:],
-            char_db,
-            context,
-            retry_missing=retry_missing,
-        )
-        return {**left, **{index + middle: value for index, value in right.items()}}
+            for i, text in enumerate(sentences)
+        ]
+        results = await scene.analyze_batch(segments, char_db.known_names, context=context)
+        return {
+            r.index: {
+                "speaker": r.speaker,
+                "scene": r.scene,
+                "emotion": r.emotion,
+                "intensity": r.intensity,
+                "new_character": r.new_character,
+            }
+            for r in results
+        }
+
+    _analyze_detail = _analyze_detail_resilient

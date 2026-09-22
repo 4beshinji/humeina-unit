@@ -13,7 +13,7 @@ from ..core.migration import PlanSerializer, UnknownSchemaVersionError, normaliz
 from ..utils.atomic_io import atomic_write_json
 from .paths import BatchPaths
 
-CURRENT_MANIFEST_SCHEMA_VERSION = 2
+CURRENT_MANIFEST_SCHEMA_VERSION = 3
 
 COMPLETION_STATUSES = frozenset(
     {
@@ -54,6 +54,10 @@ class SentenceEntry:
     audio_file: str | None = None  # "0001.wav"
     duration: float | None = None  # WAV duration in seconds
     status: str = "pending"  # pending/synthesized/failed
+    text_content: dict | None = None
+    source_ref: dict | None = None
+    speaker_origin: str = "default"
+    unresolved_reason: str | None = None
 
 
 @dataclass
@@ -69,6 +73,7 @@ class BatchManifest:
     sentences: list[SentenceEntry] = field(default_factory=list)
     analysis_complete: bool = False
     synthesis_complete: bool = False
+    source_documents: list[dict] = field(default_factory=list)
     # 旧manifestには存在しないため、load時はデフォルト値で後方互換にする。
     completion_status: str = "pending"
     # RUN-001 identity fields.  ``None`` denotes a legacy manifest and keeps its old path.
@@ -135,6 +140,7 @@ class BatchManifest:
                 "source_url": self.source_url,
                 "work_title": self.work_title,
                 "chapters": [asdict(chapter) for chapter in self.chapters],
+                "source_documents": self.source_documents,
                 "characters": plan_characters,
                 "sentences": [asdict(sentence) for sentence in self.sentences],
             }
@@ -331,6 +337,7 @@ class ManifestSchemaAdapter:
             "intensity",
             "viewpoint_character",
             "tts_params",
+            "text_content", "source_ref", "speaker_origin", "unresolved_reason",
             "audio_file",
             "duration",
             "status",
@@ -386,6 +393,7 @@ class ManifestSchemaAdapter:
             "source_url",
             "mode",
             "analysis_complete",
+            "source_documents",
             "synthesis_complete",
             "completion_status",
             "schema_version",

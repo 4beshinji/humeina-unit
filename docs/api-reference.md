@@ -276,3 +276,34 @@ network ACL は別途設定が必要です。
 
 SDK の型、`TTSBridge`、`TextAnalyzer`、`Pipeline` の使用例は [Python SDK リファレンス](sdk-reference.md)
 を参照してください。
+
+### 共通発話計画と読み指定
+
+`Pipeline.process()` / `stream()`は発話ごとに結果を返す。複数話者を含む本文を、最長セグメントの
+設定で一括合成する処理は廃止した。`PipelineChunk.text`は表示用本文で、合成時だけ読み指定を適用する。
+構築時の`AnalyzerConfig.analysis`でLLMを無効化できる。
+
+```python
+from yomiage.api.config import AnalyzerConfig, PipelineConfig, TTSEngineConfig
+from yomiage.api.pipeline import Pipeline
+from yomiage.nlp.text_processor import extract_html_document
+from yomiage.settings import AnalysisSettings
+
+config = PipelineConfig(
+    tts=TTSEngineConfig(engine="voicevox", url="http://localhost:50021"),
+    analyzer=AnalyzerConfig(analysis=AnalysisSettings(
+        content_kind="plain", llm_policy="off",
+    )),
+)
+document = extract_html_document("<ruby>小鳥遊<rt>たかなし</rt></ruby>さん")
+async with Pipeline(config) as pipeline:
+    chunks = await pipeline.process(document)
+```
+
+`TextDocument.plain(text).with_readings([ReadingSpan(start, end, surface, reading)])`で
+出現箇所への明示修正を指定できる。位置は正規化前の原文を基準にする。
+`TextAnalyzer.plan()`・`UtterancePlanner.from_text()`も同じ文書を受け取る。
+低水準の`TTSBridge.synthesize()`とREST即時合成は、呼び出し元が準備した合成用本文を受け取る契約を維持する。
+
+`analysis.llm_policy: off`のREST読み上げはLLMを構築せず、readinessのLLM項目は
+`healthy: true` / `status: disabled`になる。ニュースの要約・翻訳には別途LLM設定が必要。

@@ -209,3 +209,68 @@ legacy = settings.to_legacy_dict()  # 旧 Provider/CLI adapter 用
 
 公開 SDK の `PipelineConfig.from_yaml()` は互換用の軽量 DTO です。新規 application 境界では
 型付き `Settings` を渡してください。Provider secret を `print(settings)` やログに出さないでください。
+
+### `analysis`
+
+CLI・RESTのReader/Batchと、`PipelineConfig.from_dict()`は同じ分析設定を読む。
+一般文章を外部LLMなしで読む例:
+
+```yaml
+analysis:
+  content_kind: plain
+  llm_policy: "off"
+  common_dictionary: dictionaries/common.yaml
+  work_dictionary: dictionaries/my-novel.yaml
+  suggest_readings: false
+  reading_proposals: dictionaries/proposed.yaml
+```
+
+相対パスはその設定ファイルの基準ディレクトリで解決する。辞書がない場合は空辞書として扱う。
+設定を省略した旧構成・配布設定は`novel/full`。小説で未解決の話者だけ分析するなら
+`novel/selective`、全対象に演出を付けるなら`novel/full`を明示する。
+`batch.analysis_strategy: single_pass/exhaustive`は人物発見のパス数で、`llm_policy`とは別。
+`exhaustive`の追加人物発見は`full`の場合だけ有効になる。
+
+| フィールド | 既定値 | 意味 |
+|---|---|---|
+| `content_kind` | `novel` | `plain` / `novel` / `script` |
+| `llm_policy` | `full` | `off` / `selective` / `full` |
+| `common_dictionary`, `work_dictionary` | null | 確認済みYAML辞書 |
+| `suggest_readings` | false | 未指定英字語句をLLM提案の対象にする |
+| `reading_proposals` | null | 未確認提案のYAML保存先 |
+| `context_tokens` | 32768 | モデルの文脈上限に合わせる |
+| `context_safety_ratio` | 0.8 | 入力・出力合計の安全余裕 |
+| `max_output_tokens` | 4096 | route上限と比較して小さい方を採用 |
+| `max_items` | 25 | 一窓の対象数上限 |
+| `max_requests` | 100 | 一回の窓分析での論理要求上限。物理要求予算は`llm.limits` |
+
+辞書は大小文字を区別し、`before`・`after`を指定すると直前・直後の文字列が一致する箇所だけ適用する。
+正規表現ではなく文字列の条件である。
+
+```yaml
+schema_version: 1
+status: confirmed
+entries:
+  - id: takanashi
+    surface: 小鳥遊
+    reading: たかなし
+    version: "1"
+  - id: first-day
+    surface: 一日
+    reading: ついたち
+    version: "1"
+    after: に集合
+```
+
+更新は`PronunciationDictionary.save()`で検証後にatomic writeできる。単一更新元を前提とし、
+複数プロセスの同時編集APIは提供しない。`status: proposed`は未確認候補で、確認済み辞書として
+読み込むとエラーになる。内容を確認し、必要な項目を確認済み辞書へ移してから利用する。
+
+以前の解析範囲へ戻す場合は`novel/full`を明示する。実装自体を旧版に戻す場合は旧Plan/runを使い、
+schema 2のUtterancePlan・schema 3のBatch manifestを旧版へ読み込ませない。
+
+合成音声cacheを起動間で共有するときは、Provider設定に`cache_version`を指定する。
+例えば`voicevox.cache_version: "engine-0.25-bank-20260914"`のように、確認したengine・音源の版を
+識別できる値を使い、音源更新時に変更する。Providerが版を提供せず設定もない場合、標準adapterは
+インスタンス固有のcache識別子を使う。同じ起動内のcache再利用は可能だが、起動間の音声cacheは
+再利用しない。読み辞書と保存済みPlanの再利用には影響しない。

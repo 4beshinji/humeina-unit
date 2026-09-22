@@ -92,10 +92,13 @@ class StudioEngine:
             config=self.config,
         )
         owns_service = self._synthesis_service is None
+        from ..settings import AnalysisSettings
+
         synthesizer = StudioSynthesizer(
             providers=providers,
             default_provider=default_provider,
             synthesis_service=service,
+            analysis_settings=AnalysisSettings.from_config(self.config),
         )
 
         # 5. 合成
@@ -192,10 +195,13 @@ class StudioEngine:
             config=self.config,
         )
         owns_service = self._synthesis_service is None
+        from ..settings import AnalysisSettings
+
         synthesizer = StudioSynthesizer(
             providers=providers,
             default_provider=default_provider,
             synthesis_service=service,
+            analysis_settings=AnalysisSettings.from_config(self.config),
         )
 
         typer.echo(f"Preview [{line_number}] {line.speaker}: {line.text}")

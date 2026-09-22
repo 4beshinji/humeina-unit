@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
+from ..core.text import TextDocument
 from ..llm import LLMBackend
 from ..nlp.llm_backend import create_llm_backend
 from ..nlp.pipeline import NLPAnalyzer
@@ -28,10 +29,12 @@ class TextAnalyzer:
         self,
         llm: LLMBackend | None = None,
         max_chunk_chars: int = 200,
+        analysis_settings=None,
     ):
         self._analyzer = NLPAnalyzer(
             llm=llm,
             max_chunk_chars=max_chunk_chars,
+            analysis_settings=analysis_settings,
         )
 
     @property
@@ -53,14 +56,20 @@ class TextAnalyzer:
     @classmethod
     def from_config(cls, config: AnalyzerConfig) -> TextAnalyzer:
         """AnalyzerConfigから作成."""
-        llm = create_llm_backend(
-            config.llm.backend,
-            url=config.llm.url,
-            api_key=config.llm.api_key,
-            model=config.llm.model,
-            protocol=config.llm.protocol,
+        llm = (
+            None
+            if config.analysis.llm_policy == "off"
+            else create_llm_backend(
+                config.llm.backend,
+                url=config.llm.url,
+                api_key=config.llm.api_key,
+                model=config.llm.model,
+                protocol=config.llm.protocol,
+            )
         )
-        return cls(llm=llm, max_chunk_chars=config.max_chunk_chars)
+        return cls(
+            llm=llm, max_chunk_chars=config.max_chunk_chars, analysis_settings=config.analysis
+        )
 
     @classmethod
     def rule_based(cls, max_chunk_chars: int = 200) -> TextAnalyzer:
@@ -73,48 +82,32 @@ class TextAnalyzer:
 
     def classify(self, text: str) -> list[AnalysisResult]:
         """ルールベース分類のみ（同期、LLM不要）."""
-        return [
-            _to_analysis_result(seg)
-            for seg in self._analyzer.classify(text)
-        ]
+        return [_to_analysis_result(seg) for seg in self._analyzer.classify(text)]
 
     async def analyze(
         self,
-        text: str,
+        text: str | TextDocument,
         *,
         known_characters: list[str] | None = None,
     ) -> list[AnalysisResult]:
         """完全分析: 分類 + 話者識別 + SLM感情/シーン分析."""
-        clean = self._analyzer.preprocess(text)
-        chunks = self._analyzer.split(clean)
-
-        results: list[AnalysisResult] = []
-        for chunk in chunks:
-            if chunk.is_scene_break:
-                results.append(AnalysisResult(text="", segment_type="scene_break"))
-                continue
-            if not chunk.text.strip():
-                continue
-
-            analyzed = await self._analyzer.analyze_chunk(
-                chunk,
+        return [
+            _to_analysis_result(seg)
+            for seg in await self._analyzer.analyze_for_plan(
+                text,
                 known_characters=known_characters,
             )
-            for seg in analyzed:
-                results.append(_to_analysis_result(seg))
-        return results
+        ]
 
     # --- sync ラッパー ---
 
-    def analyze_sync(
-        self, text: str, **kwargs: object
-    ) -> list[AnalysisResult]:
+    def analyze_sync(self, text: str, **kwargs: object) -> list[AnalysisResult]:
         """analyze の同期版."""
         return asyncio.run(self.analyze(text, **kwargs))
 
     async def plan(
         self,
-        text: str,
+        text: str | TextDocument,
         *,
         source: str | None = None,
         config: object = None,
