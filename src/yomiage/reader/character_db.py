@@ -6,9 +6,10 @@ from pathlib import Path
 
 from loguru import logger
 
+from ..runtime_paths import data_dir as default_data_dir
 from ..utils.atomic_io import atomic_write_json
 
-DEFAULT_CHAR_DIR = Path("data/characters")
+DEFAULT_CHAR_DIR = default_data_dir() / "characters"
 
 
 @dataclass
@@ -32,7 +33,7 @@ class CharacterDB:
     ):
         self.work_id = work_id
         self._persist = persist
-        self.data_dir = data_dir or DEFAULT_CHAR_DIR
+        self.data_dir = Path(data_dir or default_data_dir() / "characters").expanduser().resolve()
         self._characters: dict[str, CharacterProfile] = {}
         if persist:
             self.data_dir.mkdir(parents=True, exist_ok=True)

@@ -13,12 +13,15 @@ from __future__ import annotations
 import asyncio
 import random
 import subprocess
+import uuid
 from pathlib import Path
 from typing import Any
 
 import aiohttp
 from loguru import logger
 
+from ..runtime_paths import output_dir as default_output_dir
+from ..tts.shared_directory import VoisonaSharedDirectory
 from ..tts.voisona import API_BASE, POLL_INTERVAL, POLL_TIMEOUT
 from .voice_profile import (
     ALL_PARAM_KEYS,
@@ -31,7 +34,7 @@ from .voice_profile import (
 )
 
 DEFAULT_TEST_TEXT = "こんにちは、今日はいい天気ですね。"
-DEFAULT_TUNER_DIR = Path("output/_tuner")
+DEFAULT_TUNER_DIR = default_output_dir() / "_tuner"
 
 
 class VoiceTuner:
@@ -40,20 +43,24 @@ class VoiceTuner:
     def __init__(
         self,
         profile: VoiceProfile,
-        voisona_url: str = "http://192.168.1.173:32766",
+        voisona_url: str = "http://localhost:32766",
         voisona_user: str = "",
         voisona_pass: str = "",
         vm_mount: str = "Z:",
         test_text: str = DEFAULT_TEST_TEXT,
-        output_dir: Path = DEFAULT_TUNER_DIR,
+        output_dir: Path | None = None,
+        shared_dir: Path | str | None = None,
     ):
         self.profile = profile
         self.api_url = f"{voisona_url}{API_BASE}"
         self.username = voisona_user
         self.password = voisona_pass
         self.vm_mount = vm_mount
+        self.shared_directory = VoisonaSharedDirectory.from_config(
+            {"shared_dir": shared_dir, "vm_mount": vm_mount}
+        )
         self.test_text = test_text
-        self.output_dir = output_dir
+        self.output_dir = Path(output_dir or default_output_dir() / "_tuner").expanduser().resolve()
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
     def _auth(self) -> aiohttp.BasicAuth:
@@ -63,10 +70,16 @@ class VoiceTuner:
 
     async def _synthesize(self, text: str, params: dict[str, Any]) -> Path:
         """Synthesize text with params → WAV file on host."""
-        filename = f"tuner_{id(params) & 0xFFFF:04x}.wav"
-        host_path = self.output_dir / filename
-        vm_path = f"{self.vm_mount}\\{self.output_dir.name}\\{filename}"
+        host_path = self.output_dir / f"tuner_{uuid.uuid4().hex}.wav"
+        with self.shared_directory.temporary_wav() as (shared_path, vm_path):
+            await self._synthesize_shared(text, params, vm_path)
+            host_path.write_bytes(shared_path.read_bytes())
+        return host_path
 
+    async def _synthesize_shared(
+        self, text: str, params: dict[str, Any], vm_path: str,
+    ) -> None:
+        """共有ファイルへの出力を待つ。ホストの出力先は API に送らない。"""
         body: dict[str, Any] = {
             "language": "ja_JP",
             "text": text,
@@ -112,7 +125,7 @@ class VoiceTuner:
                         if resp2.status == 200:
                             status = await resp2.json()
                             if status.get("state") == "succeeded":
-                                return host_path
+                                return
                             if status.get("state") == "failed":
                                 raise RuntimeError(f"Synthesis failed: {status}")
                     await asyncio.sleep(POLL_INTERVAL)
@@ -519,9 +532,13 @@ def create_tuner_from_config(
 
     return VoiceTuner(
         profile=profile,
-        voisona_url=voisona_cfg.get("url", "http://192.168.1.173:32766"),
+        voisona_url=voisona_cfg.get("url", "http://localhost:32766"),
         voisona_user=voisona_cfg.get("username", ""),
         voisona_pass=voisona_cfg.get("password", ""),
-        vm_mount=batch_cfg.get("voisona_vm_mount", "Z:"),
+        vm_mount=voisona_cfg.get("vm_mount", batch_cfg.get("voisona_vm_mount", "Z:")),
+        shared_dir=voisona_cfg.get("shared_dir"),
+        output_dir=(
+            Path(batch_cfg["output_dir"]) / "_tuner" if batch_cfg.get("output_dir") else None
+        ),
         test_text=test_text,
     )

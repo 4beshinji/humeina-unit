@@ -41,6 +41,8 @@ from .core.jobs import Job
 from .ports.repositories import JobRepository
 from .ports.sources import DNSResolutionError, URLPolicy, URLPolicyError, URLTarget
 from .ports.tts import ProviderError, ProviderErrorCategory
+from .runtime_paths import data_dir as default_data_dir
+from .runtime_paths import output_dir as default_output_dir
 
 
 class _AdmissionRejected(Exception):
@@ -355,7 +357,7 @@ def _job_database_path(config: Mapping[str, Any]) -> Path:
     configured = storage.get("sqlite_path") or storage.get("job_db_path")
     if configured:
         return Path(str(configured)).expanduser().resolve()
-    data_dir = storage.get("data_dir") or config.get("data_dir") or (Path.cwd() / "data")
+    data_dir = storage.get("data_dir") or config.get("data_dir") or default_data_dir()
     return (Path(str(data_dir)).expanduser() / "jobs.sqlite3").resolve()
 
 
@@ -601,7 +603,7 @@ async def _build_runtime(settings: Any, dependencies: ServerDependencies) -> _Ru
                 batch_cfg = {}
             runtime.job_manager = BatchJobManager(
                 config,
-                output_dir=str(batch_cfg.get("output_dir", "output")),
+                output_dir=str(batch_cfg.get("output_dir") or default_output_dir()),
                 hooks=hooks,
                 metrics=metrics,
             )
@@ -753,7 +755,7 @@ def _legacy_manager_factory(config: Mapping[str, Any], **values: Any) -> Any:
         batch_cfg = {}
     return BatchJobManager(
         config,
-        output_dir=str(batch_cfg.get("output_dir", "output")),
+        output_dir=str(batch_cfg.get("output_dir") or default_output_dir()),
         hooks=values.get("hooks"),
         metrics=values.get("metrics"),
     )

@@ -29,7 +29,8 @@ pip install -e ".[dev]"
 
 標準 YAML は wheel 内の `yomiage/resources/config/` から読み込まれます。編集用設定と
 プロファイルは `YOMIAGE_USER_CONFIG_DIR`（既定 `~/.config/humeina-unit`）へ置きます。
-Provider/LLM の接続先や secret は `.env` または環境変数で指定してください。詳細は
+Provider/LLM の接続先や secret はユーザー設定ディレクトリの `.env` または環境変数で指定します。
+共有領域・ランタイムデータの配置と旧環境の移行は [配置依存の変更](docs/path-independence.md) を参照してください。詳細は
 [インストール](docs/installation.md) と [設定リファレンス](docs/configuration.md) を参照してください。
 
 ## 起動方法

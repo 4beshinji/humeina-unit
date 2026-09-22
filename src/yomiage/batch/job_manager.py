@@ -69,13 +69,17 @@ class BatchJobManager:
     def __init__(
         self,
         config: dict,
-        output_dir: str = "output",
+        output_dir: str | None = None,
         hooks: EventHooks | None = None,
         metrics: MetricsCollector | None = None,
         url_policy: URLPolicy | None = None,
     ):
         self.config = config
-        self.output_dir = output_dir
+        from ..runtime_paths import output_dir as default_output_dir
+
+        self.output_dir = str(Path(
+            output_dir or config.get("batch", {}).get("output_dir") or default_output_dir()
+        ).expanduser().resolve())
         self._jobs: dict[str, BatchJob] = {}
         self._hooks = hooks
         self._metrics = metrics

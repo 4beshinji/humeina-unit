@@ -22,6 +22,7 @@ from typing import Any
 from loguru import logger
 
 from ..bootstrap import create_tts_provider
+from ..runtime_paths import output_dir as default_output_dir
 from .voice_profile import PresetConfig
 from .voicevox_profile import (
     VOICEVOX_API_LIMITS,
@@ -33,7 +34,7 @@ from .voicevox_profile import (
 )
 
 DEFAULT_TEST_TEXT = "こんにちは、今日はいい天気ですね。"
-DEFAULT_TUNER_DIR = Path("output/_voicevox_tuner")
+DEFAULT_TUNER_DIR = default_output_dir() / "_voicevox_tuner"
 
 
 class VoicevoxTuner:
@@ -44,14 +45,16 @@ class VoicevoxTuner:
         profile: VoicevoxVoiceProfile,
         voicevox_url: str = "http://localhost:50021",
         test_text: str = DEFAULT_TEST_TEXT,
-        output_dir: Path = DEFAULT_TUNER_DIR,
+        output_dir: Path | None = None,
     ):
         self.profile = profile
         self.provider = create_tts_provider(
             {"voicevox": {"url": voicevox_url}}, "voicevox"
         )
         self.test_text = test_text
-        self.output_dir = output_dir
+        self.output_dir = Path(
+            output_dir or default_output_dir() / "_voicevox_tuner"
+        ).expanduser().resolve()
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
     # --- Low-level synthesis + playback ---
@@ -474,5 +477,9 @@ def create_voicevox_tuner_from_config(
     return VoicevoxTuner(
         profile=profile,
         voicevox_url=voicevox_cfg.get("url", "http://localhost:50021"),
+        output_dir=(
+            Path(config["batch"]["output_dir"]) / "_voicevox_tuner"
+            if config.get("batch", {}).get("output_dir") else None
+        ),
         test_text=test_text,
     )

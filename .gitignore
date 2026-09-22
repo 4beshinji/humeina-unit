@@ -8,8 +8,8 @@ build/
 .venv/
 venv/
 .env
-data/
-output/
+/data
+/output
 *.wav
 *.mp3
 .ruff_cache/

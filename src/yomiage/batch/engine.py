@@ -24,6 +24,9 @@ from ..ports.artifacts import ArtifactRef, ArtifactStore, ArtifactValidationErro
 from ..ports.sources import URLPolicy
 from ..reader.character_db import CharacterDB
 from ..reader.param_mapper import ParamMapper
+from ..runtime_paths import data_dir as default_data_dir
+from ..runtime_paths import output_dir as default_output_dir
+from ..runtime_paths import profile_dir as configured_profile_dir
 from .analyzer import BatchAnalyzer
 from .concatenator import Concatenator
 from .manifest import BatchManifest, SentenceEntry
@@ -37,7 +40,7 @@ class BatchEngine:
         self,
         config: dict,
         mode: str = "voisona",
-        output_dir: str = "output",
+        output_dir: str | None = None,
         output_format: str = "wav",
         cleanup: bool = False,
         artifact_store: ArtifactStore | None = None,
@@ -48,7 +51,12 @@ class BatchEngine:
     ):
         self.config = config
         self.mode = mode
-        self.output_dir = Path(output_dir)
+        self.output_dir = (
+            Path(output_dir or config.get("batch", {}).get("output_dir") or default_output_dir())
+            .expanduser()
+            .resolve()
+        )
+        self.data_dir = Path(config.get("storage", {}).get("data_dir") or default_data_dir())
         self.output_format = output_format
         self.cleanup = cleanup
         # ArtifactStoreをcomposition rootで差し替え可能にし、既定では既存のcanonical
@@ -105,12 +113,8 @@ class BatchEngine:
         """Load VoiceProfile from configured directory."""
         from ..tools.voice_profile import VoiceProfile
 
-        profile_dir = Path(
-            batch_cfg.get("voice_profile_dir", "~/.config/humeina-unit/voice_profiles")
-        ).expanduser()
-        voice_name = self.config.get("voisona", {}).get(
-            "default_voice", "nurse-robot-type-t_ja_JP"
-        )
+        profile_dir = Path(configured_profile_dir("voice", self.config)).expanduser()
+        voice_name = self.config.get("voisona", {}).get("default_voice", "nurse-robot-type-t_ja_JP")
         profile = VoiceProfile.find(voice_name, search_dirs=[profile_dir])
         if profile:
             logger.info(f"Loaded voice profile: {profile.display_name}")
@@ -122,9 +126,7 @@ class BatchEngine:
         """Load VoicevoxVoiceProfile from configured directory."""
         from ..tools.voicevox_profile import VoicevoxVoiceProfile
 
-        profile_dir = Path(
-            batch_cfg.get("voicevox_profile_dir", "~/.config/humeina-unit/voicevox_profiles")
-        ).expanduser()
+        profile_dir = Path(configured_profile_dir("voicevox", self.config)).expanduser()
         speaker_name = self.config.get("voicevox", {}).get(
             "default_speaker_name", "ナースロボ_タイプT"
         )
@@ -139,12 +141,8 @@ class BatchEngine:
         """Load VoicepeakVoiceProfile from configured directory."""
         from ..tools.voicepeak_profile import VoicepeakVoiceProfile
 
-        profile_dir = Path(
-            batch_cfg.get("voicepeak_profile_dir", "~/.config/humeina-unit/voicepeak_profiles")
-        ).expanduser()
-        narrator_name = self.config.get("voicepeak", {}).get(
-            "default_narrator", ""
-        )
+        profile_dir = Path(configured_profile_dir("voicepeak", self.config)).expanduser()
+        narrator_name = self.config.get("voicepeak", {}).get("default_narrator", "")
         if not narrator_name:
             logger.debug("No default narrator configured for VOICEPEAK")
             return None
@@ -401,7 +399,7 @@ class BatchEngine:
             raise RuntimeError("Analysis not complete — run analyze first")
 
         # キャラクターDB復元
-        char_db = CharacterDB(work_id)
+        char_db = CharacterDB(work_id, data_dir=self.data_dir / "characters")
         for name, char_data in manifest.characters.items():
             char_db.get_or_create(name, profile_hint=char_data)
             if char_data.get("base_params"):

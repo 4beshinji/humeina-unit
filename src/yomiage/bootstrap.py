@@ -21,6 +21,7 @@ from .nlp.scene_analyzer import SceneAnalyzer
 from .nlp.splitter import TextSplitter
 from .reader.engine import ReadingEngine
 from .reader.param_mapper import ParamMapper
+from .runtime_paths import profile_dir
 from .tts.base import TTSProvider
 from .tts.cache import TTSCache
 from .tts.factory import create_provider_from_dict
@@ -103,7 +104,10 @@ def create_reading_engine(
         tts_cfg = {}
     voice_section = config.get("voisona", {})
     voice_name = voice_section.get("default_voice") if isinstance(voice_section, Mapping) else None
-    voice_profile = resolve_voice_profile(voice_name) if voice_name else None
+    voice_profile = (
+        resolve_voice_profile(voice_name, search_dirs=[profile_dir("voice", config)])
+        if voice_name else None
+    )
     tts_manager = create_tts_manager(
         config,
         voice_profile=voice_profile,
@@ -127,6 +131,8 @@ def create_reading_engine(
         param_mapper=param_mapper,
         auto_advance=bool(reader_cfg.get("auto_advance", True)),
         lookahead_chunks=int(tts_cfg.get("lookahead_chunks", 5)),
+        output_dir=config.get("batch", {}).get("output_dir"),
+        data_dir=config.get("storage", {}).get("data_dir"),
         synthesis_service=tts_manager.service,
         metrics=metrics,
     )

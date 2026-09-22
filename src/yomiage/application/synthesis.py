@@ -13,7 +13,7 @@ import json
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 from ..core.models import Utterance, VoiceIntent
@@ -28,6 +28,7 @@ from ..ports.tts import (
     ProviderSynthesisRequest,
     ProviderSynthesisResult,
     ProviderVoice,
+    SharedFileTarget,
     SynthesisTarget,
     TTSProviderPort,
     classify_provider_error,
@@ -85,7 +86,20 @@ class SynthesisRequest:
             raise TypeError("voice_intent must be VoiceIntent")
         if not isinstance(self.parameter_context, VoiceResolutionContext):
             raise TypeError("parameter_context must be VoiceResolutionContext")
-        if self.target is None and self.destination and self.work_id and self.run_id:
+        destination_is_absolute = bool(
+            self.destination
+            and (
+                Path(self.destination).is_absolute()
+                or PureWindowsPath(self.destination).is_absolute()
+            )
+        )
+        if (
+            self.target is None
+            and self.destination
+            and self.work_id
+            and self.run_id
+            and not destination_is_absolute
+        ):
             object.__setattr__(
                 self,
                 "target",
@@ -373,15 +387,28 @@ class SynthesisService:
         """同一cache keyのmissを一つのprovider operationへ直列化する。"""
 
         req = self._normalize_request(request)
+        started = time.monotonic()
+        operation_timeout = timeout if timeout is not None else self.timeout
+        deadline = OperationDeadline.after(operation_timeout)
         if self.cache is None:
-            return await self._synthesize_once(req, timeout=timeout)
+            return await self._synthesize_once(req, deadline=deadline, started=started)
         provider_name = req.provider or self._primary
         key = self._cache_key(provider_name, req)
-        lock = await self._retain_flight_lock(key)
         try:
-            async with lock:
-                return await self._synthesize_once(req, timeout=timeout)
+            lock = await deadline.run(self._retain_flight_lock(key))
+        except TimeoutError as exc:
+            raise self._timeout_failure(req, provider_name, started) from exc
+        acquired = False
+        try:
+            try:
+                await deadline.run(lock.acquire())
+                acquired = True
+            except TimeoutError as exc:
+                raise self._timeout_failure(req, provider_name, started) from exc
+            return await self._synthesize_once(req, deadline=deadline, started=started)
         finally:
+            if acquired:
+                lock.release()
             await self._release_flight_lock(key, lock)
 
     @staticmethod
@@ -419,6 +446,8 @@ class SynthesisService:
         request: SynthesisRequest | Utterance | str,
         *,
         timeout: float | None = None,
+        deadline: OperationDeadline | None = None,
+        started: float | None = None,
     ) -> SynthesisResult:
         if self._closed:
             raise RuntimeError("SynthesisService is closed")
@@ -427,9 +456,10 @@ class SynthesisService:
             candidates = [req.provider]
         else:
             candidates = [self._primary] + ([self._fallback] if self._fallback else [])
-        started = time.monotonic()
-        operation_timeout = timeout if timeout is not None else self.timeout
-        deadline = OperationDeadline.after(operation_timeout)
+        started = time.monotonic() if started is None else started
+        if deadline is None:
+            operation_timeout = timeout if timeout is not None else self.timeout
+            deadline = OperationDeadline.after(operation_timeout)
         errors: list[dict[str, Any]] = []
         total_attempts = 0
         total_retries = 0
@@ -446,6 +476,18 @@ class SynthesisService:
             if provider is None:
                 continue
             fallback_used = index > 0
+            if req.target is not None and not self._provider_supports_target(provider, req.target):
+                errors.append(
+                    {
+                        "provider": name,
+                        "category": ProviderErrorCategory.INVALID_REQUEST.value,
+                        "message": (
+                            f"provider does not support {req.target.output_mode.value} "
+                            f"output in {req.target.format} format"
+                        ),
+                    }
+                )
+                continue
             key = self._cache_key(
                 name,
                 req,
@@ -656,6 +698,50 @@ class SynthesisService:
             "message": "operation deadline exceeded",
         }
 
+    def _timeout_failure(
+        self,
+        request: SynthesisRequest,
+        provider: str,
+        started: float,
+    ) -> SynthesisFailure:
+        elapsed_ms = (time.monotonic() - started) * 1000
+        metadata = {
+            "provider": provider,
+            "primary_provider": self._primary,
+            "fallback_used": False,
+            "cache_hit": False,
+            "attempts": 0,
+            "retry_count": 0,
+            "errors": [self._deadline_error(provider)],
+            "elapsed_ms": elapsed_ms,
+        }
+        self._record_metrics(
+            duration_ms=elapsed_ms,
+            provider=provider,
+            error=True,
+            error_category=ProviderErrorCategory.TIMEOUT.value,
+            text_length=len(request.text),
+        )
+        return SynthesisFailure(
+            "synthesis operation timed out while waiting for an identical request",
+            request=request,
+            category=ProviderErrorCategory.TIMEOUT,
+            provider=provider,
+            attempts=0,
+            metadata=metadata,
+        )
+
+    @staticmethod
+    def _provider_supports_target(
+        provider: TTSProviderPort,
+        target: SynthesisTarget,
+    ) -> bool:
+        capabilities = getattr(provider, "capabilities", None)
+        supports = getattr(capabilities, "supports", None)
+        # Structural test doubles and pre-capability third-party ports retain their
+        # compatibility behavior. Production adapters always declare capabilities.
+        return bool(supports(target)) if callable(supports) else True
+
     def _semaphore(self, name: str) -> asyncio.Semaphore:
         if name not in self._semaphores:
             limit = (
@@ -738,6 +824,7 @@ class SynthesisService:
                 data = path.read_bytes()
             if result.metadata.get("_cleanup_file"):
                 path.unlink(missing_ok=True)
+        self._validate_result_target(result, request.target, provider=provider)
         validation_data = data
         if validation_data is None and artifact is not None and artifact.path.is_file():
             validation_data = artifact.path.read_bytes()
@@ -803,6 +890,38 @@ class SynthesisService:
             metadata=metadata,
         )
 
+    @staticmethod
+    def _validate_result_target(
+        result: ProviderSynthesisResult,
+        target: SynthesisTarget | None,
+        *,
+        provider: str,
+    ) -> None:
+        if target is None:
+            return
+        if result.format != target.format:
+            raise ProviderError(
+                f"provider returned {result.format} instead of requested {target.format}",
+                category=ProviderErrorCategory.INVALID_RESPONSE,
+                provider=provider,
+                retryable=False,
+            )
+        accepted_modes = {target.output_mode}
+        if isinstance(target, (ArtifactTarget, SharedFileTarget)):
+            # Validated bytes are a supported intermediate because the service publishes
+            # them atomically to the requested artifact destination.
+            accepted_modes.add(ProviderOutputMode.AUDIO_BYTES)
+        if result.output_mode not in accepted_modes:
+            raise ProviderError(
+                (
+                    f"provider returned {result.output_mode.value} instead of requested "
+                    f"{target.output_mode.value}"
+                ),
+                category=ProviderErrorCategory.INVALID_RESPONSE,
+                provider=provider,
+                retryable=False,
+            )
+
     async def _publish_artifact(
         self,
         data: bytes | None,
@@ -818,6 +937,7 @@ class SynthesisService:
                 if path.suffix.lower() == ".wav":
                     atomic_write_wav(path, data)
                 else:
+
                     def write_audio(temporary: Path) -> None:
                         temporary.write_bytes(data)
 

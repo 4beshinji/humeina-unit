@@ -39,10 +39,11 @@ from pydantic import (
     model_validator,
 )
 
+from .resource_loader import packaged_config_path
+from .runtime_paths import data_dir, output_dir, user_config_dir
+
 ProviderName = Literal["voisona", "voicevox", "voicepeak"]
-LLMBackendName = Literal[
-    "llama_cpp", "opencode_go", "ollama", "openai", "anthropic", "gemini"
-]
+LLMBackendName = Literal["llama_cpp", "opencode_go", "ollama", "openai", "anthropic", "gemini"]
 
 _PROVIDER_NAMES = ("voisona", "voicevox", "voicepeak")
 _PATH_FIELDS = {
@@ -70,20 +71,9 @@ _PATH_FIELDS = {
     "executable_dir",
     "executable",
     "path",
+    "wav_dir",
+    "shared_dir",
 }
-
-
-def _repository_config_dir() -> Path:
-    """Return the checkout's config directory without consulting ``cwd``."""
-
-    # settings.py lives at src/yomiage/settings.py.  In an installed wheel this
-    # path may not exist yet (CFG-002 packages the defaults); keeping it absolute
-    # still gives callers a useful, deterministic diagnostic.
-    return (Path(__file__).resolve().parents[2] / "config").resolve()
-
-
-def _default_user_config_dir() -> Path:
-    return (Path.home() / ".config" / "humeina-unit").resolve()
 
 
 def _as_secret(value: Any) -> SecretStr | None:
@@ -102,7 +92,7 @@ def _as_secret(value: Any) -> SecretStr | None:
 def _absolute_path(value: Any, *, base_dir: Path | None = None) -> Path | None:
     """Convert a path-like value to an absolute path without requiring it to exist."""
 
-    if value is None:
+    if value is None or value == "":
         return None
     if isinstance(value, Path):
         path = value.expanduser()
@@ -154,9 +144,7 @@ class ProviderSettings(BaseModel):
     受け付ける。旧YAMLの ``path`` は ``executable`` と同じ意味で扱う。
     """
 
-    model_config = ConfigDict(
-        extra="allow", validate_assignment=True, populate_by_name=True
-    )
+    model_config = ConfigDict(extra="allow", validate_assignment=True, populate_by_name=True)
 
     enabled: StrictBool = True
     url: StrictStr | None = None
@@ -351,8 +339,7 @@ class LLMSettings(BaseModel):
     def to_config_dict(self) -> dict[str, Any]:
         return {
             "providers": {
-                name: provider.to_config_dict()
-                for name, provider in self.providers.items()
+                name: provider.to_config_dict() for name, provider in self.providers.items()
             },
             "routes": deepcopy(self.routes),
             "fallback": deepcopy(self.fallback),
@@ -376,7 +363,7 @@ class BatchSettings(BaseModel):
 
     model_config = ConfigDict(extra="allow", validate_assignment=True)
 
-    output_dir: Path = Field(default_factory=lambda: Path.cwd() / "output")
+    output_dir: Path = Field(default_factory=output_dir)
     default_mode: ProviderName = "voisona"
     analysis_window_chars: StrictInt = Field(default=3000, ge=1, le=1_000_000)
     analysis_window_sentences: StrictInt = Field(default=25, ge=1, le=100_000)
@@ -433,27 +420,27 @@ class StorageSettings(BaseModel):
     model_config = ConfigDict(extra="allow", validate_assignment=True, populate_by_name=True)
 
     packaged_config_dir: Path = Field(
-        default_factory=_repository_config_dir,
+        default_factory=packaged_config_path,
         validation_alias=AliasChoices("packaged_config_dir", "packaged_config", "config_dir"),
     )
     user_config_dir: Path = Field(
-        default_factory=_default_user_config_dir,
+        default_factory=user_config_dir,
         validation_alias=AliasChoices("user_config_dir", "user_config"),
     )
     data_dir: Path = Field(
-        default_factory=lambda: Path.cwd() / "data",
+        default_factory=data_dir,
         validation_alias=AliasChoices("data_dir", "data"),
     )
     output_dir: Path = Field(
-        default_factory=lambda: Path.cwd() / "output",
+        default_factory=output_dir,
         validation_alias=AliasChoices("output_dir", "output"),
     )
     assets_dir: Path = Field(
-        default_factory=lambda: Path.cwd() / "assets",
+        default_factory=lambda: data_dir() / "assets",
         validation_alias=AliasChoices("assets_dir", "assets"),
     )
     sqlite_path: Path = Field(
-        default_factory=lambda: Path.cwd() / "data" / "jobs.sqlite3",
+        default_factory=lambda: data_dir() / "jobs.sqlite3",
         validation_alias=AliasChoices("sqlite_path", "database_path", "job_db_path"),
     )
     ffmpeg_executable: Path | None = Field(
@@ -461,7 +448,7 @@ class StorageSettings(BaseModel):
         validation_alias=AliasChoices("ffmpeg_executable", "ffmpeg", "ffmpeg_path"),
     )
     external_binary_dir: Path = Field(
-        default_factory=lambda: Path.cwd() / "bin",
+        default_factory=lambda: data_dir() / "bin",
         validation_alias=AliasChoices(
             "external_binary_dir", "external_binary", "binary_dir", "executable_dir"
         ),
@@ -585,9 +572,7 @@ class Settings(BaseModel):
                 return data
             if typed:
                 data = {
-                    key: value.model_dump(mode="python")
-                    if isinstance(value, BaseModel)
-                    else value
+                    key: value.model_dump(mode="python") if isinstance(value, BaseModel) else value
                     for key, value in data.items()
                 }
             return _normalize_raw(data, base_dir=Path.cwd().resolve())
@@ -768,14 +753,14 @@ def _normalize_paths_in_data(data: dict[str, Any], *, base_dir: Path) -> dict[st
     for provider_name in _PROVIDER_NAMES:
         section = result.get(provider_name)
         if isinstance(section, dict):
-            for key in ("path", "executable"):
+            for key in ("path", "executable", "shared_dir"):
                 if isinstance(section.get(key), (str, Path)):
                     section[key] = _absolute_path(section[key], base_dir=base_dir)
     nested_providers = result.get("providers")
     if isinstance(nested_providers, dict):
         for provider_name, section in nested_providers.items():
             if isinstance(section, dict):
-                for key in ("path", "executable"):
+                for key in ("path", "executable", "shared_dir"):
                     if isinstance(section.get(key), (str, Path)):
                         section[key] = _absolute_path(section[key], base_dir=base_dir)
     return result
@@ -814,8 +799,10 @@ def _normalize_raw(data: dict[str, Any], *, base_dir: Path) -> dict[str, Any]:
     result.pop("provider", None)
 
     # Canonical ``llm`` wins over the legacy ``ollama`` key if both are present.
-    if "ollama" in source and source["ollama"] is not None and not isinstance(
-        source["ollama"], dict
+    if (
+        "ollama" in source
+        and source["ollama"] is not None
+        and not isinstance(source["ollama"], dict)
     ):
         raise ValueError("ollama must be a mapping")
     if "llm" not in result and isinstance(source.get("ollama"), dict):
@@ -831,17 +818,11 @@ def _normalize_raw(data: dict[str, Any], *, base_dir: Path) -> dict[str, Any]:
     storage_value = result.get("storage")
     if storage_value is not None and not isinstance(storage_value, dict):
         raise ValueError("storage must be a mapping")
-    storage = (
-        _merge_dict(paths, storage_value)
-        if isinstance(storage_value, dict)
-        else paths
-    )
+    storage = _merge_dict(paths, storage_value) if isinstance(storage_value, dict) else paths
     batch = result.get("batch") if isinstance(result.get("batch"), dict) else {}
     if result.get("batch") is not None and not isinstance(result.get("batch"), dict):
         raise ValueError("batch must be a mapping")
-    storage_output_key = next(
-        (key for key in ("output_dir", "output") if key in storage), None
-    )
+    storage_output_key = next((key for key in ("output_dir", "output") if key in storage), None)
     if storage_output_key is not None:
         # An explicitly supplied storage path is canonical and wins over the
         # historical batch.output_dir spelling.

@@ -10,6 +10,8 @@ voisona:
   password: ${VOISONA_PASSWORD}
   default_voice: nurse-robot-type-t_ja_JP
   language: ja_JP
+  # VM の共有領域。最終成果物の出力先とは独立。
+  shared_dir: null  # 未指定時は XDG_DATA_HOME/humeina-unit/voisona
 
 voicevox:
   url: ${VOICEVOX_URL:-http://localhost:50021}
@@ -129,7 +131,7 @@ video:
     duration: 3.0
     font_size: 72
     subtitle_font_size: 36
-  assets_dir: assets
+  assets_dir: null  # 未指定時は XDG_DATA_HOME/humeina-unit/assets
 
 ex_voice:
   enabled: false
@@ -146,7 +148,7 @@ studio:
   cache_enabled: true
 
 batch:
-  output_dir: output
+  output_dir: null  # 未指定時は XDG_DATA_HOME/humeina-unit/output
   default_mode: voisona
   analysis_window_chars: 3000
   analysis_window_sentences: 25
@@ -156,9 +158,9 @@ batch:
   concat_format: wav
   cleanup_after_concat: false
   voisona_vm_mount: ${VOISONA_VM_MOUNT:-Z:}
-  voice_profile_dir: ${YOMIAGE_USER_CONFIG_DIR:-~/.config/humeina-unit}/voice_profiles
-  voicevox_profile_dir: ${YOMIAGE_USER_CONFIG_DIR:-~/.config/humeina-unit}/voicevox_profiles
-  voicepeak_profile_dir: ${YOMIAGE_USER_CONFIG_DIR:-~/.config/humeina-unit}/voicepeak_profiles
+  voice_profile_dir: null  # user config 内の voice_profiles
+  voicevox_profile_dir: null  # user config 内の voicevox_profiles
+  voicepeak_profile_dir: null  # user config 内の voicepeak_profiles
   # VoiSona側の同時処理ジョブ数上限（流量制御）
   # 1=同時接続1本のみ（VoiSona推奨）、増やすと並列合成で高速になるがキューが増える
   synth_concurrency: 1

@@ -65,6 +65,8 @@ class ExVoiceSelector:
         max_insertions: int = 2,
     ) -> list[ClipInsertion]:
         """チャンク窓に対してクリップ挿入を決定."""
+        if self._backend is None or max_insertions <= 0:
+            return []
         # 短すぎるチャンクはLLM判断対象外
         chunks = [c for c in chunks if len(c.text.strip()) >= _MIN_CHUNK_CHARS]
         if not chunks:

@@ -8,8 +8,10 @@ Provider/CLI）から読み込みます。解決順は次のとおりです。
 3. YAML 内 `${VAR}` 展開と `YOMIAGE_*` 環境変数
 4. `overrides` など呼び出し側の明示値
 
-相対パスはロード時に絶対化されます。標準 YAML はカレントディレクトリではなく
-`importlib.resources` から読み込まれます。
+相対パスは、その値を定義した YAML のディレクトリを基準に絶対化します。環境変数・
+明示 overrides の相対値はユーザー設定ディレクトリが基準です。`base_dir` を渡す場合は
+それを基準にします。標準 YAML は `importlib.resources` から読み込みます。
+CLI の入力ファイルや明示した `--output` は、通常どおり呼び出し時の CWD が基準です。
 
 ## ファイルとパスの境界
 
@@ -18,10 +20,17 @@ Provider/CLI）から読み込みます。解決順は次のとおりです。
 | 標準設定 | `yomiage/resources/config/{default,voices,scene_params,math_dict}.yaml` | 不可（wheel 内） |
 | ユーザー設定 | `~/.config/humeina-unit/config.yaml` または `settings.yaml` | 可 |
 | Batchプロファイル | `batch.voice_profile_dir` 等で指定したディレクトリ | 可 |
-| runtime data | `./data/`（`YOMIAGE_DATA_DIR`） | 可/バックアップ対象 |
-| Batch output | `./output/`（`YOMIAGE_OUTPUT_DIR` または `batch.output_dir`） | 可/成果物 |
-| assets | `./assets/`（`YOMIAGE_ASSETS_DIR`） | 可 |
-| Job DB | `./data/jobs.sqlite3`（`YOMIAGE_SQLITE_PATH`） | 可/バックアップ対象 |
+| runtime data | `~/.local/share/humeina-unit/`（`YOMIAGE_DATA_DIR`） | 可/バックアップ対象 |
+| Batch output | `~/.local/share/humeina-unit/output/`（`YOMIAGE_OUTPUT_DIR` または `batch.output_dir`） | 可/成果物 |
+| assets | `~/.local/share/humeina-unit/assets/`（`YOMIAGE_ASSETS_DIR`） | 可 |
+| Job DB | `~/.local/share/humeina-unit/jobs.sqlite3`（`YOMIAGE_SQLITE_PATH`） | 可/バックアップ対象 |
+
+`XDG_CONFIG_HOME` / `XDG_DATA_HOME` が指定されている場合は各 XDG ディレクトリを使います。
+共有音声の既定はデータディレクトリ内の `voisona/` で、最終出力先とは独立します。
+
+`.env` はユーザー設定ディレクトリから読み込み、プロセス環境変数を優先します。
+任意の `.env` は `YOMIAGE_ENV_FILE=/absolute/path/to/.env` で指定します。
+親ディレクトリやチェックアウトを暗黙に探索しません。
 
 checkout の `config/` を開発用に使う場合は `load_config(config_dir=Path("config"))` または
 `Settings.from_yaml("config", base_dir=...)` のように明示します。インストール後の標準値を
@@ -116,7 +125,7 @@ batch:
   silence_duration: 1.5
   concat_format: wav
   cleanup_after_concat: false
-  voisona_vm_mount: Z:
+  voisona_vm_mount: Z:  # 互換入力。新規設定は voisona.vm_mount
   voice_profile_dir: ~/.config/humeina-unit/voice_profiles
   voicevox_profile_dir: ~/.config/humeina-unit/voicevox_profiles
   voicepeak_profile_dir: ~/.config/humeina-unit/voicepeak_profiles
@@ -179,6 +188,8 @@ Provider/LLM の接続先は従来の変数も受け付けます。パス・運�
 | `YOMIAGE_SERVER_MAX_URL_RESPONSE_BYTES` | URL 取得 bytes 上限 |
 | `YOMIAGE_SERVER_JOB_QUEUE_SIZE`, `YOMIAGE_SERVER_MAX_ACTIVE_JOBS` | admission 上限 |
 | `YOMIAGE_SERVER_CLIENT_RATE_LIMIT`, `YOMIAGE_SERVER_CLIENT_RATE_WINDOW_SECONDS` | peer 単位 rate limit |
+| `VOISONA_SHARED_DIR` | libvirt の source dir と一致する Linux 共有元 |
+| `YOMIAGE_ENV_FILE` | 明示的に読み込む .env のパス |
 | `VOISONA_VM_MOUNT` | VoiSona VM 内の file destination mount |
 | `EX_VOICE_WAV_DIR` | EX voice WAV ディレクトリ |
 | `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN` | 任意 Slack 監視 |

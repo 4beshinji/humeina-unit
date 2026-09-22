@@ -21,6 +21,7 @@ from ..api.exceptions import (
 )
 from ..application.operations import OperationDeadline
 from .base import AudioResult, TTSProvider
+from .shared_directory import VoisonaSharedDirectory, windows_mount
 
 API_BASE = "/api/talk/v1"
 POLL_INTERVAL = 0.5
@@ -31,11 +32,12 @@ class VoisonaProvider(TTSProvider):
     def __init__(self, config: dict | None = None):
         super().__init__()
         config = config or {}
-        self.base_url = config.get("url", "http://192.168.1.173:32766")
+        self.base_url = config.get("url", "http://localhost:32766")
         self.username = config.get("username", "")
         self.password = config.get("password", "")
         self.voice_name = config.get("default_voice", "nurse-robot-type-t_ja_JP")
         self.language = config.get("language", "ja_JP")
+        self.shared_directory = VoisonaSharedDirectory.from_config(config)
 
         self._healthy = True
         self._synthesizing = False
@@ -243,8 +245,14 @@ class VoisonaProvider(TTSProvider):
                         )
             except TTSError:
                 raise
-            except asyncio.TimeoutError:
-                break
+            except asyncio.TimeoutError as exc:
+                if deadline.expired():
+                    break
+                logger.debug(
+                    "Poll request timed out (remaining {:.2f}s): {}",
+                    deadline.remaining(),
+                    exc,
+                )
             except Exception as e:
                 logger.debug(
                     "Poll attempt failed (remaining {:.2f}s): {}",
@@ -269,7 +277,7 @@ class VoisonaProvider(TTSProvider):
         """VoiSona destination:file モードで直接WAV出力."""
         body = self._build_body(text, voice, speed, **params)
         body["destination"] = "file"
-        body["output_file_path"] = output_path
+        body["output_file_path"] = str(windows_mount(str(output_path)))
 
         logger.debug(f"VoiSona synthesize_to_file: {output_path}")
 

@@ -9,13 +9,14 @@ import json
 import os
 import time
 import uuid
-from pathlib import Path, PureWindowsPath
+from pathlib import Path
 
 import aiohttp
 import pytest
 
 from yomiage.config import get_tts_config
 from yomiage.tts.audio_utils import validate_audio_bytes
+from yomiage.tts.shared_directory import VoisonaSharedDirectory
 from yomiage.tts.voicepeak import VoicepeakProvider
 from yomiage.tts.voisona import VoisonaProvider
 
@@ -23,13 +24,11 @@ pytestmark = pytest.mark.e2e
 
 
 def _targets(config: dict, finding: str) -> tuple[Path, str]:
-    output_root = Path(config.get("batch", {}).get("output_dir", "output")).resolve()
+    share = VoisonaSharedDirectory.from_config(get_tts_config(config, "voisona"))
     relative = Path("runtime-e2e") / f"{finding.lower()}-{uuid.uuid4().hex}.wav"
-    host_path = output_root / relative
+    host_path = share.host_root / relative
     host_path.parent.mkdir(parents=True, exist_ok=True)
-    mount = str(config.get("batch", {}).get("voisona_vm_mount", "Z:"))
-    vm_root = mount if mount.endswith("\\") else f"{mount}\\"
-    provider_path = str(PureWindowsPath(vm_root, *relative.parts))
+    provider_path = str(share.guest_root.joinpath(*relative.parts))
     return host_path, provider_path
 
 
@@ -78,7 +77,7 @@ async def test_e02_voisona_success_immediately_exposes_complete_shared_wav(
 
     evidence = {
         "finding": "E02",
-        "artifact": str(host_path.relative_to(Path.cwd())),
+        "artifact": str(host_path),
         "size": host_path.stat().st_size,
         "sha256": hashlib.sha256(host_path.read_bytes()).hexdigest(),
         "sample_rate": descriptor.sample_rate,

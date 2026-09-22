@@ -302,7 +302,10 @@ class VoiceProfile:
     def find(cls, voice_name: str, search_dirs: list[Path] | None = None) -> VoiceProfile | None:
         """Find and load a profile by voice_name from standard locations."""
         if search_dirs is None:
-            search_dirs = [Path("config/voice_profiles")]
+            from ..config import load_config
+            from ..runtime_paths import profile_dir
+
+            search_dirs = [profile_dir("voice", load_config())]
 
         # Try exact filename match first, then scan contents
         for d in search_dirs:

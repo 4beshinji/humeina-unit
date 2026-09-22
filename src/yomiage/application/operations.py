@@ -131,7 +131,8 @@ class ExternalProcessRunner:
         stderr: Any = asyncio.subprocess.PIPE,
     ) -> ProcessResult:
         resolved_deadline = deadline or OperationDeadline.after(None)
-        async with self.lock:
+        await resolved_deadline.run(self.lock.acquire())
+        try:
             process = await resolved_deadline.run(
                 asyncio.create_subprocess_exec(
                     *command,
@@ -160,6 +161,8 @@ class ExternalProcessRunner:
                 if process.returncode is None:
                     await self._reap(process)
                 self._owned.discard(process)
+        finally:
+            self.lock.release()
 
     async def _reap(self, process: Any) -> None:
         if process.returncode is None:

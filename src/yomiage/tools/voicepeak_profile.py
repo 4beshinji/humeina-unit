@@ -288,7 +288,10 @@ class VoicepeakVoiceProfile:
     ) -> VoicepeakVoiceProfile | None:
         """Find and load a profile by narrator_name from standard locations."""
         if search_dirs is None:
-            search_dirs = [Path("config/voicepeak_profiles")]
+            from ..config import load_config
+            from ..runtime_paths import profile_dir
+
+            search_dirs = [profile_dir("voicepeak", load_config())]
 
         for d in search_dirs:
             if not d.exists():

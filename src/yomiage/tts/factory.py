@@ -32,4 +32,8 @@ def create_provider_from_dict(engine: str, cfg: dict) -> TTSProvider:
     else:
         raise ValueError(f"Unknown TTS engine: {engine}")
 
+    # 音源・engine更新の識別は利用者が確認した版を受け取る。
+    # 不明な版のcacheを起動間で同一と扱わない方針はadapterに集約する。
+    if cfg.get("cache_version"):
+        provider.cache_version = str(cfg["cache_version"])
     return provider

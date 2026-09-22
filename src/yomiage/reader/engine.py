@@ -25,6 +25,8 @@ from ..nlp.speaker import SpeakerExtractor
 from ..nlp.splitter import Chunk, TextSplitter
 from ..nlp.text_processor import TextProcessor
 from ..ports.sources import URLPolicy
+from ..runtime_paths import data_dir as default_data_dir
+from ..runtime_paths import output_dir as default_output_dir
 from ..sources import registry
 from ..sources.base import Chapter, ContentSource
 from ..tts.audio_utils import concat_wav_files
@@ -58,7 +60,7 @@ class ReadingEngine:
         auto_advance: bool = True,
         lookahead_chunks: int = 5,
         vm_mount: str = "Z:",
-        output_dir: str = "output",
+        output_dir: str | None = None,
         synth_concurrency: int = 2,
         ex_voice: ExVoiceManager | None = None,
         synthesis_service: SynthesisService | None = None,
@@ -66,6 +68,7 @@ class ReadingEngine:
         playback_queue: UtterancePlaybackQueue | None = None,
         url_policy: URLPolicy | None = None,
         metrics: Any | None = None,
+        data_dir: Path | str | None = None,
     ):
         self.tts = tts_manager
         self.processor = text_processor or TextProcessor()
@@ -76,11 +79,12 @@ class ReadingEngine:
         self.llm = scene_analyzer._backend if scene_analyzer is not None else None
         self._owns_llm = False
         self.param_mapper = param_mapper or ParamMapper()
-        self.bookmarks = bookmark_manager or BookmarkManager()
+        self.data_dir = Path(data_dir or default_data_dir()).expanduser().resolve()
+        self.bookmarks = bookmark_manager or BookmarkManager(self.data_dir / "bookmarks")
         self.auto_advance = auto_advance
         self.lookahead_chunks = lookahead_chunks
         self.vm_mount = vm_mount
-        self.output_dir = Path(output_dir)
+        self.output_dir = Path(output_dir or default_output_dir()).expanduser().resolve()
         self.synth_concurrency = synth_concurrency
         self.ex_voice = ex_voice
         self.synthesis_service = synthesis_service
@@ -160,7 +164,7 @@ class ReadingEngine:
 
         # 作品IDを生成（URLハッシュ）
         work_id = hashlib.md5(url.encode()).hexdigest()[:12]
-        self._character_db = CharacterDB(work_id)
+        self._character_db = CharacterDB(work_id, data_dir=self.data_dir / "characters")
 
         try:
             self._ensure_synthesis_service()
@@ -438,7 +442,7 @@ class ReadingEngine:
         self._stop_event.clear()
         self._running = True
         work_id = hashlib.md5((source_url or clean_text).encode()).hexdigest()[:12]
-        self._character_db = CharacterDB(work_id)
+        self._character_db = CharacterDB(work_id, data_dir=self.data_dir / "characters")
         try:
             self._ensure_synthesis_service()
             plan = await self._plan_text(

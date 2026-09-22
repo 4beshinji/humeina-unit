@@ -22,9 +22,6 @@ def setup_logging(verbose: bool = False) -> None:
 
 
 def load_config() -> dict:
-    from dotenv import load_dotenv
-
-    load_dotenv()
     from ...config import load_config as load_yaml_config
 
     return load_yaml_config()
@@ -71,7 +68,10 @@ def create_reading_engine(
         from ...exvoice.selector import ExVoiceSelector
 
         ev_cfg = config.get("ex_voice", {})
-        wav_dir = Path(ev_cfg.get("wav_dir", "/home/sin/code/una/VoiceWav"))
+        configured_wav_dir = ev_cfg.get("wav_dir")
+        if not configured_wav_dir:
+            raise ValueError("EX voice requires ex_voice.wav_dir / EX_VOICE_WAV_DIR")
+        wav_dir = Path(configured_wav_dir)
         catalog = load_catalog(wav_dir)
         selector = ExVoiceSelector(llm, catalog)
         ex_voice_manager = ExVoiceManager(
@@ -92,7 +92,8 @@ def create_reading_engine(
         auto_advance=config.get("reader", {}).get("auto_advance", True),
         lookahead_chunks=tts_cfg.get("lookahead_chunks", 5),
         vm_mount=batch_cfg.get("voisona_vm_mount", "Z:"),
-        output_dir=batch_cfg.get("output_dir", "output"),
+        output_dir=batch_cfg.get("output_dir"),
+        data_dir=config.get("storage", {}).get("data_dir"),
         synth_concurrency=batch_cfg.get("synth_concurrency", 2),
         ex_voice=ex_voice_manager,
     )
@@ -113,7 +114,7 @@ def create_batch_engine(
     return BatchEngine(
         config=config,
         mode=mode or batch_cfg.get("default_mode", "voisona"),
-        output_dir=output or batch_cfg.get("output_dir", "output"),
+        output_dir=output or batch_cfg.get("output_dir"),
         output_format=fmt or batch_cfg.get("concat_format", "wav"),
         cleanup=cleanup or batch_cfg.get("cleanup_after_concat", False),
     )
@@ -140,7 +141,9 @@ def load_profile(voice_name: str):
 
 def profile_path(voice_name: str) -> Path:
     stem = voice_name.replace("_ja_JP", "").replace("_", "-")
-    return Path(f"config/voice_profiles/{stem}.yaml")
+    from ...runtime_paths import profile_dir
+
+    return profile_dir("voice", load_config()) / f"{stem}.yaml"
 
 
 def create_tuner(config: dict, voice_name: str, text: str | None = None):
@@ -165,7 +168,9 @@ def load_voicepeak_profile(narrator_name: str):
 
 def voicepeak_profile_path(narrator_name: str) -> Path:
     stem = narrator_name.replace(" ", "-").lower()
-    return Path(f"config/voicepeak_profiles/{stem}.yaml")
+    from ...runtime_paths import profile_dir
+
+    return profile_dir("voicepeak", load_config()) / f"{stem}.yaml"
 
 
 def create_voicepeak_tuner(config: dict, narrator_name: str, text: str | None = None):
@@ -234,8 +239,8 @@ def create_news_scheduler(
 
 def create_slack_components(config: dict):
     slack_cfg = config.get("slack", {})
-    bot_token = os.getenv("SLACK_BOT_TOKEN", "")
-    app_token = os.getenv("SLACK_APP_TOKEN", "")
+    bot_token = slack_cfg.get("bot_token") or os.getenv("SLACK_BOT_TOKEN", "")
+    app_token = slack_cfg.get("app_token") or os.getenv("SLACK_APP_TOKEN", "")
     if not bot_token or not app_token:
         return None
 

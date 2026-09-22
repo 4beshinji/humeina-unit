@@ -17,7 +17,7 @@ def resolve_voice_profile(
 
     Args:
         voice_name: ボイス名（例: nurse-robot-type-t_ja_JP）
-        search_dirs: 検索ディレクトリ（None 時は config/voice_profiles）
+        search_dirs: 検索ディレクトリ（None 時はユーザー設定の voice_profile_dir）
 
     Returns:
         VoiceProfile または None
@@ -25,5 +25,8 @@ def resolve_voice_profile(
     from ..tools.voice_profile import VoiceProfile
 
     if search_dirs is None:
-        search_dirs = [Path("config/voice_profiles")]
+        from ..config import load_config
+        from ..runtime_paths import profile_dir
+
+        search_dirs = [profile_dir("voice", load_config())]
     return VoiceProfile.find(voice_name, search_dirs=search_dirs)

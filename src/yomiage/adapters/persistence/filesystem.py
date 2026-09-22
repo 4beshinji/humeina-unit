@@ -26,18 +26,21 @@ from ...ports.artifacts import (
     ArtifactRef,
     ArtifactValidationError,
 )
+from ...runtime_paths import output_dir as default_output_dir
 from ...utils.atomic_io import atomic_replace_file, atomic_write_json
 
 
 class FilesystemArtifactStore:
     """``output/works/{work_id}/runs/{run_id}``を管理するartifact store。"""
 
-    def __init__(self, base_dir: Path | str = "output", *, output_dir: Path | str | None = None):
+    def __init__(
+        self, base_dir: Path | str | None = None, *, output_dir: Path | str | None = None
+    ):
         if output_dir is not None:
-            if base_dir != "output" and Path(base_dir) != Path(output_dir):
+            if base_dir is not None and Path(base_dir) != Path(output_dir):
                 raise ValueError("base_dir and output_dir must match")
             base_dir = output_dir
-        self.base_dir = Path(base_dir).expanduser().resolve()
+        self.base_dir = Path(base_dir or default_output_dir()).expanduser().resolve()
 
     # ------------------------------------------------------------------
     # Run/path boundary

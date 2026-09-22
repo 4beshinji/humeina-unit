@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 import pytest
 
@@ -23,6 +23,7 @@ from yomiage.ports.tts import (
     ProviderVoice,
 )
 from yomiage.tts.audio_utils import write_silence_wav
+from yomiage.tts.shared_directory import VoisonaSharedDirectory
 
 
 class FakeProvider:
@@ -262,7 +263,7 @@ async def test_incomplete_run_does_not_concat_or_render_video(tmp_path: Path, mo
 
 
 @pytest.mark.asyncio
-async def test_voisona_file_adapter_maps_vm_destination_to_run_artifact(tmp_path: Path) -> None:
+async def test_voisona_file_adapter_uses_share_outside_run_artifact(tmp_path: Path) -> None:
     class FileProvider:
         name = "voisona"
 
@@ -271,15 +272,15 @@ async def test_voisona_file_adapter_maps_vm_destination_to_run_artifact(tmp_path
 
         async def synthesize_to_file(self, _text, output_path, **_kwargs):
             self.destination = str(output_path)
-            # The VM fake exposes the same shared directory under the basename of the run.
+            # VM は共有領域だけを認識し、run の配置には依存しない。
             filename = str(output_path).rsplit("\\", 1)[-1]
-            run_dir = tmp_path / "run"
-            run_dir.mkdir(parents=True, exist_ok=True)
-            write_silence_wav(run_dir / filename, 0.01)
+            write_silence_wav(tmp_path / filename, 0.01)
             return type("Audio", (), {"audio_data": b"", "format": "wav"})()
 
     provider = FileProvider()
-    adapter = VoisonaFileProviderAdapter(provider)
+    adapter = VoisonaFileProviderAdapter(
+        provider, shared_directory=VoisonaSharedDirectory(tmp_path, PureWindowsPath("Z:/"))
+    )
     result = await adapter.synthesize(
         ProviderSynthesisRequest(
             text="本文",
@@ -290,7 +291,8 @@ async def test_voisona_file_adapter_maps_vm_destination_to_run_artifact(tmp_path
         )
     )
     assert provider.destination is not None
-    assert provider.destination.startswith("Z:\\run\\.")
+    assert PureWindowsPath(provider.destination).parent == PureWindowsPath("Z:/")
+    assert not list(tmp_path.iterdir())
     assert result.audio_data
 
 

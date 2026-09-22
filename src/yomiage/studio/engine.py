@@ -24,12 +24,16 @@ class StudioEngine:
     def __init__(
         self,
         config: dict,
-        output_dir: Path = Path("output"),
+        output_dir: Path | None = None,
         *,
         synthesis_service: SynthesisService | None = None,
     ):
         self.config = config
-        self.output_dir = output_dir
+        from ..runtime_paths import output_dir as default_output_dir
+
+        self.output_dir = Path(
+            output_dir or config.get("batch", {}).get("output_dir") or default_output_dir()
+        ).expanduser().resolve()
         self._synthesis_service = synthesis_service
 
     async def synth(

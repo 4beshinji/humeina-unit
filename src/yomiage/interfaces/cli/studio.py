@@ -16,7 +16,7 @@ studio_app = typer.Typer(help="動画作成アシスト（トークソフト動�
 def studio_synth(
     script_file: Path = typer.Argument(help="台本ファイル (.txt/.csv/.json)"),
     provider: str | None = typer.Option(None, "--provider", "-p", help="TTSプロバイダー"),
-    output: str = typer.Option("output", "--output", "-o", help="出力ディレクトリ"),
+    output: str | None = typer.Option(None, "--output", "-o", help="出力ディレクトリ"),
     fmt: str = typer.Option("ymm4", "--format", "-f", help="ymm4 / plain"),
     pause: float = typer.Option(0.3, "--pause", help="セリフ間ポーズ秒"),
     speaker_map: Path | None = typer.Option(
@@ -32,7 +32,7 @@ def studio_synth(
     config = common.load_config()
 
     async def _run() -> None:
-        engine = common.create_studio_engine(config, Path(output))
+        engine = common.create_studio_engine(config, Path(output) if output else None)
         result = await engine.synth(
             script_path=script_file,
             speaker_map=speaker_map,

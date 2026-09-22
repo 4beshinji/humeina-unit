@@ -501,9 +501,12 @@ class HealthChecker:
         return HealthCheck(available, "healthy" if available else "unavailable")
 
     async def _vm_mount_check(self) -> HealthCheck:
-        """Check the provider-visible VM share configuration without probing it."""
+        """VM マウントの設定とホスト側の共有ディレクトリを確認する。"""
 
         candidate = self.vm_mount
+        voisona = self.config.get("voisona", {})
+        if candidate is None and isinstance(voisona, Mapping):
+            candidate = voisona.get("vm_mount")
         if candidate is None:
             batch = self.config.get("batch", {})
             if isinstance(batch, Mapping):
@@ -516,6 +519,11 @@ class HealthChecker:
         if isinstance(candidate, bool):
             return _coerce_check(candidate)
         configured = isinstance(candidate, (str, Path)) and bool(str(candidate).strip())
+        voisona = self.config.get("voisona", {})
+        if isinstance(voisona, Mapping) and voisona.get("shared_dir"):
+            shared = Path(str(voisona["shared_dir"])).expanduser()
+            if not shared.is_dir():
+                return HealthCheck(False, "unavailable")
         return HealthCheck(configured, "healthy" if configured else "not_configured")
 
     def _storage_paths(self) -> list[Path]:

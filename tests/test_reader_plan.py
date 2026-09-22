@@ -375,7 +375,7 @@ async def test_read_url_uses_plan_path_for_multiple_speakers(monkeypatch, tmp_pa
     monkeypatch.setattr(
         engine_module,
         "CharacterDB",
-        lambda _work_id: original_character_db(
+        lambda _work_id, **_kwargs: original_character_db(
             "test", data_dir=tmp_path / "characters", persist=False
         ),
     )

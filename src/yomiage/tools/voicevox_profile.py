@@ -277,7 +277,10 @@ class VoicevoxVoiceProfile:
     ) -> VoicevoxVoiceProfile | None:
         """Find and load a profile by speaker_name from standard locations."""
         if search_dirs is None:
-            search_dirs = [Path("config/voicevox_profiles")]
+            from ..config import load_config
+            from ..runtime_paths import profile_dir
+
+            search_dirs = [profile_dir("voicevox", load_config())]
 
         for d in search_dirs:
             if not d.exists():

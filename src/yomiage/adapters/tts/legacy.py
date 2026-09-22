@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import inspect
 import tempfile
-import uuid
-from pathlib import Path, PurePosixPath, PureWindowsPath
+from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 from ...application.voice_parameters import translate_provider_parameters
 from ...ports.tts import (
-    MemoryTarget,
+    ArtifactTarget,
     ProviderCapabilities,
     ProviderHealth,
     ProviderOutputMode,
@@ -18,11 +17,11 @@ from ...ports.tts import (
     ProviderSynthesisResult,
     ProviderVoice,
     RemotePlaybackTarget,
-    SharedFileTarget,
     TTSProviderPort,
     normalize_voice_list,
 )
 from ...tts.base import TTSProvider
+from ...tts.shared_directory import VoisonaSharedDirectory
 
 
 @runtime_checkable
@@ -170,6 +169,11 @@ class LegacyTTSProviderAdapter:
             format=getattr(value, "format", "wav"),
             sample_rate=getattr(value, "sample_rate", None),
             duration=getattr(value, "duration", None),
+            output_mode=(
+                ProviderOutputMode.LOCAL_FILE
+                if isinstance(request.target, ArtifactTarget) and temporary_path is not None
+                else ProviderOutputMode.AUDIO_BYTES
+            ),
             metadata=metadata,
         )
 
@@ -195,20 +199,30 @@ def adapt_provider(provider: Any, *, name: str | None = None) -> TTSProviderPort
 
 
 class VoisonaFileProviderAdapter(LegacyTTSProviderAdapter):
-    """VoiSona ``destination=file`` を local artifact へ適合するadapter。
+    """共有領域の一時 WAV を取得し、最終保存は ArtifactStore に任せる。
 
-    VoiSona Talk は Windows/VM 側のパスを要求するため、Batch の run directoryをそのまま
-    APIへ渡すことはできない。run directoryと同名の一時ファイルを VM mount 下へ指定し、
-    共有マウント上へ現れた WAV を ``ProviderSynthesisResult`` の bytes として返す。
-    以降の検証・atomic publishは SynthesisService/ArtifactStore が担当する。
+    最終出力先や run のディレクトリ構造を VM パスの推測に使わない。
+    Memory / Batch / Studio は同じ共有領域を経由する。
     """
 
-    def __init__(self, provider: Any, *, name: str | None = None) -> None:
+    def __init__(
+        self,
+        provider: Any,
+        *,
+        name: str | None = None,
+        shared_directory: VoisonaSharedDirectory | None = None,
+    ) -> None:
         super().__init__(provider, name=name)
+        self.shared_directory = (
+            shared_directory
+            or getattr(provider, "shared_directory", None)
+            or VoisonaSharedDirectory.from_config()
+        )
         self.capabilities = ProviderCapabilities(
             output_modes=frozenset(
                 {
                     ProviderOutputMode.AUDIO_BYTES,
+                    ProviderOutputMode.LOCAL_FILE,
                     ProviderOutputMode.VM_FILE,
                     ProviderOutputMode.REMOTE_PLAYBACK,
                 }
@@ -232,94 +246,25 @@ class VoisonaFileProviderAdapter(LegacyTTSProviderAdapter):
                 metadata={"remote_playback": True},
             )
 
-        if isinstance(request.target, MemoryTarget) and not request.destination:
-            handle = tempfile.NamedTemporaryFile(suffix=f".{request.target.format}", delete=False)
-            handle.close()
-            temporary = Path(handle.name)
-            try:
-                value = self.provider.synthesize_to_file(
-                    request.text,
-                    str(temporary),
-                    voice=(request.voice.id if request.voice else "neutral"),
-                    **self._provider_kwargs(request),
-                )
-                if inspect.isawaitable(value):
-                    value = await value
-                data = temporary.read_bytes() if temporary.is_file() else b""
-                return ProviderSynthesisResult(
-                    audio_data=data or None,
-                    format=getattr(value, "format", request.target.format),
-                    duration=getattr(value, "duration", None),
-                )
-            finally:
-                temporary.unlink(missing_ok=True)
-
-        if not request.destination:
-            return await super().synthesize(request)
-
-        metadata = dict(request.metadata)
-        run_dir_value = metadata.get("run_dir")
-        vm_mount = str(metadata.get("vm_mount") or "Z:")
-        if not run_dir_value:
-            # SDK/非Batch callersには通常のLegacy adapter semanticsを残す。
-            return await super().synthesize(request)
-
-        run_dir = Path(str(run_dir_value)).expanduser().resolve()
-        run_dir.mkdir(parents=True, exist_ok=True)
-        filename = Path(request.destination).name
-        temporary = run_dir / f".{filename}.{uuid.uuid4().hex}.tmp.wav"
-        if isinstance(request.target, SharedFileTarget):
-            provider_relative = PurePosixPath(request.target.provider_relative_path or "")
-            relative = provider_relative.parent / temporary.name
-        else:
-            output_root_value = metadata.get("output_root")
-            relative_run = self._relative_run_path(run_dir, output_root_value)
-            relative = PurePosixPath(*relative_run.parts) / temporary.name
-        vm_root = vm_mount if vm_mount.endswith("\\") else f"{vm_mount}\\"
-        vm_path = str(PureWindowsPath(vm_root, *relative.parts))
-
-        kwargs = self._provider_kwargs(request)
-        voice = str(request.voice.id if request.voice is not None else "neutral")
-
-        try:
+        with self.shared_directory.temporary_wav() as (host_path, vm_path):
             value = self.provider.synthesize_to_file(
                 request.text,
                 vm_path,
-                voice=voice,
-                **kwargs,
+                voice=str(request.voice.id if request.voice is not None else "neutral"),
+                **self._provider_kwargs(request),
             )
             if inspect.isawaitable(value):
                 value = await value
-            data = getattr(value, "audio_data", b"") or b""
-            # On a shared VM mount the local side sees this path after VoiSona reports
-            # ``succeeded``.  Reading it here makes the result indistinguishable from a
-            # bytes-producing provider to SynthesisService.
-            if not data and temporary.is_file():
-                data = temporary.read_bytes()
+            data = getattr(value, "audio_data", b"") or host_path.read_bytes()
             return ProviderSynthesisResult(
-                audio_data=data or None,
+                audio_data=data,
                 format=getattr(value, "format", "wav"),
                 sample_rate=getattr(value, "sample_rate", None),
                 duration=getattr(value, "duration", None),
-                metadata={"file_path": str(temporary), "_cleanup_file": True},
+                output_mode=(
+                    request.target.output_mode if request.target else ProviderOutputMode.AUDIO_BYTES
+                ),
             )
-        except BaseException:
-            temporary.unlink(missing_ok=True)
-            raise
-
-    @staticmethod
-    def _relative_run_path(run_dir: Path, output_root: object | None) -> Path:
-        if output_root is not None:
-            root = Path(str(output_root)).expanduser().resolve()
-            try:
-                return run_dir.relative_to(root)
-            except ValueError as exc:
-                raise ValueError("run_dir must be inside output_root") from exc
-        try:
-            works_index = run_dir.parts.index("works")
-        except ValueError:
-            return Path(run_dir.name)
-        return Path(*run_dir.parts[works_index:])
 
     @staticmethod
     def _provider_kwargs(request: ProviderSynthesisRequest) -> dict[str, Any]:

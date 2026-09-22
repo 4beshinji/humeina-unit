@@ -8,9 +8,10 @@ from typing import Any, Mapping
 from loguru import logger
 
 from ..core.models import SourceRef
+from ..runtime_paths import data_dir as default_data_dir
 from ..utils.atomic_io import atomic_write_json
 
-DEFAULT_BOOKMARK_DIR = Path("data/bookmarks")
+DEFAULT_BOOKMARK_DIR = default_data_dir() / "bookmarks"
 
 
 @dataclass
@@ -83,7 +84,7 @@ class BookmarkManager:
     """ブックマーク管理（JSONファイル永続化）."""
 
     def __init__(self, data_dir: Path | None = None):
-        self.data_dir = data_dir or DEFAULT_BOOKMARK_DIR
+        self.data_dir = Path(data_dir or default_data_dir() / "bookmarks").expanduser().resolve()
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
     def _key(self, url: str) -> str:

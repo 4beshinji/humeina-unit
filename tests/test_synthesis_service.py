@@ -19,12 +19,16 @@ from yomiage.application.synthesis import (
 from yomiage.application.voice_parameters import VoiceResolutionContext
 from yomiage.core.models import VoiceIntent
 from yomiage.ports.tts import (
+    MemoryTarget,
+    ProviderCapabilities,
     ProviderError,
     ProviderErrorCategory,
     ProviderHealth,
+    ProviderOutputMode,
     ProviderSynthesisRequest,
     ProviderSynthesisResult,
     ProviderVoice,
+    RemotePlaybackTarget,
 )
 from yomiage.tts.audio_utils import write_silence_wav
 
@@ -402,4 +406,147 @@ async def test_d03_concurrent_identical_cache_miss_is_single_flight(tmp_path: Pa
     assert results[0].audio_data == results[1].audio_data
     assert len(cache.values) == 1
     assert service._flight_locks == {}
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_single_flight_wait_uses_request_timeout(tmp_path: Path) -> None:
+    wav_path = tmp_path / "fixture.wav"
+    write_silence_wav(wav_path, 0.01)
+
+    class BlockingProvider(FakeProvider):
+        def __init__(self) -> None:
+            super().__init__("primary", audio_data=wav_path.read_bytes())
+            self.entered = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def synthesize(
+            self, request: ProviderSynthesisRequest
+        ) -> ProviderSynthesisResult:
+            self.calls.append(request)
+            self.entered.set()
+            await self.release.wait()
+            return ProviderSynthesisResult(audio_data=self.audio_data)
+
+    provider = BlockingProvider()
+    service = SynthesisService(provider, cache=MemoryCache(), concurrency=2)
+    first = asyncio.create_task(service.synthesize("same"))
+    await provider.entered.wait()
+    started = time.monotonic()
+
+    with pytest.raises(SynthesisFailure) as caught:
+        await service.synthesize("same", timeout=0.01)
+
+    assert caught.value.category is ProviderErrorCategory.TIMEOUT
+    assert time.monotonic() - started < 0.05
+    provider.release.set()
+    await first
+    assert service._flight_locks == {}
+    await service.close()
+
+
+def test_absolute_destination_does_not_become_an_artifact_target(tmp_path: Path) -> None:
+    destination = tmp_path / "reader.wav"
+
+    request = SynthesisRequest(
+        "reader",
+        work_id="work",
+        run_id="run",
+        destination=str(destination),
+    )
+
+    assert request.destination == str(destination)
+    assert request.target is None
+
+
+@pytest.mark.asyncio
+async def test_unsupported_target_skips_primary_and_uses_capable_fallback() -> None:
+    class RemoteProvider(FakeProvider):
+        async def synthesize(
+            self, request: ProviderSynthesisRequest
+        ) -> ProviderSynthesisResult:
+            self.calls.append(request)
+            return ProviderSynthesisResult(
+                audio_data=None,
+                output_mode=ProviderOutputMode.REMOTE_PLAYBACK,
+            )
+
+    primary = FakeProvider("primary")
+    primary.capabilities = ProviderCapabilities()
+    fallback = RemoteProvider("fallback")
+    fallback.capabilities = ProviderCapabilities(
+        output_modes=frozenset({ProviderOutputMode.REMOTE_PLAYBACK})
+    )
+    service = SynthesisService(
+        {"primary": primary, "fallback": fallback},
+        primary="primary",
+        fallback="fallback",
+    )
+
+    result = await service.synthesize(
+        SynthesisRequest("remote", target=RemotePlaybackTarget())
+    )
+
+    assert primary.calls == []
+    assert len(fallback.calls) == 1
+    assert result.provider == "fallback"
+    assert result.output_mode is ProviderOutputMode.REMOTE_PLAYBACK
+    await service.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("target", "capabilities", "result"),
+    [
+        (
+            MemoryTarget("flac"),
+            ProviderCapabilities(audio_formats=frozenset({"flac"})),
+            ProviderSynthesisResult(audio_data=wav_bytes(), format="wav"),
+        ),
+        (
+            RemotePlaybackTarget(),
+            ProviderCapabilities(
+                output_modes=frozenset({ProviderOutputMode.REMOTE_PLAYBACK})
+            ),
+            ProviderSynthesisResult(audio_data=wav_bytes()),
+        ),
+    ],
+)
+async def test_provider_result_must_match_requested_target(
+    target,
+    capabilities: ProviderCapabilities,
+    result: ProviderSynthesisResult,
+) -> None:
+    class MismatchedProvider(FakeProvider):
+        async def synthesize(
+            self, request: ProviderSynthesisRequest
+        ) -> ProviderSynthesisResult:
+            self.calls.append(request)
+            return result
+
+    provider = MismatchedProvider("primary")
+    provider.capabilities = capabilities
+    service = SynthesisService(provider)
+
+    with pytest.raises(SynthesisFailure) as caught:
+        await service.synthesize(SynthesisRequest("mismatch", target=target))
+
+    assert caught.value.category is ProviderErrorCategory.INVALID_RESPONSE
+    assert len(provider.calls) == 1
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_unsupported_format_is_rejected_without_provider_call() -> None:
+    provider = FakeProvider("primary")
+    provider.capabilities = ProviderCapabilities(audio_formats=frozenset({"wav"}))
+    service = SynthesisService(provider)
+
+    with pytest.raises(SynthesisFailure) as caught:
+        await service.synthesize(
+            SynthesisRequest("flac", target=MemoryTarget("flac"))
+        )
+
+    assert caught.value.category is ProviderErrorCategory.INVALID_REQUEST
+    assert provider.calls == []
     await service.close()

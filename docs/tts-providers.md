@@ -62,11 +62,12 @@ VoiSonaモードの場合、TTSManagerが以下のパイプラインを実行:
 ```json
 {
   "destination": "file",
-  "output_file_path": "Z:\\work_id\\0001.wav"
+  "output_file_path": "Z:\\yomiage-<uuid>.wav"
 }
 ```
 
-virtiofs経由でホスト側の `output/` に直接書き出される。
+virtiofs 経由で `voisona.shared_dir` に一時出力し、取得した bytes を任意の最終出力先へ保存する。
+共有設定は [virtiofs セットアップ](virtiofs-setup.md) を参照。
 
 ### 利用可能ボイス
 
@@ -170,7 +171,7 @@ enqueue(text, params) → _queue → _synth_loop → _audio_queue → _play_loop
 ### VoisonaBatchSynthesizer
 
 - `destination: "file"` で直接WAV出力
-- virtiofs のパスマッピング: `Z:\{work_id}\NNNN.wav` → canonical run の検証済み artifact
+- virtiofs の専用共有領域から bytes を取得し、ArtifactStore が canonical run に検証・保存
 - キャラ別パラメータ + シーン + 感情の組み合わせでパラメータ構築
 - `batch.synth_concurrency` で同時合成ジョブ数を制御
 

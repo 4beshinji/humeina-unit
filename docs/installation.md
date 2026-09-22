@@ -21,8 +21,9 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 
 # 環境変数
-cp .env.example .env
-# .env を編集
+mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/humeina-unit"
+cp .env.example "${XDG_CONFIG_HOME:-$HOME/.config}/humeina-unit/.env"
+# コピー先の .env を編集
 ```
 
 実行コマンドは `uv run yomiage ...`（または venv 有効化後 `yomiage ...`）。
@@ -134,6 +135,10 @@ CLIを `--narrator` 等で叩いて WAV を出力する仕組みのため、追�
 ```bash
 sudo apt install ffmpeg
 ```
+
+旧チェックアウトの `data/` / `output/` がある場合は、[配置依存の変更と移行](path-independence.md)
+を確認してください。`.venv` は移設可能な配布物ではないため、移動後は `uv sync --extra dev`
+等で環境を作り直します。
 
 ## .env 設定項目
 

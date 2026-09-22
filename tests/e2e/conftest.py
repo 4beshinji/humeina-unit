@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from dotenv import load_dotenv
 
 from yomiage.config import get_tts_config, load_config
 from yomiage.llm.factory import create_llm_service
@@ -38,7 +37,6 @@ async def _available_and_close(service) -> bool:
 @pytest.fixture(scope="session")
 def config():
     """プロジェクトの YAML 設定を読み込む（.env も反映）."""
-    load_dotenv()
     return load_config()
 
 

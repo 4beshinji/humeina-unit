@@ -1,46 +1,42 @@
 # virtiofs セットアップガイド
 
-VoiSona Talk（Windows VM）からホスト（Linux）の `output/` ディレクトリへ直接WAVファイルを書き出すための共有ファイルシステム設定。
+VoiSona Talk の Windows パスと Linux の最終出力先を分離する。
+VM が共有するのは音声受け渡し専用の永続ディレクトリであり、チェックアウトの
+`output/` は共有しない。
 
-## 構成概要
-
-```
-┌─────────────────────────┐     virtiofs      ┌──────────────────────────┐
-│  Linux Host             │◄═════════════════►│  Windows 11 VM           │
-│                         │                    │                          │
-│  output/                │  ←──  Z:\          │  VoiSona Talk API        │
-│   ├── {work_id}/        │       Z:\{work_id} │   destination: "file"    │
-│   │   ├── 0001.wav      │                    │   output_file_path:      │
-│   │   ├── 0002.wav      │                    │     "Z:\{work_id}\…"     │
-│   │   └── manifest.json │                    │                          │
-│   └── …                 │                    │                          │
-└─────────────────────────┘                    └──────────────────────────┘
+```text
+Windows API: Z:\yomiage-<uuid>.wav
+                 │ virtiofs
+Linux: <voisona.shared_dir>/yomiage-<uuid>.wav
+                 │ 読み取り・検証・一時ファイル削除
+       SDK の bytes / 任意の --output / canonical run の artifact
 ```
 
-## 前提条件
+## ホスト側
 
-- QEMU/KVM + libvirt
-- ホストに `virtiofsd` がインストール済み（`/usr/lib/qemu/virtiofsd`）
-- virtio-win.iso にviofs ドライバが含まれていること
-
-## ホスト側セットアップ
-
-### 1. 出力ディレクトリ作成
+共有元の既定値は `${XDG_DATA_HOME:-$HOME/.local/share}/humeina-unit/voisona`。
+`voisona.shared_dir` / `VOISONA_SHARED_DIR` で変更できる。ソースの移動や別の CWD からの
+実行では変わらない。共有元そのものを変更する場合だけ、libvirt とアプリの両方を変更する。
+チェックアウトへのシンボリックリンクを共有元として使わない。
 
 ```bash
-mkdir -p /home/sin/code/claude/humeina-unit/output
+shared_dir="${XDG_DATA_HOME:-$HOME/.local/share}/humeina-unit/voisona"
+mkdir -p "$shared_dir"
 ```
 
-### 2. libvirt VM XML 編集
+libvirt の `<devices>` 内に次を設定する。`source dir` には上で作成したディレクトリの
+**絶対パス**を記入する（XML は `$HOME` や `~` を展開しない）。`target dir` は Windows の
+ドライブ文字ではなく、ゲストが共有を識別する mount tag。
 
-```bash
-virsh shutdown win11-voisona
-virsh edit win11-voisona
+```xml
+<filesystem type='mount' accessmode='passthrough'>
+  <driver type='virtiofs'/>
+  <source dir='/absolute/persistent/shared-directory'/>
+  <target dir='voisona_output'/>
+</filesystem>
 ```
 
-以下の2箇所を追加:
-
-#### memoryBacking（`<vcpu>` の近くに追加）
+`<domain>` の直下には共有メモリ設定も必要。
 
 ```xml
 <memoryBacking>
@@ -49,107 +45,81 @@ virsh edit win11-voisona
 </memoryBacking>
 ```
 
-#### filesystem（`<devices>` セクション内に追加）
+設定の意味とホストの対応条件は [libvirt の virtiofs ガイド](https://libvirt.org/kbase/virtiofs.html)
+を参照。ホストの実行ユーザー・DAC・AppArmor/SELinux によっては共有元と親ディレクトリの
+アクセス設定が必要。`relabel='yes'` だけで常にアクセスできるとは限らない。
 
-```xml
-<filesystem type='mount' accessmode='passthrough'>
-  <driver type='virtiofs'/>
-  <source dir='/home/sin/code/claude/humeina-unit/output'/>
-  <target dir='voisona_output'/>
-</filesystem>
-```
+### 旧チェックアウトを参照する既存 VM の修復
 
-### 3. VM起動
+VM を停止してから、リポジトリの `infra/voisona-vm.py` を実行する。
+このスクリプトは mount tag が `voisona_output` の共有元だけを変更する。ディスク、NIC、
+他の共有は保持する。通常実行は差分表示、`--apply` で適用する。
 
 ```bash
-virsh start win11-voisona
+python3 infra/voisona-vm.py --shared-dir "$shared_dir"
+python3 infra/voisona-vm.py --shared-dir "$shared_dir" \
+  --apply --backup /tmp/win11-voisona-before-share-change.xml
+virsh -c qemu:///system start win11-voisona
 ```
 
-libvirt が `virtiofsd` を自動起動する。AppArmor は `relabel='yes'` により自動許可。
+`--domain` / `--uri` / `--tag` は変更可能。既存のバックアップは上書きせず、稼働中 VM への
+適用は拒否する。バックアップから戻す場合は、VM を停止してから
+`virsh -c qemu:///system define /tmp/win11-voisona-before-share-change.xml` を実行する。
 
-## Windows VM 側セットアップ
+## Windows 側
 
-### 1. WinFsp インストール
-
-https://github.com/winfsp/winfsp/releases/latest から `.msi` をダウンロードしてインストール。
-
-virtiofs の Windows 実装は WinFsp に依存しているため必須。
-
-### 2. virtio-win-guest-tools インストール
-
-virtio-win.iso（VM内でCDドライブとしてマウント済み）を開き、`virtio-win-guest-tools-xxx.exe` を実行。viofs ドライバを含む全ドライバが一括インストールされる。
-
-### 3. VirtIO FS サービス起動
-
-管理者 PowerShell で:
+1. [WinFsp](https://github.com/winfsp/winfsp/releases) と virtio-win の viofs ドライバを導入する。
+2. 管理者 PowerShell でサービスを起動し、自動起動にする。
 
 ```powershell
 Start-Service VirtioFsSvc
-```
-
-確認:
-
-```powershell
+Set-Service VirtioFsSvc -StartupType Automatic
 Get-Service VirtioFsSvc
 ```
 
-`Z:` ドライブとしてマウントされる。
+実際に割り当てられたドライブを確認し、ユーザー設定に記入する。
 
-### 4. 自動起動設定
-
-```powershell
-Set-Service VirtioFsSvc -StartupType Automatic
+```yaml
+voisona:
+  vm_mount: 'Z:'
 ```
+
+`Z:` は `Z:\` として扱う。`Y:\audio` や UNC の `\\server\share` も指定可能。
+旧 `batch.voisona_vm_mount` は互換入力として受け付ける。
 
 ## 動作確認
 
-### ホスト → VM
+共有領域が Windows から見え、アプリ実行ユーザーで読み書きできることを確認する。
+VoiSona API の認証情報はユーザー設定ディレクトリの `.env` または環境変数で指定する。
 
-```bash
-echo "hello" > output/test.txt
-# VM側で Z:\test.txt が見えること
+```python
+import asyncio
+from pathlib import Path
+from yomiage.api.bridge import TTSBridge
+from yomiage.bootstrap import create_tts_provider
+from yomiage.config import load_config
+
+async def main():
+    bridge = TTSBridge(create_tts_provider(load_config(), "voisona"))
+    try:
+        await bridge.synthesize_to_file("共有領域の確認です。", Path("/tmp/voisona-test.wav"))
+    finally:
+        await bridge.close()
+
+asyncio.run(main())
 ```
 
-### VoiSona API → ホスト
+SDK、Batch、Reader のファイル合成、Studio、VoiSona tuner は同じ受け渡し方式を使う。
+`Z:\` 以下に canonical run の構造を再現する必要はない。低水準の
+`VoisonaProvider.synthesize_to_file()` だけは **Windows の絶対パス**を受け取る。
+Linux の保存先は Bridge / SynthesisService に渡す。
 
-```bash
-curl -X POST \
-  -u "${VOISONA_USERNAME}:${VOISONA_PASSWORD}" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "language": "ja_JP",
-    "text": "テスト",
-    "voice_name": "nurse-robot-type-t_ja_JP",
-    "destination": "file",
-    "output_file_path": "Z:\\test.wav",
-    "force_enqueue": true
-  }' \
-  http://192.168.1.173:32766/api/talk/v1/speech-syntheses
-```
+| 症状 | 確認する設定 |
+| --- | --- |
+| VM が起動しない | libvirt `source dir` の存在、共有メモリ、ホスト側アクセス権 |
+| 共有ドライブが見えない | WinFsp、viofs、VirtioFsSvc、mount tag |
+| ファイル合成で即座に共有元エラー | `voisona.shared_dir` と libvirt `source dir` の一致 |
+| API は成功するが WAV が取得できない | Windows のドライブと `voisona.vm_mount` の一致、ホストからの読み取り権限 |
+| 出力先を変えた後だけ失敗する | Linux の最終出力先に書き込み権限があるか |
 
-数秒後に `output/test.wav` がホスト側に出現すれば成功。
-
-## バッチパイプラインでの使用
-
-`config/default.yaml` の `batch.voisona_vm_mount` が VM 内のマウントポイントに対応:
-
-```yaml
-batch:
-  voisona_vm_mount: "Z:"
-```
-
-バッチ合成時、各文の WAV は以下のパスで VoiSona API に渡される:
-
-```
-Z:\{work_id}\0001.wav  →  ホスト側 output/{work_id}/0001.wav
-```
-
-## トラブルシューティング
-
-| 症状 | 原因 | 対処 |
-|------|------|------|
-| VirtioFsSvc が起動しない | WinFsp 未インストール | WinFsp をインストール |
-| Z: ドライブが見えない | viofs ドライバ未インストール | virtio-win-guest-tools を実行 |
-| VM起動時エラー | memoryBacking 未設定 | XML に `<memoryBacking>` を追加 |
-| WAV が出力されない | パス区切り文字 | `\\` (バックスラッシュ) を使用 |
-| Permission denied | AppArmor | `virsh edit` で再定義するか、AppArmor プロファイルに output/ を追加 |
+共有ディレクトリは事前に用意する。アプリは存在しない共有元を自動作成しない。

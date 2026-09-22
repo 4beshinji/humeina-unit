@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -64,8 +65,8 @@ async def synthesize_long_text(
                 last_sample_rate = result.sample_rate
 
         if opts.pause_between_chunks > 0:
-            silence_path = Path("__tmp_silence__.wav")
-            try:
+            with tempfile.TemporaryDirectory(prefix="yomiage-silence-") as temporary:
+                silence_path = Path(temporary) / "silence.wav"
                 write_silence_wav(
                     silence_path,
                     opts.pause_between_chunks,
@@ -73,8 +74,6 @@ async def synthesize_long_text(
                 )
                 wav_parts.append(silence_path.read_bytes())
                 total_duration += opts.pause_between_chunks
-            finally:
-                silence_path.unlink(missing_ok=True)
 
     if not wav_parts:
         return SynthesisResult(audio_data=b"", format="wav")

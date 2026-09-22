@@ -16,8 +16,8 @@ import yaml
 from loguru import logger
 
 from .resource_loader import packaged_config_path, packaged_config_yaml
-
-_CONFIG_DIR = Path(__file__).parent.parent.parent / "config"
+from .runtime_paths import data_dir
+from .runtime_paths import user_config_dir as default_user_config_dir
 
 
 def _resolve_env_vars(value: str, env: Mapping[str, str] | None = None) -> str:
@@ -118,19 +118,25 @@ def _load_packaged_config_bundle() -> dict[str, Any]:
     return config
 
 
-def _load_config_source(source: Path | None) -> dict[str, Any]:
+def _load_config_source(
+    source: Path | None, env: Mapping[str, str], *, base_dir: Path | None = None
+) -> dict[str, Any]:
     """Load either a config directory or a single YAML mapping."""
 
     if source is None:
         return {}
     source = Path(source).expanduser().resolve()
     if source.is_dir():
-        return _load_config_bundle(source)
-    if source.suffix.lower() in {".yaml", ".yml"}:
-        return _load_yaml(source)
-    if source.exists():
+        config = _load_config_bundle(source)
+        root = source
+    elif source.suffix.lower() in {".yaml", ".yml"}:
+        config = _load_yaml(source)
+        root = source.parent
+    elif source.exists():
         raise ValueError(f"configuration source must be a directory or YAML file: {source}")
-    return {}
+    else:
+        return {}
+    return _resolve_paths(_walk_resolve(config, env), base_dir or root)
 
 
 def load_config(
@@ -139,6 +145,7 @@ def load_config(
     user_config_dir: Path | None = None,
     env: Mapping[str, str] | None = None,
     overrides: dict[str, Any] | None = None,
+    base_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Load legacy raw configuration with deterministic precedence.
 
@@ -149,43 +156,95 @@ def load_config(
     ``overrides`` are applied.
     """
 
-    env_values = dict(os.environ if env is None else env)
-    configured_packaged = env_values.get("YOMIAGE_PACKAGED_CONFIG_DIR") or env_values.get(
+    env_values = _config_environment(env, user_config_dir)
+    user_source = user_config_dir or env_values.get("YOMIAGE_USER_CONFIG_DIR")
+    user_root = Path(user_source).expanduser().resolve() if user_source else (
+        default_user_config_dir(env_values)
+    )
+    user_directory = user_root.parent if user_root.suffix in {".yaml", ".yml"} else user_root
+    path_base = base_dir or user_directory
+    interpolation_env = dict(env_values)
+    interpolation_env.setdefault("YOMIAGE_USER_CONFIG_DIR", str(user_directory))
+    configured = env_values.get("YOMIAGE_PACKAGED_CONFIG_DIR") or env_values.get(
         "YOMIAGE_CONFIG_DIR"
     )
-    if config_dir is not None:
-        config_root = Path(config_dir).expanduser().resolve()
-        config = _load_config_source(config_root)
-    elif configured_packaged:
-        config_root = Path(configured_packaged).expanduser().resolve()
-        config = _load_config_source(config_root)
-    else:
-        # Do not resolve the repository's ``config/`` directory here.  It is
-        # intentionally not part of the installed wheel; standard resources
-        # are loaded via importlib.resources instead.
-        config_root = packaged_config_path()
-        config = _load_packaged_config_bundle()
-    user_root = user_config_dir
-    if user_root is None:
-        configured = env_values.get("YOMIAGE_USER_CONFIG_DIR")
-        user_root = Path(configured).expanduser() if configured else None
-    if user_root is not None:
-        # Keep packaged profile defaults in the user-editable boundary even
-        # when callers pass ``user_config_dir`` directly instead of an env var.
-        env_values.setdefault("YOMIAGE_USER_CONFIG_DIR", str(Path(user_root).expanduser()))
-
-    if user_root is not None:
-        config = _deep_merge(config, _load_config_source(user_root))
-    config = _walk_resolve(config, env_values)
-    # Explicit YOMIAGE_* controls are the environment layer, and therefore
-    # override values embedded directly in user YAML as well as ${VAR} values.
-    environment_layer = _environment_overrides(env_values)
-    if environment_layer:
-        config = _deep_merge(config, environment_layer)
+    config_source = config_dir or (Path(configured) if configured else None)
+    config = (
+        _load_config_source(config_source, interpolation_env, base_dir=base_dir)
+        if config_source is not None else _load_packaged_config_bundle()
+    )
+    config = _deep_merge(config, _load_config_source(
+        user_root, interpolation_env, base_dir=base_dir
+    ))
+    config = _walk_resolve(config, interpolation_env)
+    environment_layer = _resolve_paths(_environment_overrides(env_values), path_base)
+    config = _deep_merge(config, environment_layer)
     if overrides:
-        config = _apply_canonical_overrides(config, overrides)
-        config = _walk_resolve(config, env_values)
-    return config
+        config = _apply_canonical_overrides(config, _resolve_paths(
+            _walk_resolve(overrides, interpolation_env), path_base
+        ))
+    storage = _deep_merge(config.pop("paths", {}), config.get("storage", {}))
+    config["storage"] = storage
+    for alias, canonical in (("data", "data_dir"), ("output", "output_dir"),
+                             ("assets", "assets_dir"), ("job_db_path", "sqlite_path"),
+                             ("database_path", "sqlite_path")):
+        if alias in storage and canonical not in storage:
+            storage[canonical] = storage[alias]
+    storage.setdefault("user_config_dir", str(user_directory))
+    storage.setdefault("data_dir", str(data_dir(env_values)))
+    runtime_data = Path(storage["data_dir"])
+    storage.setdefault("sqlite_path", str(runtime_data / "jobs.sqlite3"))
+    batch = config.setdefault("batch", {})
+    batch["output_dir"] = storage.get("output_dir") or batch.get("output_dir") or str(
+        runtime_data / "output"
+    )
+    storage["output_dir"] = batch["output_dir"]
+    video = config.setdefault("video", {})
+    video["assets_dir"] = storage.get("assets_dir") or video.get("assets_dir") or str(
+        runtime_data / "assets"
+    )
+    storage["assets_dir"] = video["assets_dir"]
+    for kind in ("voice", "voicevox", "voicepeak"):
+        key = f"{kind}_profile_dir"
+        batch[key] = batch.get(key) or str(user_directory / f"{kind}_profiles")
+    # 旧 batch 設定は入力時だけ受け付け、通信層は provider 設定を使う。
+    for name, section in config.get("providers", {}).items():
+        config[name] = _deep_merge(config.get(name, {}), section)
+    voisona = config.setdefault("voisona", {})
+    voisona["shared_dir"] = voisona.get("shared_dir") or str(runtime_data / "voisona")
+    voisona.setdefault("vm_mount", batch.get("voisona_vm_mount", "Z:"))
+    return _resolve_paths(config, path_base)
+
+
+def _config_environment(
+    env: Mapping[str, str] | None, user_source: Path | None = None
+) -> dict[str, str]:
+    """暗黙の親ディレクトリ探索をせず、明示した .env かユーザー設定を読む。"""
+    values = dict(os.environ if env is None else env)
+    if env is not None:
+        return values
+    from dotenv import dotenv_values
+
+    root = Path(user_source).expanduser() if user_source else default_user_config_dir(values)
+    if root.suffix in {".yaml", ".yml"}:
+        root = root.parent
+    env_file = Path(values.get("YOMIAGE_ENV_FILE") or root / ".env").expanduser()
+    local = {key: value for key, value in dotenv_values(env_file).items() if value is not None}
+    return {**local, **values}
+
+
+def _resolve_paths(config: dict[str, Any], base_dir: Path) -> dict[str, Any]:
+    from .settings import _normalize_paths_in_data
+
+    result = _normalize_paths_in_data(config, base_dir=base_dir)
+    # 旧 Consumer も JSON/YAML 化可能な文字列を受け取る。
+    def strings(value: Any) -> Any:
+        if isinstance(value, Path):
+            return str(value)
+        if isinstance(value, dict):
+            return {key: strings(item) for key, item in value.items()}
+        return value
+    return strings(result)
 
 
 def _environment_overrides(env: Mapping[str, str]) -> dict[str, Any]:
@@ -254,6 +313,11 @@ def _environment_overrides(env: Mapping[str, str]) -> dict[str, Any]:
     put("storage", "assets_dir", "YOMIAGE_ASSETS_DIR")
     put("storage", "sqlite_path", "YOMIAGE_SQLITE_PATH")
     put("storage", "ffmpeg_executable", "YOMIAGE_FFMPEG_EXECUTABLE")
+    put("voisona", "shared_dir", "VOISONA_SHARED_DIR")
+    put("voisona", "vm_mount", "VOISONA_VM_MOUNT")
+    put("ex_voice", "wav_dir", "EX_VOICE_WAV_DIR")
+    put("slack", "bot_token", "SLACK_BOT_TOKEN")
+    put("slack", "app_token", "SLACK_APP_TOKEN")
 
     # Provider enablement and secrets are explicit overrides so a user config
     # cannot silently win over an operator-provided environment variable.
@@ -276,10 +340,11 @@ def _environment_overrides(env: Mapping[str, str]) -> dict[str, Any]:
         )
         if path is not None:
             section_overrides["path"] = path
-        if section_overrides:
-            result.setdefault("providers", {})[name] = section_overrides
+        if section_overrides or name in result:
+            merged = {**result.get(name, {}), **section_overrides}
+            result.setdefault("providers", {})[name] = merged
             # Keep the same precedence visible to legacy raw-dict consumers.
-            result[name] = dict(section_overrides)
+            result[name] = dict(merged)
 
     backend = first("YOMIAGE_LLM_BACKEND")
     local: dict[str, Any] = {}
@@ -341,7 +406,7 @@ def load_settings(
 
     from .settings import Settings
 
-    env_values = dict(os.environ if env is None else env)
+    env_values = _config_environment(env, user_config_dir)
     configured_packaged = env_values.get("YOMIAGE_PACKAGED_CONFIG_DIR") or env_values.get(
         "YOMIAGE_CONFIG_DIR"
     )
@@ -358,21 +423,20 @@ def load_settings(
         user_config_dir = (
             Path(configured_user).expanduser()
             if configured_user
-            else (Path.home() / ".config" / "humeina-unit")
+            else default_user_config_dir(env_values)
         )
     config = load_config(
         config_source,
         user_config_dir=user_config_dir,
         env=env_values,
-        overrides=_environment_overrides(env_values),
+        overrides=overrides,
+        base_dir=base_dir,
     )
     storage = config.setdefault("storage", {})
     if isinstance(storage, dict):
         storage.setdefault("packaged_config_dir", config_root)
         storage.setdefault("user_config_dir", Path(user_config_dir).expanduser())
-    if overrides:
-        config = _apply_canonical_overrides(config, overrides)
-    root = base_dir or Path.cwd()
+    root = base_dir or default_user_config_dir(env_values)
     return Settings.from_dict(config, base_dir=root, validate_active=validate_active)
 
 
@@ -382,7 +446,10 @@ def get_tts_config(config: dict | Any, provider: str) -> dict[str, Any]:
         providers = config.providers
         target = providers.get(provider)
         return target.to_legacy_dict() if target is not None else {}
-    return config.get(provider, {})
+    values = dict(config.get(provider, {}))
+    if provider == "voisona":
+        values.setdefault("vm_mount", config.get("batch", {}).get("voisona_vm_mount", "Z:"))
+    return values
 
 
 # Public re-exports keep ``from yomiage.config import Settings`` working while
