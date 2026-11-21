@@ -36,6 +36,35 @@ def create_tts_manager(config: dict, provider_override: str | None = None):
     return bootstrap_create_tts_manager(config, provider_override)
 
 
+async def list_tts_voices(provider: str, settings: dict) -> list[dict]:
+    """対話設定向けに具象TTSをcomposition境界内で列挙する。"""
+
+    from ...bootstrap import create_tts_provider
+
+    item = create_tts_provider({provider: settings}, provider)
+    try:
+        return await item.list_voices(use_cache=False)
+    finally:
+        await item.close()
+
+
+async def preview_tts_voice(provider: str, settings: dict, text: str) -> None:
+    """対話設定の試聴を具象Provider importから隔離する。"""
+
+    from ...bootstrap import create_tts_provider
+    from ...tts.playback import play_wav
+
+    item = create_tts_provider({provider: settings}, provider)
+    try:
+        result = await item.synthesize(
+            text,
+            voice_id=settings.get("default_speaker"),
+        )
+        await play_wav(result.audio_data)
+    finally:
+        await item.close()
+
+
 def create_reading_engine(
     config: dict,
     provider_override: str | None = None,

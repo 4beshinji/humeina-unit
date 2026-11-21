@@ -23,6 +23,41 @@ def test_standard_resources_are_loaded_through_importlib_resources() -> None:
     assert config["math_dict"]["unicode_symbols"]
 
 
+def test_default_profile_uses_cloud_llm_and_cpu_voicevox() -> None:
+    config = load_config(env={})
+
+    assert config["tts"]["primary_provider"] == "voicevox"
+    assert config["tts"]["fallback_provider"] is None
+    assert config["batch"]["default_mode"] == "voicevox"
+    assert config["llm"]["providers"]["opencode_go"]["enabled"] is True
+    assert config["llm"]["providers"]["local"]["enabled"] is False
+    assert {
+        route["provider"] for route in config["llm"]["routes"].values()
+    } == {"opencode_go"}
+    assert config["llm"]["fallback"]["order"] == ["opencode_go"]
+    assert config["llm"]["providers"]["opencode_go"]["min_output_tokens"] == 2048
+    assert config["llm"]["providers"]["local"]["min_output_tokens"] == 512
+    assert config["llm"]["routes"]["default"]["max_output_tokens"] == 16384
+    assert config["llm"]["routes"]["urgency_scoring"]["max_output_tokens"] == 4096
+
+
+def test_local_llm_requires_explicit_enablement_and_selection() -> None:
+    config = load_config(
+        env={
+            "YOMIAGE_LOCAL_LLM_ENABLED": "true",
+            "YOMIAGE_LLM_PROVIDER": "local",
+        }
+    )
+
+    assert config["llm"]["providers"]["local"]["enabled"] is True
+    assert {
+        route["provider"] for route in config["llm"]["routes"].values()
+    } == {"local"}
+    assert config["llm"]["fallback"]["order"] == ["local"]
+    assert config["llm"]["routes"]["default"]["max_output_tokens"] == 4096
+    assert config["llm"]["routes"]["urgency_scoring"]["max_output_tokens"] == 1024
+
+
 @pytest.mark.parametrize("name", packaged_config_filenames())
 def test_every_standard_resource_is_present(name: str) -> None:
     """The wheel's immutable bundle must contain every declared YAML resource."""

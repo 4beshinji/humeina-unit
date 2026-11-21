@@ -62,12 +62,15 @@ def test_required_voisona_secrets_are_checked_only_when_active() -> None:
     assert cloud.llm.backend == "openai"
 
 
-def test_local_llm_defaults_use_analysis_and_summary_models() -> None:
+def test_cloud_llm_is_default_and_local_llm_is_disabled() -> None:
     settings = Settings.from_dict(_voicevox_config())
 
-    assert settings.llm.model == "Qwen3.8-27B"
+    assert settings.llm.backend == "opencode_go"
+    assert settings.llm.model == "qwen3.8-flash"
     assert settings.llm.summary_model is None
     assert settings.llm.providers["local"].type == "llama_cpp"
+    assert settings.llm.providers["local"].enabled is False
+    assert settings.llm.providers["opencode_go"].enabled is True
 
 
 def test_voicepeak_executable_is_checked_only_when_active(tmp_path: Path) -> None:

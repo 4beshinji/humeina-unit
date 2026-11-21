@@ -65,6 +65,7 @@ class LLMService(LLMBackend):
         circuit_failure_threshold: int = 3,
         max_requests_per_job: int = 100,
         max_input_tokens_per_job: int = 500_000,
+        min_output_tokens_by_provider: dict[str, int] | None = None,
         metrics: Any | None = None,
         cache: LLMCache | None = None,
     ) -> None:
@@ -79,6 +80,10 @@ class LLMService(LLMBackend):
         self.circuit_failure_threshold = max(1, circuit_failure_threshold)
         self.max_requests_per_job = max(1, max_requests_per_job)
         self.max_input_tokens_per_job = max(1, max_input_tokens_per_job)
+        self.min_output_tokens_by_provider = {
+            str(provider): max(0, int(tokens))
+            for provider, tokens in (min_output_tokens_by_provider or {}).items()
+        }
         self.metrics = metrics
         self.cache = cache or LLMCache()
         self._health: dict[str, tuple[float, bool]] = {}
@@ -104,19 +109,27 @@ class LLMService(LLMBackend):
                 result.append(provider)
         return [provider for provider in result if provider in self.transports]
 
-    def _route_request(self, request: LLMRequest) -> LLMRequest:
+    def _route_request(self, request: LLMRequest, provider: str) -> LLMRequest:
         route = self.routes.get(request.task) or self.routes.get("default") or {}
+        output_tokens = max(
+            request.max_output_tokens,
+            self.min_output_tokens_by_provider.get(provider, 0),
+        )
         limit = route.get("max_output_tokens")
         if isinstance(limit, int):
-            return replace(request, max_output_tokens=min(request.max_output_tokens, limit))
-        return request
+            output_tokens = min(output_tokens, limit)
+        return replace(request, max_output_tokens=output_tokens)
 
     async def complete(self, request: LLMRequest) -> LLMResponse:
         """設定されたtask routeをretry/fallback付きで実行する。"""
 
         if self._closed:
             raise RuntimeError("LLMService is closed")
-        request = self._route_request(request)
+        providers = self._providers_for(request.task)
+        if not providers:
+            raise LLMError(LLMErrorCategory.UNAVAILABLE, "no LLM provider for task")
+        original_request = request
+        request = self._route_request(original_request, providers[0])
         estimated = estimate_tokens((request.system or "") + request.prompt)
 
         cache_key = self.cache.key(
@@ -136,12 +149,10 @@ class LLMService(LLMBackend):
             self._record_cache(request.task, cached, hit=True)
             return cached
 
-        providers = self._providers_for(request.task)
-        if not providers:
-            raise LLMError(LLMErrorCategory.UNAVAILABLE, "no LLM provider for task")
         last_error: LLMError | None = None
         for provider_index, provider in enumerate(providers):
             transport = self.transports[provider]
+            provider_request = self._route_request(original_request, provider)
             if self._circuit_until.get(provider, 0.0) > time.monotonic():
                 last_error = LLMError(
                     LLMErrorCategory.UNAVAILABLE, f"{provider} circuit is open"
@@ -150,7 +161,7 @@ class LLMService(LLMBackend):
             for retry in range(self.max_retries + 1):
                 self._consume_budget(estimated)
                 try:
-                    response = await transport.complete(request)
+                    response = await transport.complete(provider_request)
                 except LLMError as exc:
                     last_error = exc
                     self._record_error(request.task, transport, exc, retry)

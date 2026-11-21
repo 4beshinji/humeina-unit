@@ -203,7 +203,10 @@ def test_d04_readiness_reports_each_operation_and_missing_capabilities(
         base_dir=tmp_path,
         validate_active=False,
     )
-    checker = HealthChecker(config=settings.to_legacy_dict())
+    checker = HealthChecker(
+        config=settings.to_legacy_dict(),
+        dependencies=HealthDependencies(ffmpeg=False),
+    )
 
     operations = asyncio.run(checker.operation_readiness())
 

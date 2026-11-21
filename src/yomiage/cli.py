@@ -13,6 +13,7 @@ import typer
 
 from .interfaces.cli import batch as _batch
 from .interfaces.cli import composition as _composition
+from .interfaces.cli import configure as _configure
 from .interfaces.cli import news as _news
 from .interfaces.cli import reader as _reader
 from .interfaces.cli import server as _server
@@ -158,9 +159,11 @@ studio_preview = _studio.studio_preview
 studio_voices = _studio.studio_voices
 
 serve = _server.serve
+configure = _configure.configure
 
 
 _reader.register(app)
+_configure.register(app)
 _news.register(app)
 _slack.register(app)
 _batch.register(app)
@@ -187,6 +190,7 @@ __all__ = [
     "characters_app",
     "characters_assign",
     "characters_list",
+    "configure",
     "news",
     "read",
     "resume",

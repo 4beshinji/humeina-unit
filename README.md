@@ -34,13 +34,23 @@ Provider/LLM の接続先や secret は `.env` または環境変数で指定し
 
 ## 起動方法
 
-### ローカル専用（既定）
+### クラウドLLM + CPU音声合成（既定）
+
+既定のLLMはOpenCode Go、TTSはCPU版VOICEVOXです。`OPENCODE_GO_API_KEY`を環境変数で
+設定し、VOICEVOX Engineを起動します。LLMとTTSは独立して選択でき、ローカルLLMは
+明示的に有効化した場合だけ利用されます。
 
 ```bash
+docker compose -f infra/docker-compose.yml up -d voicevox
+export OPENCODE_GO_API_KEY='...'
 uv run yomiage read "https://www.aozora.gr.jp/cards/000879/files/127_15260.html" -p voicevox
 uv run yomiage batch run "https://www.aozora.gr.jp/cards/000879/files/127_15260.html" --mode voicevox
 uv run yomiage studio synth script.txt --format ymm4
 ```
+
+サービス選択は `YOMIAGE_LLM_PROVIDER=opencode_go|local` と
+`YOMIAGE_TTS_PRIMARY_PROVIDER=voicevox|voisona|voicepeak`、または各CLIの
+`--provider` / `--mode` で上書きできます。
 
 API は既定で `127.0.0.1:8030` に bind します。
 
@@ -97,6 +107,7 @@ output/works/{work_id}/
 | [アーキテクチャ](docs/architecture.md) | 実装パッケージ、依存方向、データフロー |
 | [CLI リファレンス](docs/cli-reference.md) | `yomiage --help` と一致するコマンド |
 | [設定リファレンス](docs/configuration.md) | Settings、環境変数、パス分類 |
+| [API key保管方針](docs/credential-storage.md) | Coding Agent時代の秘密情報と対話設定 |
 | [Batch パイプライン](docs/batch-pipeline.md) | plan/run、partial、artifact、動画 |
 | [REST API](docs/api-reference.md) | endpoint、認証、制限、状態 semantics |
 | [Python SDK](docs/sdk-reference.md) | `TTSBridge`、`TextAnalyzer`、`Pipeline` |

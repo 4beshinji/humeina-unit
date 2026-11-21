@@ -33,8 +33,8 @@ checkout の `config/` を開発用に使う場合は `load_config(config_dir=Pa
 
 ```yaml
 tts:
-  primary_provider: voisona       # voisona / voicevox / voicepeak
-  fallback_provider: voicevox     # null も可。primary と同じ値は禁止
+  primary_provider: voicevox      # voisona / voicevox / voicepeak
+  fallback_provider: null         # primary と同じ値は禁止
   lookahead_chunks: 5
   max_chunk_chars: 200
 ```
@@ -75,18 +75,23 @@ llm:
       protocol: chat_completions
       context_tokens: 32768
       timeout_seconds: 600
+      min_output_tokens: 512
+      enabled: false
     opencode_go:
       type: opencode_go
       base_url: https://opencode.ai/zen/go/v1
       api_key: ${OPENCODE_GO_API_KEY:-}
       model: ${OPENCODE_GO_MODEL:-qwen3.8-flash}
       protocol: auto
-      enabled: false
+      context_tokens: 131072
+      min_output_tokens: 2048
+      enabled: true
   routes:
-    scene_analysis: {provider: local, max_output_tokens: 4096}
-    news_summary: {provider: local, max_output_tokens: 2048}
+    scene_analysis: {provider: opencode_go, max_output_tokens: 16384}
+    news_summary: {provider: opencode_go, max_output_tokens: 16384}
+    urgency_scoring: {provider: opencode_go, max_output_tokens: 4096}
   fallback:
-    order: [local]
+    order: [opencode_go]
     "on": [unavailable, timeout, rate_limit]
 
 news:
@@ -96,19 +101,33 @@ news:
 ```
 
 Provider（接続先）とProtocol（`chat_completions` / `responses` / `messages`）は独立しています。
-OpenCode Go はopt-inで、API keyは環境変数だけから渡します。本文、完全URL、API keyはmetrics、
-manifest、Job DBへ保存されません。旧`ollama:`は`ollama_legacy`へ自動変換され、deprecation
-warningを出します。
+OpenCode Go が既定で、API keyは環境変数・KWallet・所有者専用のOpenCode認証ファイルの
+いずれかから実行時にだけメモリへ読み込みます。本文、完全URL、API keyはmetrics、manifest、
+Job DBへ保存されません。旧`ollama:`は`ollama_legacy`へ自動変換され、deprecation warningを
+出します。
 
 OpenCode Goへ小説、ニュース、Slack本文を送る前に、利用モデルのprivacy条件を確認してください。
-標準fallbackはローカルだけで、有料Providerへ暗黙に切り替わりません。
+標準fallbackにローカルLLMは含まれません。ローカルLLMを使うには、`local.enabled: true` と
+task routeの`provider: local`を両方指定するか、環境変数
+`YOMIAGE_LOCAL_LLM_ENABLED=true YOMIAGE_LLM_PROVIDER=local`を指定します。
+
+`yomiage configure`はAPI keyをYAMLへ書かず、`secrets.opencode_go`へKWallet、既存OpenCode
+mode 0600ファイル、または環境変数の参照だけを保存します。詳細は
+[API key保管方針](credential-storage.md)を参照してください。
+
+クラウド既定では、呼び出し側が小さな値を指定しても`min_output_tokens: 2048`を確保し、
+`max_output_tokens`は通常taskで8192〜16384、短い採点でも4096とします。上限は暴走・課金事故を
+防ぐガードであり、回答の短さを強制する値ではありません。短さと形式はprompt、JSON schema、
+response validationで制御します。ローカルLLMを選択した場合も最低512を確保し、VRAM/生成時間向け
+の別上限（通常2048〜8192、採点1024）へ切り替わります。OpenCode Go公式catalogはQwen3.8 Flashの
+context上限を掲載していないため、クラウド設定の`context_tokens`は保守的な128Kです。
 
 ### `batch`
 
 ```yaml
 batch:
   output_dir: output
-  default_mode: voisona
+  default_mode: voicevox
   analysis_window_chars: 3000
   analysis_window_sentences: 25
   analysis_strategy: single_pass
@@ -166,7 +185,10 @@ Provider/LLM の接続先は従来の変数も受け付けます。パス・運�
 | `VOISONA_URL`, `VOISONA_USERNAME`, `VOISONA_PASSWORD` | VoiSona 接続/認証 |
 | `VOICEVOX_URL` | VOICEVOX 接続 |
 | `VOICEPEAK_PATH` | VOICEPEAK executable |
-| `LLAMA_CPP_URL`, `LLAMA_CPP_MODEL` | 標準llama.cpp接続/model alias |
+| `OPENCODE_GO_API_KEY`, `OPENCODE_GO_MODEL` | 標準OpenCode Go接続 |
+| `YOMIAGE_LLM_PROVIDER` | LLM選択（`opencode_go` / `local`） |
+| `YOMIAGE_LOCAL_LLM_ENABLED` | ローカルLLMの明示的な有効化 |
+| `LLAMA_CPP_URL`, `LLAMA_CPP_MODEL` | 任意llama.cpp接続/model alias |
 | `YOMIAGE_LLM_GPU_DEVICE`, `LLAMA_MODEL_PATH` | ROCm GPU選択/server起動 |
 | `OLLAMA_URL`, `OLLAMA_MODEL`, `OLLAMA_SUMMARY_MODEL` | 旧Ollama rollback |
 | `GEMINI_API_KEY` | ニュース用 Gemini fallback |

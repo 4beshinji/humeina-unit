@@ -15,7 +15,9 @@ from typing import Any, Mapping
 import yaml
 from loguru import logger
 
+from .llm.defaults import ROUTE_OUTPUT_TOKENS_BY_PROVIDER
 from .resource_loader import packaged_config_path, packaged_config_yaml
+from .secret_store import hydrate_config_secrets
 
 _CONFIG_DIR = Path(__file__).parent.parent.parent / "config"
 
@@ -185,7 +187,7 @@ def load_config(
     if overrides:
         config = _apply_canonical_overrides(config, overrides)
         config = _walk_resolve(config, env_values)
-    return config
+    return hydrate_config_secrets(config)
 
 
 def _environment_overrides(env: Mapping[str, str]) -> dict[str, Any]:
@@ -295,6 +297,25 @@ def _environment_overrides(env: Mapping[str, str]) -> dict[str, Any]:
             local[target] = value
     if local:
         result.setdefault("llm", {}).setdefault("providers", {})["local"] = local
+
+    local_enabled = first("YOMIAGE_LOCAL_LLM_ENABLED")
+    if local_enabled is not None:
+        result.setdefault("llm", {}).setdefault("providers", {}).setdefault("local", {})[
+            "enabled"
+        ] = local_enabled.lower() in {"1", "true", "yes", "on"}
+
+    llm_provider = first("YOMIAGE_LLM_PROVIDER")
+    if llm_provider is not None:
+        budgets = ROUTE_OUTPUT_TOKENS_BY_PROVIDER.get(llm_provider, {})
+        routes = result.setdefault("llm", {}).setdefault("routes", {})
+        for task, max_output_tokens in budgets.items():
+            routes[task] = {
+                "provider": llm_provider,
+                "max_output_tokens": max_output_tokens,
+            }
+        if not budgets:
+            routes["default"] = {"provider": llm_provider}
+        result["llm"]["fallback"] = {"order": [llm_provider]}
     return result
 
 

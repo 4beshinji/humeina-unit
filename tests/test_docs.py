@@ -33,6 +33,7 @@ def test_local_markdown_links_resolve() -> None:
 # This is the command subset shown in docs/cli-reference.md and README.  Appending --help
 # exercises registration/option parsing without contacting a Provider or executing a job.
 DOCUMENTED_COMMANDS = (
+    ("configure",),
     ("read",),
     ("resume",),
     ("voices", "list"),

@@ -41,7 +41,7 @@ async def test_opencode_go_protocol_smoke(transport_type, model: str) -> None:
     )
     try:
         response = await transport.complete(
-            LLMRequest(task="e2e", prompt="Reply with OK only.", max_output_tokens=8)
+            LLMRequest(task="e2e", prompt="Reply with OK only.", max_output_tokens=512)
         )
     finally:
         await transport.close()

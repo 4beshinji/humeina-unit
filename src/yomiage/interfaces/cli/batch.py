@@ -14,7 +14,9 @@ batch_app = typer.Typer(help="バッチ読み上げパイプライン")
 @batch_app.command("analyze")
 def batch_analyze(
     url: str = typer.Argument(help="小説のURL"),
-    mode: str = typer.Option("voisona", "--mode", "-m", help="voisona / voicevox / voicepeak"),
+    mode: str | None = typer.Option(
+        None, "--mode", "-m", help="voisona / voicevox / voicepeak（未指定時は設定値）"
+    ),
     chapters: str | None = typer.Option(None, "--chapters", help="チャプター範囲 (例: 1-5)"),
     output: str = typer.Option("output", "--output", "-o", help="出力ディレクトリ"),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
@@ -40,7 +42,9 @@ def batch_analyze(
 @batch_app.command("synthesize")
 def batch_synthesize(
     work_id: str = typer.Argument(help="作品ID (manifest.jsonのwork_id)"),
-    mode: str = typer.Option("voisona", "--mode", "-m", help="voisona / voicevox / voicepeak"),
+    mode: str | None = typer.Option(
+        None, "--mode", "-m", help="voisona / voicevox / voicepeak（未指定時は設定値）"
+    ),
     output: str = typer.Option("output", "--output", "-o", help="出力ディレクトリ"),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
@@ -85,7 +89,9 @@ def batch_concat(
 @batch_app.command("run")
 def batch_run(
     url: str = typer.Argument(help="小説のURL"),
-    mode: str = typer.Option("voisona", "--mode", "-m", help="voisona / voicevox / voicepeak"),
+    mode: str | None = typer.Option(
+        None, "--mode", "-m", help="voisona / voicevox / voicepeak（未指定時は設定値）"
+    ),
     chapters: str | None = typer.Option(None, "--chapters", help="チャプター範囲 (例: 1-5)"),
     output: str = typer.Option("output", "--output", "-o", help="出力ディレクトリ"),
     fmt: str = typer.Option("wav", "--format", "-f", help="wav / mp3 / flac"),
@@ -185,7 +191,9 @@ def batch_status(
 @batch_app.command("retry")
 def batch_retry(
     work_id: str = typer.Argument(help="作品ID"),
-    mode: str = typer.Option("voisona", "--mode", "-m", help="voisona / voicevox / voicepeak"),
+    mode: str | None = typer.Option(
+        None, "--mode", "-m", help="voisona / voicevox / voicepeak（未指定時は設定値）"
+    ),
     output: str = typer.Option("output", "--output", "-o", help="出力ディレクトリ"),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:

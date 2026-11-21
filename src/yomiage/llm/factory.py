@@ -135,6 +135,11 @@ def create_llm_service(
         for name, data in provider_data.items()
         if isinstance(data, Mapping) and data.get("enabled", True)
     }
+    min_output_tokens = {
+        str(name): int(data.get("min_output_tokens", 0))
+        for name, data in provider_data.items()
+        if isinstance(data, Mapping) and data.get("enabled", True)
+    }
     fallback = llm.get("fallback") or {}
     limits = llm.get("limits") or {}
     return LLMService(
@@ -148,6 +153,7 @@ def create_llm_service(
         availability_ttl_seconds=float(limits.get("availability_ttl_seconds", 60)),
         max_requests_per_job=int(limits.get("max_requests_per_job", 100)),
         max_input_tokens_per_job=int(limits.get("max_input_tokens_per_job", 500_000)),
+        min_output_tokens_by_provider=min_output_tokens,
         metrics=metrics,
     )
 

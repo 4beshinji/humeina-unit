@@ -187,9 +187,11 @@ class _FakeTransport(LLMTransport):
         self.available = available
         self.calls = 0
         self.health_calls = 0
+        self.requests: list[LLMRequest] = []
 
     async def complete(self, request: LLMRequest) -> LLMResponse:
         self.calls += 1
+        self.requests.append(request)
         if self.calls <= self.failures:
             raise LLMError(LLMErrorCategory.UNAVAILABLE, "unavailable")
         return LLMResponse(
@@ -226,6 +228,26 @@ async def test_service_retries_then_falls_back_and_health_is_ttl_cached() -> Non
     assert primary.calls == 2
     assert fallback.calls == 1
     assert primary.health_calls == 1
+
+
+async def test_service_applies_provider_floor_then_route_runaway_cap() -> None:
+    transport = _FakeTransport("cloud")
+    service = LLMService(
+        {"cloud": transport},
+        routes={"urgency_scoring": {"provider": "cloud", "max_output_tokens": 4096}},
+        min_output_tokens_by_provider={"cloud": 2048},
+    )
+    try:
+        await service.complete(
+            LLMRequest(task="urgency_scoring", prompt="short", max_output_tokens=10)
+        )
+        await service.complete(
+            LLMRequest(task="urgency_scoring", prompt="long", max_output_tokens=99999)
+        )
+    finally:
+        await service.close()
+
+    assert [request.max_output_tokens for request in transport.requests] == [2048, 4096]
 
 
 async def test_romanization_deduplicates_terms_into_one_request() -> None:

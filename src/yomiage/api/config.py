@@ -59,11 +59,11 @@ class TTSEngineConfig(BaseModel):
 class LLMConfig(BaseModel):
     """LLMバックエンド設定."""
 
-    backend: str = "llama_cpp"
-    url: str | None = None
+    backend: str = "opencode_go"
+    url: str | None = "https://opencode.ai/zen/go/v1"
     api_key: str | None = None
-    model: str | None = "Qwen3.8-27B"
-    protocol: str | None = "chat_completions"
+    model: str | None = "qwen3.8-flash"
+    protocol: str | None = "auto"
 
 
 class AnalyzerConfig(BaseModel):
@@ -138,12 +138,33 @@ class PipelineConfig(BaseModel):
         else:
             llm_section = data.get("llm", {})
             providers = llm_section.get("providers", {}) if isinstance(llm_section, dict) else {}
-            local = providers.get("local", {}) if isinstance(providers, dict) else {}
-            llm = LLMConfig(
-                backend=local.get("type", "llama_cpp"),
-                url=local.get("base_url", "http://127.0.0.1:8080/v1"),
-                model=local.get("model", "Qwen3.8-27B"),
-                protocol=local.get("protocol", "chat_completions"),
+            routes = llm_section.get("routes", {}) if isinstance(llm_section, dict) else {}
+            scene_route = routes.get("scene_analysis") or routes.get("default") or {}
+            provider_name = scene_route.get("provider") if isinstance(scene_route, dict) else None
+            if not provider_name and isinstance(providers, dict):
+                provider_name = next(
+                    (
+                        name
+                        for name, values in providers.items()
+                        if isinstance(values, dict) and values.get("enabled", True)
+                    ),
+                    None,
+                )
+            selected = providers.get(provider_name, {}) if isinstance(providers, dict) else {}
+            if provider_name and not selected:
+                raise ValueError(f"Unknown LLM provider: {provider_name}")
+            if selected.get("enabled", True) is False:
+                raise ValueError(f"LLM provider '{provider_name}' is disabled")
+            llm = (
+                LLMConfig(
+                    backend=selected.get("type", str(provider_name)),
+                    url=selected.get("base_url"),
+                    api_key=selected.get("api_key") or None,
+                    model=selected.get("model"),
+                    protocol=selected.get("protocol"),
+                )
+                if provider_name
+                else LLMConfig()
             )
         analyzer = AnalyzerConfig(
             llm=llm,

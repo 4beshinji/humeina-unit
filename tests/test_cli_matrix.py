@@ -12,6 +12,7 @@ from yomiage.cli import app
 
 COMMAND_HELP_CASES = (
     (),
+    ("configure",),
     ("read",),
     ("resume",),
     ("voices",),

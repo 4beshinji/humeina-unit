@@ -8,6 +8,20 @@ uv run yomiage --help
 uv run yomiage <command> --help
 ```
 
+## 対話セットアップ
+
+### `yomiage configure`
+
+LLM/TTSサービス、OpenCode Go資格情報の保管先を選択します。VOICEVOXでは、最初に
+キャラクター一覧から選び、次にそのキャラクターのスタイルを選びます。話速・ピッチ・抑揚・音量は
+一つのメニューで上下キーにより項目を選択し、左右キーで変更します。値を変更するたびに最新設定を
+バックグラウンドで合成・再生します。秘密値はユーザーYAMLへ保存しません。
+
+```bash
+yomiage configure
+yomiage configure --no-preview
+```
+
 ## Reader
 
 ### `yomiage read URL`
@@ -45,7 +59,7 @@ yomiage batch analyze "https://ncode.syosetu.com/n1234ab/" --mode voicevox --cha
 
 | option | default | 説明 |
 | --- | --- | --- |
-| `--mode/-m` | `voisona` | `voisona|voicevox|voicepeak` |
+| `--mode/-m` | 設定値（既定`voicevox`） | `voisona|voicevox|voicepeak` |
 | `--chapters` | なし | `1-5` または `3` |
 | `--output/-o` | `output` | output base directory |
 | `--verbose/-v` | false | 詳細ログ |

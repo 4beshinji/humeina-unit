@@ -26,6 +26,7 @@ class VoicevoxProvider(TTSProvider):
         self.speed_scale = config.get("speed_scale", 1.0)
         self.pitch_scale = config.get("pitch_scale", 0.0)
         self.intonation_scale = config.get("intonation_scale", 1.0)
+        self.volume_scale = config.get("volume_scale", 1.0)
         self.default_speaker = config.get("default_speaker", 47)
         self._voices_cache: list[dict] | None = None
 
@@ -59,7 +60,11 @@ class VoicevoxProvider(TTSProvider):
             effective_speed = self.speed_scale * speed
             pitch = self.pitch_scale + params.get("pitch", 0.0)
             intonation = self.intonation_scale + params.get("intonation", 0.0)
-            volume = 1.0 + params["volume"] * 0.1 if "volume" in params else None
+            volume = (
+                self.volume_scale + params["volume"] * 0.1
+                if "volume" in params
+                else self.volume_scale
+            )
 
         try:
             session = self.session
@@ -137,6 +142,10 @@ class VoicevoxProvider(TTSProvider):
                                 {
                                     "id": style["id"],
                                     "name": f"{speaker['name']}（{style['name']}）",
+                                    "speaker_name": speaker["name"],
+                                    "speaker_uuid": speaker.get("speaker_uuid"),
+                                    "style_name": style["name"],
+                                    "style_type": style.get("type", "talk"),
                                 }
                             )
                     self._voices_cache = voices

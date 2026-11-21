@@ -27,9 +27,33 @@ cp .env.example .env
 
 実行コマンドは `uv run yomiage ...`（または venv 有効化後 `yomiage ...`）。
 
+対話セットアップではLLM/TTSの選択、OpenCode Go API keyの安全な保管、VOICEVOXの
+キャラクター、スタイルを順に選び、話速・ピッチ・抑揚・音量を矢印キーで一括調整できます。
+値を変更するたびにバックグラウンドで自動合成・再生します。
+
+```bash
+uv run yomiage configure
+```
+
+API keyはYAMLへ保存せず、利用可能ならKWalletを使います。詳細と脅威境界は
+[API key保管方針](credential-storage.md)を参照してください。
+
 ## 外部サービスのセットアップ
 
-### llama.cpp（標準ローカルLLM）
+### OpenCode Go（標準クラウドLLM）
+
+`OPENCODE_GO_API_KEY`を環境変数へ設定します。標準モデルはQwen3.8 Flash（Messages API）です。
+
+```dotenv
+OPENCODE_GO_API_KEY=your-api-key
+OPENCODE_GO_MODEL=qwen3.8-flash
+YOMIAGE_LLM_PROVIDER=opencode_go
+```
+
+実API testは課金を避けるため通常skipされ、`RUN_PAID_LLM_TESTS=1`も指定した場合だけ
+実行されます。OpenCode Goへ送る本文のprivacy条件と利用枠を事前に確認してください。
+
+### llama.cpp（明示的に有効化するローカルLLM）
 
 2026-08-29時点でQwen公式の最新open-weight世代はQwen3.8です。標準モデルIDは
 `Qwen3.8-27B`です。RX 6900 XT 16GB向けのGGUFには、Hugging Faceのモデルカードが
@@ -47,6 +71,8 @@ infra/llama-server-rocm.sh
 `.env`に設定:
 
 ```dotenv
+YOMIAGE_LOCAL_LLM_ENABLED=true
+YOMIAGE_LLM_PROVIDER=local
 LLAMA_CPP_URL=http://127.0.0.1:8080/v1
 LLAMA_CPP_MODEL=Qwen3.8-27B
 YOMIAGE_LLM_GPU_DEVICE=0
@@ -65,14 +91,11 @@ Dockerを使う場合:
 YOMIAGE_LLM_GPU_DEVICE=0 \
 LLAMA_MODEL_DIR=/absolute/path/to/models \
 LLAMA_MODEL_FILE=Qwen3.8-27B-IQ4_XS.gguf \
-docker compose -f infra/docker-compose.yml --profile rocm up llama-server-rocm
+docker compose \
+  -f infra/docker-compose.yml \
+  -f infra/docker-compose.local-llm.yml \
+  --profile local-llm up llama-server-rocm
 ```
-
-### OpenCode Go（オプション）
-
-`OPENCODE_GO_API_KEY`を設定し、ユーザーYAMLで`opencode_go.enabled: true`とroute/fallbackを明示します。
-標準cloud候補はQwen3.8 Flash（Messages API）です。実API testは課金を避けるため通常skipされ、
-`RUN_PAID_LLM_TESTS=1`も指定した場合だけ実行されます。
 
 ### Gemini API（オプションfallback）
 
@@ -86,8 +109,7 @@ GEMINI_API_KEY=your-gemini-api-key
 ### VOICEVOX（Docker）
 
 ```bash
-cd infra/
-docker compose up -d
+docker compose -f infra/docker-compose.yml up -d voicevox
 ```
 
 VOICEVOX Engine が `http://localhost:50021` で起動する。

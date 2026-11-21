@@ -149,8 +149,8 @@ provider、検証済み path を保持します。未検証 WAV は final artifa
 | VoiSona Talk | 音声合成 | `http://localhost:32766` | Windows VM の場合あり。Basic 認証/virtiofs は任意 |
 | VOICEVOX Engine | 音声合成 | `http://localhost:50021` | Docker または別プロセス |
 | VOICEPEAK | 音声合成 | ローカル executable | ライセンスと path が必要 |
-| llama.cpp | 標準の分析/要約 | `http://127.0.0.1:8080/v1` | ROCmではGPU indexを必ず明示 |
-| OpenCode Go | 任意のcloud LLM | API key指定時のみ | task routeで明示的にopt-in |
+| OpenCode Go | 標準のcloud分析/要約 | API key指定時のみ | task routeまたは環境変数で選択 |
+| llama.cpp | 任意のlocal分析/要約 | `http://127.0.0.1:8080/v1` | 明示的な有効化が必須 |
 | Ollama | 旧設定のrollback | `http://localhost:11434` | 互換Adapterのみ |
 | Gemini API | LLM fallback | API key 指定時のみ | `news` の `--gemini-key` または env |
 | ffmpeg | concat/video/format | executable `ffmpeg` | Batch 結合・動画時に必要 |

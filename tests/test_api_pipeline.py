@@ -143,6 +143,40 @@ class TestPipelineConfig:
         assert config.tts_fallback is not None
         assert config.tts_fallback.engine == "voicevox"
 
+    def test_from_dict_selects_llm_route_and_rejects_disabled_local(self):
+        raw = {
+            "tts": {"primary_provider": "voicevox"},
+            "voicevox": {"url": "http://localhost:50021"},
+            "llm": {
+                "providers": {
+                    "local": {
+                        "type": "llama_cpp",
+                        "base_url": "http://127.0.0.1:8080/v1",
+                        "model": "local-model",
+                        "protocol": "chat_completions",
+                        "enabled": False,
+                    },
+                    "opencode_go": {
+                        "type": "opencode_go",
+                        "base_url": "https://opencode.ai/zen/go/v1",
+                        "api_key": "secret",
+                        "model": "qwen3.8-flash",
+                        "protocol": "auto",
+                        "enabled": True,
+                    },
+                },
+                "routes": {"scene_analysis": {"provider": "opencode_go"}},
+            },
+        }
+
+        config = PipelineConfig.from_dict(raw)
+        assert config.analyzer.llm.backend == "opencode_go"
+        assert config.analyzer.llm.model == "qwen3.8-flash"
+
+        raw["llm"]["routes"]["scene_analysis"]["provider"] = "local"
+        with pytest.raises(ValueError, match="disabled"):
+            PipelineConfig.from_dict(raw)
+
     def test_tts_engine_config_to_provider_dict(self):
         config = TTSEngineConfig(
             engine="voicevox",

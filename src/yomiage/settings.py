@@ -279,7 +279,17 @@ class LLMProviderSettings(BaseModel):
 
 
 def _default_llm_providers() -> dict[str, LLMProviderSettings]:
-    return {"local": LLMProviderSettings()}
+    return {
+        "local": LLMProviderSettings(enabled=False, min_output_tokens=512),
+        "opencode_go": LLMProviderSettings(
+            type="opencode_go",
+            base_url="https://opencode.ai/zen/go/v1",
+            model="qwen3.8-flash",
+            protocol="auto",
+            context_tokens=131072,
+            min_output_tokens=2048,
+        ),
+    }
 
 
 class LLMSettings(BaseModel):
@@ -288,16 +298,18 @@ class LLMSettings(BaseModel):
     model_config = ConfigDict(extra="allow", validate_assignment=True)
 
     enabled: StrictBool = True
-    backend: LLMBackendName = "llama_cpp"
-    url: StrictStr | None = "http://127.0.0.1:8080/v1"
+    backend: LLMBackendName = "opencode_go"
+    url: StrictStr | None = "https://opencode.ai/zen/go/v1"
     api_key: SecretStr | None = None
-    model: StrictStr | None = "Qwen3.8-27B"
+    model: StrictStr | None = "qwen3.8-flash"
     summary_model: StrictStr | None = None
     providers: dict[str, LLMProviderSettings] = Field(default_factory=_default_llm_providers)
     routes: dict[str, dict[str, Any]] = Field(
-        default_factory=lambda: {"default": {"provider": "local"}}
+        default_factory=lambda: {
+            "default": {"provider": "opencode_go", "max_output_tokens": 16384}
+        }
     )
-    fallback: dict[str, Any] = Field(default_factory=lambda: {"order": ["local"]})
+    fallback: dict[str, Any] = Field(default_factory=lambda: {"order": ["opencode_go"]})
     limits: dict[str, Any] = Field(default_factory=dict)
 
     _validate_url = field_validator("url", mode="before")(_http_url)

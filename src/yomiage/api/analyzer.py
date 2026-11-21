@@ -40,7 +40,7 @@ class TextAnalyzer:
         return self._analyzer.scene_analyzer
 
     @classmethod
-    def create(cls, llm_backend: str = "llama_cpp", **kwargs: object) -> TextAnalyzer:
+    def create(cls, llm_backend: str = "opencode_go", **kwargs: object) -> TextAnalyzer:
         """ファクトリ: バックエンド名+パラメータで作成.
 
         Args:
