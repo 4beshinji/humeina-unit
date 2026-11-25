@@ -1,13 +1,13 @@
 services:
   voicevox:
-    image: voicevox/voicevox_engine:cpu-latest
+    image: voicevox/voicevox_engine:cpu-0.26.2@sha256:5bab72a79a45f2ad899a531200042800e149670d3b2ad7a5a1d66e5671ddfd3b
     ports:
       - "50021:50021"
     restart: unless-stopped
 
   llama-server-rocm:
     profiles: [rocm]
-    image: ghcr.io/ggml-org/llama.cpp:server-rocm
+    image: ghcr.io/ggml-org/llama.cpp:server-rocm-b12723@sha256:9a8367b61aaebe746633601b8b89cf1f887d38456ea9015acfb8cde6e1c6bf86
     devices:
       - /dev/kfd:/dev/kfd
       - /dev/dri:/dev/dri
