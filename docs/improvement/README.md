@@ -2,7 +2,7 @@
 
 ## 文書
 
-- [slimming-plan.md](slimming-plan.md): 周辺機能の optional extra 分離と軽量化（進行中）
+- [slimming-plan.md](slimming-plan.md): 周辺機能の optional extra 分離と軽量化（実施済み。記録として残す）
 - [speech-quality-refactoring-plan.md](speech-quality-refactoring-plan.md):
   読み補正・合成品質・LLM 計算コストの所見と SQ-001〜007 の記録
 

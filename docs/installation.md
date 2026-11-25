@@ -28,6 +28,26 @@ cp .env.example "${XDG_CONFIG_HOME:-$HOME/.config}/humeina-unit/.env"
 
 実行コマンドは `uv run yomiage ...`（または venv 有効化後 `yomiage ...`）。
 
+### optional extra
+
+本体（Web/青空文庫などの取得、NLP、TTS、Reader、Batch、REST API）は extra 無しで動作します。
+周辺機能は必要なものだけ追加します。extra が無い状態でコマンドを実行すると、導入方法を表示して
+終了コード 1 で終わります。
+
+| extra | 対象 | 追加される依存 |
+|---|---|---|
+| `news` | `yomiage news`（RSS 取得・要約） | feedparser |
+| `slack` | `yomiage slack`（WebSocket 監視） | slack-sdk |
+| `video` | Batch 動画のタイトルカード（無い場合はタイトルカードのみ省略） | Pillow |
+| `all` | 上記すべて | — |
+| `dev` | `all` とテスト・lint 用ツール | pytest, ruff, httpx など |
+
+```bash
+uv sync                      # 本体のみ
+uv sync --extra news         # ニュース読み上げを追加
+pip install -e ".[slack]"    # pip の場合
+```
+
 ## 外部サービスのセットアップ
 
 ### llama.cpp（標準ローカルLLM）

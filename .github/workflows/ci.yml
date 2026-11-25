@@ -37,6 +37,36 @@ jobs:
       - name: Run unit and integration tests
         run: uv run python -m pytest -q -m "not e2e and not packaging"
 
+  core-only:
+    name: core install (no extras)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Install core dependencies only
+        run: uv sync --no-dev
+      - name: Import and render CLI help without extras
+        run: |
+          uv run --no-sync python -c "import yomiage, yomiage.server"
+          uv run --no-sync yomiage --help
+          uv run --no-sync yomiage serve --help
+      - name: Missing extra exits with guidance
+        run: |
+          set +e
+          uv run --no-sync yomiage news daily 2> news.err
+          status=$?
+          set -e
+          test "$status" -eq 1
+          grep -q "humeina-unit\[news\]" news.err
+
   lint:
     name: ruff
     runs-on: ubuntu-latest

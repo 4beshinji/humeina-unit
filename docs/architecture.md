@@ -154,7 +154,7 @@ provider、検証済み path を保持します。未検証 WAV は final artifa
 | Ollama | 旧設定のrollback | `http://localhost:11434` | 互換Adapterのみ |
 | Gemini API | LLM fallback | API key 指定時のみ | `news` の `--gemini-key` または env |
 | ffmpeg | concat/video/format | executable `ffmpeg` | Batch 結合・動画時に必要 |
-| Slack API | 任意監視 | token 指定時のみ | `slack-sdk` extra が必要 |
+| Slack API | 任意監視 | token 指定時のみ | `slack` extra が必要 |
 
 内部 HTTP API は `yomiage serve` が提供します。既定 bind は loopback (`127.0.0.1:8030`) で、
 非 loopback bind には `--api-token`/`YOMIAGE_API_TOKEN` が必要です。詳しい制限と Bearer 認証は

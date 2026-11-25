@@ -15,8 +15,9 @@ CLI/API/SDK です。NLP 分析、発話計画、音声合成、バッチ成果�
 - Batch の分析→合成→結合→任意動画生成、検証済み artifact manifest、partial 成果物の明示
 - Studio 台本合成、ニュース RSS 読み上げ、任意の Slack WebSocket 監視
 
-HEMS/MQTT 接続や常駐クラウドサービスは提供していません。Slack は `slack-sdk` と Bot/App
-token を設定した場合だけ利用できます。
+HEMS/MQTT 接続や常駐クラウドサービスは提供していません。ニュース・Slack・動画タイトルカードは
+optional extra（`news` / `slack` / `video`、まとめて `all`）で追加します
+（[インストール](docs/installation.md#optional-extra)）。
 
 ## インストール
 
