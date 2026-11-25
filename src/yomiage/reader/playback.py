@@ -16,14 +16,14 @@ from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from ..application.synthesis import SynthesisRequest, SynthesisResult, SynthesisService
+from ..application.synthesis import SynthesisRequest, SynthesisService, UtteranceSynthesisResult
 from ..application.voice_parameters import VoiceResolutionContext
 from ..core.models import SegmentType, Utterance
 from ..core.plan import UtterancePlan
 from ..tts.playback import play_wav
 
 AudioPlayer = Callable[[bytes], Awaitable[float | None] | float | None]
-UtteranceCallback = Callable[[Utterance, SynthesisResult], Awaitable[None] | None]
+UtteranceCallback = Callable[[Utterance, UtteranceSynthesisResult], Awaitable[None] | None]
 RequestMetadataFactory = Callable[[Utterance], Mapping[str, Any]]
 DestinationFactory = Callable[[Utterance], str | None]
 ParameterContextFactory = Callable[[Utterance], VoiceResolutionContext]
@@ -32,7 +32,7 @@ ParameterContextFactory = Callable[[Utterance], VoiceResolutionContext]
 @dataclass(slots=True)
 class _PendingSynthesis:
     utterance: Utterance
-    task: asyncio.Task[SynthesisResult]
+    task: asyncio.Task[UtteranceSynthesisResult]
 
 
 class UtterancePlaybackQueue:
@@ -140,7 +140,7 @@ class UtterancePlaybackQueue:
         metadata_factory: RequestMetadataFactory | None = None,
         destination_factory: DestinationFactory | None = None,
         parameter_context_factory: ParameterContextFactory | None = None,
-    ) -> list[SynthesisResult]:
+    ) -> list[UtteranceSynthesisResult]:
         """計画を再生し、再生済み結果を順番に返す。
 
         scene breakは計画警告だけで、serviceへ合成要求を送らない。``start_utterance_id``
@@ -175,7 +175,7 @@ class UtterancePlaybackQueue:
         self._loop = asyncio.get_running_loop()
         self._active_task = asyncio.current_task()
         pending: deque[_PendingSynthesis] = deque()
-        results: list[SynthesisResult] = []
+        results: list[UtteranceSynthesisResult] = []
         iterator = iter(utterances)
 
         def schedule(item: Utterance) -> None:
@@ -282,7 +282,7 @@ class UtterancePlaybackQueue:
             self._pause_event.set()
         return results
 
-    async def _play_result(self, result: SynthesisResult) -> None:
+    async def _play_result(self, result: UtteranceSynthesisResult) -> None:
         if result.audio_data:
             task = asyncio.create_task(self._invoke_player(result.audio_data))
             self._current_play_task = task

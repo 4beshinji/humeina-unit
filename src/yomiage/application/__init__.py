@@ -40,8 +40,8 @@ from .synthesis import (
     RetryPolicy,
     SynthesisFailure,
     SynthesisRequest,
-    SynthesisResult,
     SynthesisService,
+    UtteranceSynthesisResult,
 )
 
 __all__ = [
@@ -74,6 +74,6 @@ __all__ = [
     "RetryPolicy",
     "SynthesisFailure",
     "SynthesisRequest",
-    "SynthesisResult",
+    "UtteranceSynthesisResult",
     "SynthesisService",
 ]

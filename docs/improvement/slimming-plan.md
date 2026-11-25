@@ -15,7 +15,7 @@
 - `mqtt` extra は src から参照されていない。
 - `SegmentType` が `core/models.py`（`str, Enum`）と `nlp/classifier.py`（`Enum`）に同値で二重定義。
 - `SynthesisResult` が公開 SDK 用（`api/models.py`）と application 内部用
-  （`application/synthesis.py`）で同名。`yomiage/__init__.py` は両方を re-export している。
+  （`application/synthesis.py`）で同名。`yomiage.api` と `yomiage.application` がそれぞれ export している。
 - `docs/improvement/evidence/` に pytest 生出力などをコミットしている。ただし
   `scripts/evaluate_speech_quality.py` は `before.json` を入力として読む。
 
@@ -55,9 +55,10 @@
 
 - `nlp/classifier.py` の `SegmentType` を削除し `core.models.SegmentType` を使う。
 - `application.synthesis.SynthesisResult` を `UtteranceSynthesisResult` に改名する。
-  トップレベル `yomiage.SynthesisResult` は公開 SDK（`api.models`）のみを指す。
+  公開 package（`yomiage`, `api`, `application`, `core`）の `__all__` に同名・別実体の型が
+  無いことをテストで固定する。
 - `tests/test_architecture.py` の allowlist で、完了済みタスク ID を理由に残る項目を再確認し、
-  解消するか恒久例外として理由を書き直す。
+  解消するか恒久例外として理由を書き直す。実在しない import を指す規則は失敗させる。
 - テスト: 両 `SegmentType` が同一であること、トップレベル export が公開 SDK 型であること、
   トップレベル `__all__` に同名異物がないこと。
 
@@ -92,6 +93,6 @@
 ## 4. 順序とリスク
 
 - P0 と P1 は独立。P2 以降は `pyproject.toml` / `uv.lock` が衝突するため順に進める。
-- 公開契約の変更は `yomiage.SynthesisResult` の実体統一（P1）と `/api/yomiage/news` 削除（P3）。
+- 公開契約の変更は `yomiage.application.SynthesisResult` の改名（P1）と `/api/yomiage/news` 削除（P3）。
   利用者は単独のため ADR は作らず、コミットに `BREAKING CHANGE` を明記する。
 - P2 は `uv.lock` が変わるため packaging テスト（`-m packaging`）も実行する。

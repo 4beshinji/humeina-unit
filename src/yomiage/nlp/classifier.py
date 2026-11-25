@@ -2,14 +2,10 @@
 
 import re
 from dataclasses import dataclass, field
-from enum import Enum
 
+from ..core.models import SegmentType
 
-class SegmentType(Enum):
-    DIALOGUE = "dialogue"
-    NARRATION = "narration"
-    THOUGHT = "thought"
-    SCENE_BREAK = "scene_break"
+__all__ = ["SegmentType", "TextClassifier", "TextSegment"]
 
 
 @dataclass

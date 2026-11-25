@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import ast
-import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -23,12 +22,12 @@ FORBIDDEN_IMPORT_PREFIXES = (
 
 
 @dataclass(frozen=True)
-class LegacyImportRule:
-    """移行前の既存依存を一時的に許容する規則."""
+class OuterImportRule:
+    """内側レイヤー外で意図して framework / 具象 Provider に依存する箇所."""
 
     relative_path: str
     module_prefix: str
-    owner_task: str
+    reason: str
 
 
 @dataclass(frozen=True)
@@ -44,18 +43,14 @@ class ImportViolation:
         return f"{relative}:{self.lineno}: forbidden import {self.module}"
 
 
-# これらは既存の外側/旧経路に残る依存であり、対応する移行タスクを必ず明記する。
-# 新規内側レイヤーの例外を追加する場合も、所有タスクなしでは受け入れない。
-LEGACY_IMPORT_ALLOWLIST = (
-    LegacyImportRule("src/yomiage/server.py", "fastapi", "API-001"),
-    LegacyImportRule("src/yomiage/studio/engine.py", "typer", "SYN-002"),
-    LegacyImportRule("src/yomiage/studio/engine.py", "yomiage.tts.voicepeak", "SYN-002"),
-    LegacyImportRule("src/yomiage/studio/engine.py", "yomiage.tts.voicevox", "SYN-002"),
-    LegacyImportRule("src/yomiage/studio/engine.py", "yomiage.tts.voisona", "SYN-002"),
-    LegacyImportRule("src/yomiage/tools/tuner.py", "yomiage.tts.voisona", "CLN-001"),
-    LegacyImportRule("src/yomiage/tts/factory.py", "yomiage.tts.voicepeak", "SYN-001"),
-    LegacyImportRule("src/yomiage/tts/factory.py", "yomiage.tts.voicevox", "SYN-001"),
-    LegacyImportRule("src/yomiage/tts/factory.py", "yomiage.tts.voisona", "SYN-001"),
+# 外側の境界として恒久的に許容する依存。新しい例外は理由を書いて追加する。
+# 実在しない import を指す項目はテストで検出する（陳腐化した例外を残さない）。
+OUTER_IMPORT_RULES = (
+    OuterImportRule("src/yomiage/server.py", "fastapi", "HTTP interface"),
+    OuterImportRule("src/yomiage/tts/factory.py", "yomiage.tts.voicepeak", "provider factory"),
+    OuterImportRule("src/yomiage/tts/factory.py", "yomiage.tts.voicevox", "provider factory"),
+    OuterImportRule("src/yomiage/tts/factory.py", "yomiage.tts.voisona", "provider factory"),
+    OuterImportRule("src/yomiage/tools/tuner.py", "yomiage.tts.voisona", "VoiSona 専用 tuner"),
 )
 
 
@@ -152,15 +147,16 @@ def find_forbidden_imports(
     return tuple(violations)
 
 
-def _legacy_rule_for(violation: ImportViolation) -> LegacyImportRule | None:
+def _rule_matches(rule: OuterImportRule, violation: ImportViolation) -> bool:
     relative = violation.path.relative_to(REPOSITORY_ROOT).as_posix()
-    for rule in LEGACY_IMPORT_ALLOWLIST:
-        if relative == rule.relative_path and (
-            violation.module == rule.module_prefix
-            or violation.module.startswith(f"{rule.module_prefix}.")
-        ):
-            return rule
-    return None
+    return relative == rule.relative_path and (
+        violation.module == rule.module_prefix
+        or violation.module.startswith(f"{rule.module_prefix}.")
+    )
+
+
+def _outer_rule_for(violation: ImportViolation) -> OuterImportRule | None:
+    return next((rule for rule in OUTER_IMPORT_RULES if _rule_matches(rule, violation)), None)
 
 
 def _is_intended_outer_dependency(violation: ImportViolation) -> bool:
@@ -198,27 +194,36 @@ def test_forbidden_import_is_detected_for_an_inner_layer(tmp_path: Path):
     }
 
 
-def test_existing_forbidden_imports_are_explicitly_owned():
-    """既存経路の例外は所有タスクIDなしで許容しない."""
+def test_forbidden_imports_outside_inner_layers_are_declared():
+    """外側の framework / 具象 Provider 依存は理由付きの規則でのみ許容する."""
 
     violations = find_forbidden_imports(SOURCE_ROOT, layers=None)
-    unowned = [
+    undeclared = [
         violation
         for violation in violations
         if not _is_intended_outer_dependency(violation)
-        and _legacy_rule_for(violation) is None
+        and _outer_rule_for(violation) is None
     ]
-    assert not unowned, "\n".join(v.format(REPOSITORY_ROOT) for v in unowned)
+    assert not undeclared, "\n".join(v.format(REPOSITORY_ROOT) for v in undeclared)
 
 
-def test_allowlist_entries_have_task_ids_and_point_to_existing_files():
-    """許容リストの追加が無主化・typo化しないことを確認する."""
+def test_outer_import_rules_are_not_stale():
+    """実在しない import を指す例外規則は残さない."""
 
-    assert LEGACY_IMPORT_ALLOWLIST
-    task_id_pattern = re.compile(r"^[A-Z]{3}-\d{3}$")
-    for rule in LEGACY_IMPORT_ALLOWLIST:
-        assert task_id_pattern.fullmatch(rule.owner_task), rule
-        assert (REPOSITORY_ROOT / rule.relative_path).is_file(), rule
+    violations = find_forbidden_imports(SOURCE_ROOT, layers=None)
+    for rule in OUTER_IMPORT_RULES:
+        assert rule.reason.strip(), rule
+        assert any(_rule_matches(rule, violation) for violation in violations), (
+            f"stale rule: {rule}"
+        )
+
+
+def test_stale_outer_import_rule_is_detected():
+    """import が消えた規則は陳腐化として検出できる（失敗系）."""
+
+    stale = OuterImportRule("src/yomiage/studio/engine.py", "typer", "removed")
+    violations = find_forbidden_imports(SOURCE_ROOT, layers=None)
+    assert not any(_rule_matches(stale, violation) for violation in violations)
 
 
 def test_batch_synthesis_facades_use_bootstrap_provider_construction():

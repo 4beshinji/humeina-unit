@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import typer
 from loguru import logger
 
 from ..application.synthesis import SynthesisService
@@ -204,7 +203,7 @@ class StudioEngine:
             analysis_settings=AnalysisSettings.from_config(self.config),
         )
 
-        typer.echo(f"Preview [{line_number}] {line.speaker}: {line.text}")
+        print(f"Preview [{line_number}] {line.speaker}: {line.text}")
         try:
             await synthesizer.preview_line(line, mapping)
         finally:

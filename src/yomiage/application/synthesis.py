@@ -134,7 +134,7 @@ class SynthesisRequest:
 
 
 @dataclass(frozen=True, slots=True)
-class SynthesisResult:
+class UtteranceSynthesisResult:
     """bytes/file artifactを統一したapplication結果。"""
 
     audio_data: bytes | None
@@ -384,7 +384,7 @@ class SynthesisService:
         request: SynthesisRequest | Utterance | str,
         *,
         timeout: float | None = None,
-    ) -> SynthesisResult:
+    ) -> UtteranceSynthesisResult:
         """同一cache keyのmissを一つのprovider operationへ直列化する。"""
 
         req = self._normalize_request(request)
@@ -449,7 +449,7 @@ class SynthesisService:
         timeout: float | None = None,
         deadline: OperationDeadline | None = None,
         started: float | None = None,
-    ) -> SynthesisResult:
+    ) -> UtteranceSynthesisResult:
         if self._closed:
             raise RuntimeError("SynthesisService is closed")
         req = self._normalize_request(request)
@@ -816,7 +816,7 @@ class SynthesisService:
         retry_count: int,
         attempts: int,
         started: float,
-    ) -> SynthesisResult:
+    ) -> UtteranceSynthesisResult:
         data = result.audio_data
         artifact = result.artifact
         file_path = result.metadata.get("file_path")
@@ -880,7 +880,7 @@ class SynthesisService:
                 "elapsed_ms": (time.monotonic() - started) * 1000,
             }
         )
-        return SynthesisResult(
+        return UtteranceSynthesisResult(
             audio_data=data,
             provider=provider,
             status="fallback_synthesized" if fallback_used else "synthesized",
@@ -1140,6 +1140,6 @@ __all__ = [
     "RetryPolicy",
     "SynthesisFailure",
     "SynthesisRequest",
-    "SynthesisResult",
+    "UtteranceSynthesisResult",
     "SynthesisService",
 ]
