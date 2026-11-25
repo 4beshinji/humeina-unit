@@ -104,8 +104,7 @@ def test_d04_provider_target_capability_matrix(
     assert operations["batch_audio"]["ready"] is batch_ready
     assert ("provider" in operations["batch_audio"]["missing"]) is not batch_ready
     assert operations["video"]["ready"] is batch_ready
-    assert operations["slack"]["ready"] is False
-    assert "slack" in operations["slack"]["missing"]
+    assert "slack" not in operations
 
 
 def test_d04_format_and_health_are_part_of_provider_readiness(tmp_path: Path) -> None:
@@ -133,7 +132,7 @@ def test_d04_format_and_health_are_part_of_provider_readiness(tmp_path: Path) ->
     assert "provider" in operations["batch_audio"]["missing"]
 
 
-def test_d04_vm_file_and_slack_require_mount_and_sdk(tmp_path: Path) -> None:
+def test_d04_vm_file_requires_mount(tmp_path: Path) -> None:
     output = tmp_path / "output"
     output.mkdir()
     unavailable = HealthChecker(
@@ -145,8 +144,6 @@ def test_d04_vm_file_and_slack_require_mount_and_sdk(tmp_path: Path) -> None:
             ),
             llm=True,
             ffmpeg=True,
-            slack=True,
-            slack_sdk=False,
             vm_mount=False,
         ),
     )
@@ -156,10 +153,6 @@ def test_d04_vm_file_and_slack_require_mount_and_sdk(tmp_path: Path) -> None:
     assert missing["batch_audio"] == {
         "ready": False,
         "missing": ["vm_mount"],
-    }
-    assert missing["slack"] == {
-        "ready": False,
-        "missing": ["slack_sdk"],
     }
 
     available = HealthChecker(
@@ -171,8 +164,6 @@ def test_d04_vm_file_and_slack_require_mount_and_sdk(tmp_path: Path) -> None:
             ),
             llm=True,
             ffmpeg=True,
-            slack=True,
-            slack_sdk=True,
             vm_mount=True,
         ),
     )
@@ -180,7 +171,6 @@ def test_d04_vm_file_and_slack_require_mount_and_sdk(tmp_path: Path) -> None:
     ready = asyncio.run(available.operation_readiness())
 
     assert ready["batch_audio"] == {"ready": True, "missing": []}
-    assert ready["slack"] == {"ready": True, "missing": []}
 
 
 def test_d04_readiness_reports_each_operation_and_missing_capabilities(
@@ -207,7 +197,7 @@ def test_d04_readiness_reports_each_operation_and_missing_capabilities(
 
     operations = asyncio.run(checker.operation_readiness())
 
-    assert set(operations) >= {"immediate_playback", "batch_audio", "video", "slack"}
+    assert set(operations) == {"immediate_playback", "batch_audio", "video"}
     assert operations["batch_audio"]["ready"] is False
     assert "provider" in operations["batch_audio"]["missing"]
     assert "ffmpeg" in operations["video"]["missing"]
@@ -227,8 +217,6 @@ def test_d04_http_readiness_returns_operation_capability_matrix(tmp_path: Path) 
             ffmpeg=True,
             storage={"output_dir": output},
             sqlite=True,
-            slack=True,
-            slack_sdk=False,
             vm_mount=False,
         ),
     )
@@ -249,7 +237,6 @@ def test_d04_http_readiness_returns_operation_capability_matrix(tmp_path: Path) 
         "immediate_playback",
         "batch_audio",
         "video",
-        "slack",
     }
     assert payload["operations"]["immediate_playback"] == {
         "ready": True,
@@ -259,8 +246,34 @@ def test_d04_http_readiness_returns_operation_capability_matrix(tmp_path: Path) 
         "ready": False,
         "missing": ["vm_mount"],
     }
-    assert payload["operations"]["slack"] == {
-        "ready": False,
-        "missing": ["slack_sdk"],
-    }
     assert str(tmp_path) not in response.text
+
+
+def test_readiness_ignores_enabled_slack_without_sdk(tmp_path: Path, monkeypatch) -> None:
+    """周辺機能（slack）の設定・SDK 欠落は readiness を劣化させない（失敗系）."""
+
+    import importlib.util
+
+    original = importlib.util.find_spec
+    monkeypatch.setattr(
+        importlib.util,
+        "find_spec",
+        lambda name, *a, **k: None if name == "slack_sdk" else original(name, *a, **k),
+    )
+    output = tmp_path / "output"
+    output.mkdir()
+    checker = HealthChecker(
+        config={
+            "batch": {"output_dir": str(output)},
+            "slack": {"enabled": True, "bot_token": "", "app_token": ""},
+        },
+        dependencies=HealthDependencies(
+            provider=_Provider(ProviderOutputMode.AUDIO_BYTES),
+            ffmpeg=True,
+        ),
+    )
+
+    operations = asyncio.run(checker.operation_readiness())
+
+    assert "slack" not in operations
+    assert operations["immediate_playback"] == {"ready": True, "missing": []}

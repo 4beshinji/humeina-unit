@@ -7,7 +7,6 @@ provide deterministic fakes without constructing a real TTS or LLM client.
 
 from __future__ import annotations
 
-import importlib.util
 import inspect
 import os
 import re
@@ -137,8 +136,6 @@ class HealthDependencies:
     ffmpeg: Any | None = None
     storage: Any | None = None
     sqlite: Any | None = None
-    slack: Any | None = None
-    slack_sdk: Any | None = None
     vm_mount: Any | None = None
 
 
@@ -208,8 +205,6 @@ class HealthChecker:
         ffmpeg: Any | None = None,
         storage: Any | None = None,
         sqlite: Any | None = None,
-        slack: Any | None = None,
-        slack_sdk: Any | None = None,
         vm_mount: Any | None = None,
     ) -> None:
         self.engine = engine
@@ -227,8 +222,6 @@ class HealthChecker:
         self.ffmpeg = ffmpeg if ffmpeg is not None else supplied.ffmpeg
         self.storage = storage if storage is not None else supplied.storage
         self.sqlite = sqlite if sqlite is not None else supplied.sqlite
-        self.slack = slack if slack is not None else supplied.slack
-        self.slack_sdk = slack_sdk if slack_sdk is not None else supplied.slack_sdk
         self.vm_mount = vm_mount if vm_mount is not None else supplied.vm_mount
 
     async def liveness(self) -> dict[str, Any]:
@@ -266,9 +259,6 @@ class HealthChecker:
         capabilities = await self._healthy_provider_capabilities()
         storage = await self._storage_check()
         ffmpeg = await self._ffmpeg_check()
-        llm = await self._llm_check()
-        slack = await self._slack_check()
-        slack_sdk = await self._slack_sdk_check()
         vm_mount = await self._vm_mount_check()
 
         def provider_supports(*modes: ProviderOutputMode, format: str = "wav") -> bool:
@@ -301,12 +291,6 @@ class HealthChecker:
             "video": report(
                 *batch_requirements,
                 ("ffmpeg", ffmpeg.healthy),
-            ),
-            "slack": report(
-                ("provider", immediate_provider),
-                ("llm", llm.healthy),
-                ("slack", slack.healthy),
-                ("slack_sdk", slack_sdk.healthy),
             ),
         }
 
@@ -475,34 +459,6 @@ class HealthChecker:
     def _ffmpeg_codec_available(self, codec: str) -> bool:
         declared = self._declared_ffmpeg_codecs()
         return declared is None or codec in declared
-
-    async def _slack_check(self) -> HealthCheck:
-        candidate = self.slack
-        if candidate is not None:
-            try:
-                return _coerce_check(await _call(candidate))
-            except Exception:
-                return _failure()
-        config = self.config.get("slack", {})
-        if not isinstance(config, Mapping) or not bool(config.get("enabled", False)):
-            return HealthCheck(False, "not_configured")
-        configured = bool(config.get("bot_token")) and bool(config.get("app_token"))
-        return HealthCheck(configured, "healthy" if configured else "not_configured")
-
-    async def _slack_sdk_check(self) -> HealthCheck:
-        """Check the optional SDK separately from Slack token configuration."""
-
-        candidate = self.slack_sdk
-        if candidate is not None:
-            try:
-                return _coerce_check(await _call(candidate))
-            except Exception:
-                return _failure()
-        try:
-            available = importlib.util.find_spec("slack_sdk") is not None
-        except (ImportError, ValueError):
-            available = False
-        return HealthCheck(available, "healthy" if available else "unavailable")
 
     async def _vm_mount_check(self) -> HealthCheck:
         """VM マウントの設定とホスト側の共有ディレクトリを確認する。"""

@@ -887,10 +887,9 @@ _OPERATION_READINESS_NAMES = (
     "immediate_playback",
     "batch_audio",
     "video",
-    "slack",
 )
 _OPERATION_DEPENDENCY_NAMES = frozenset(
-    {"provider", "storage", "vm_mount", "ffmpeg", "llm", "slack", "slack_sdk"}
+    {"provider", "storage", "vm_mount", "ffmpeg"}
 )
 
 
@@ -1637,32 +1636,6 @@ def create_app(
             except Exception:
                 payload["persistent_jobs"] = {"total": None, "by_state": {}}
         return payload
-
-    @application.post("/api/yomiage/news")
-    async def news_daily(request: Request):
-        runtime = _runtime(request)
-        engine = runtime.engine
-        if engine is None:
-            raise HTTPException(503, "Engine not initialized")
-        from .news.fetcher import NewsFetcher
-        from .news.summarizer import NewsSummarizer
-
-        news_cfg = runtime.config.get("news", {})
-        if not isinstance(news_cfg, Mapping):
-            news_cfg = {}
-        fetcher = NewsFetcher(news_cfg.get("sources"))
-        llm = getattr(engine, "llm", None)
-        if llm is None:
-            raise HTTPException(503, "LLM service not initialized")
-        summarizer = NewsSummarizer(llm)
-        articles = await fetcher.fetch_all()
-        summary = await summarizer.daily_summary(articles)
-        from .tts.base import TTSParams
-
-        await engine.tts.start()
-        await engine.tts.enqueue(summary, TTSParams())
-        await engine.tts.drain()
-        return {"status": "reading", "article_count": len(articles)}
 
     return application
 

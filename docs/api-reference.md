@@ -49,8 +49,9 @@
 Provider、LLM、ffmpeg、storage、SQLite など runtime dependency の readiness を返します。
 `status: "ready"` は 200、未準備なら 503 です。token 設定時は認証が必要です。
 既定のhealth checkerでは、集約結果に加えて `operations` が
-`immediate_playback`、`batch_audio`、`video`、`slack` ごとの `ready` と不足dependency名を
-返します。batchのVM fileには `vm_mount`、Slackにはtoken設定と別に `slack_sdk` が必要です。
+`immediate_playback`、`batch_audio`、`video` ごとの `ready` と不足dependency名を
+返します。batchのVM fileには `vm_mount` が必要です。news / slack などの周辺機能は対象外で、
+各 CLI コマンドが自身の optional extra と設定を検査します。
 path、endpoint、credential、元のexception本文は含めません。
 
 `operations` 部分の例:
@@ -60,8 +61,7 @@ path、endpoint、credential、元のexception本文は含めません。
   "operations": {
     "immediate_playback": {"ready": true, "missing": []},
     "batch_audio": {"ready": false, "missing": ["provider"]},
-    "video": {"ready": false, "missing": ["provider", "ffmpeg"]},
-    "slack": {"ready": false, "missing": ["slack"]}
+    "video": {"ready": false, "missing": ["provider", "ffmpeg"]}
   }
 }
 ```
@@ -269,16 +269,6 @@ data: {"job_id":"abc123","status":"synthesizing","percent":45.0,...}
 合成回数、error/fallback/cache、latency、queue、partial などの process-local counters と、
 利用可能なら SQLite JobRepository から算出した `persistent_jobs` を返します。process counters は
 再起動でリセットされます。本文、token、password、完全 URL は保存しません。
-
-## News
-
-### `POST /api/yomiage/news`
-
-設定済み RSS を取得し、LLM で日次要約して読み上げます。
-
-```json
-{"status": "reading", "article_count": 15}
-```
 
 ## 起動と curl
 
