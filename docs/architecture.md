@@ -23,8 +23,8 @@ legacy feature packages (nlp, reader, batch, tts, sources, studio, video, news, 
 
 新しい `core` と `application` は FastAPI、Typer、具象 TTS Provider を import しません。
 依存方向の契約は [`tests/test_architecture.py`](../tests/test_architecture.py) で検査します。
-ADR の背景と移行タスクは [ADR 索引](adr/README.md) と
-[改善作業台帳](improvement/work-ledger.md) を参照してください。
+ADR の背景は [ADR 索引](adr/README.md)、進行中の改善は
+[改善作業](improvement/README.md) を参照してください。
 
 ## 実装パッケージ（2026-07-30 の source tree）
 

@@ -14,8 +14,8 @@ LLM利用に置く。削減率や聴感上の改善幅は未測定であり、�
 
 | 文書 | 担当する範囲 | 本計画との関係 |
 |---|---|---|
-| [アーキテクチャ改善計画](architecture-plan.md) | レイヤー、共通Plan、合成サービス | 既存の基盤と依存方向を利用する |
-| [Runtime finding](runtime-findings-consolidated.md) / [修正進捗](runtime-refactoring-progress.md) | 合成、キャンセル、成果物、設定などの実行時契約 | 達成済みの契約を回帰させない |
+| [アーキテクチャ](../architecture.md) | レイヤー、共通Plan、合成サービス | 既存の基盤と依存方向を利用する |
+| Runtime finding / 修正進捗（git 履歴） | 合成、キャンセル、成果物、設定などの実行時契約 | 達成済みの契約を回帰させない |
 | [LLM基盤移行計画](../llm-platform-migration-plan.md) | Provider、ルーティング、予算、キャッシュ | 実装済みの機構を使い、呼び出しの必要性を判断する処理を追加する |
 | [ADR-0002](../adr/ADR-0002-utterance-plan-and-identities.md) | UtterancePlanとplan/runの分離 | 読み情報と原文位置の拡張時に移行契約を追加する |
 
@@ -416,7 +416,7 @@ GPU時間や削減率の測定は行っていない。77件の成功は今回の
 
 - SQ-001: 一般文章・小説・台本向け括弧・英字・ルビ・人名・複数文台詞など24例を
   `tests/fixtures/speech_quality/cases.json`へ固定した。変更前のコードを別ディレクトリへ復元し、
-  [変更前データ](evidence/speech-quality/before.json)を取得した。
+  変更前データ（`tests/fixtures/speech_quality/before.json`）を取得した。
 - SQ-002: `TextDocument`・`ReadingSpan`、NFKCと削除時の位置伝播、HTMLルビ取得、
   共通・作品YAML辞書、優先順位・競合記録・atomic writeを追加した。
   UtterancePlanはschema 2、Batch manifestはschema 3。旧本文・ID・文番号を保ったまま読める。
@@ -446,10 +446,10 @@ GPU時間や削減率の測定は行っていない。77件の成功は今回の
 
 変更前は外部サービス不要の773件成功・24件スキップを確認した。最初の復元時に未追跡の計画書を
 コピーし忘れたため文書リンク1件が失敗し、計画書を復元した後に文書テスト32件を再実行して成功した。
-変更後の最終結果とコマンドは[検証サマリ](evidence/speech-quality/validation.md)に記録する。
+変更後は外部サービス不要の817件成功・24件スキップ、Ruff指摘0件。
 localhostでモックHTTPサーバーを立てるテストはsandbox外で実行した。
 
-[構造・要求数の記録](evidence/speech-quality/structure.json)は同一24例で次の結果となった。
+構造・要求数の評価（評価スクリプトの`structure.json`出力）は同一24例で次の結果となった。
 LLMは決定的な保留応答を返すモックであり、モデル精度や実課金の測定ではない。
 
 | 条件 | LLM要求数 | 推定入力tokens | 要求出力上限の合計 | 指定読みへの違反 | 話者fixture違反 |
@@ -467,7 +467,7 @@ LLMは決定的な保留応答を返すモックであり、モデル精度や�
 
 利用可能だったVOICEVOX、話者47、同一中立パラメータを固定し、変更前の本文と`off`の読み指定付き本文を
 24例ずつ、計48本合成した。合計音声長は変更前48.149秒、変更後45.525秒。
-測定値は[audio-measurements.json](evidence/speech-quality/audio-measurements.json)に保存した。
+測定値は評価スクリプトの`--audio`出力で再現できる。
 
 | 条件 | 初回合成合計 | 最初の音声までの中央値 | cache再利用合計 | 再利用hit / 要求 |
 |---|---:|---:|---:|---:|

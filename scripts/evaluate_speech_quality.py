@@ -53,7 +53,7 @@ class CountingBackend:
 async def evaluate(output: Path, audio: bool):
     cases = json.loads((ROOT / "tests/fixtures/speech_quality/cases.json").read_text())
     baseline = json.loads(
-        (ROOT / "docs/improvement/evidence/speech-quality/before.json").read_text()
+        (ROOT / "tests/fixtures/speech_quality/before.json").read_text()
     )
     before = {c["id"]: c for c in baseline["cases"]}
     output.mkdir(parents=True, exist_ok=True)
