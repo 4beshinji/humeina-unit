@@ -36,7 +36,7 @@ async def _job_state(provider: VoisonaProvider, job_id: str) -> str:
     timeout = aiohttp.ClientTimeout(total=15)
     async with provider.session.get(
         f"{provider._api_url}/speech-syntheses/{job_id}",
-        auth=provider._auth(),
+        headers=provider._auth_headers(),
         timeout=timeout,
     ) as response:
         assert response.status == 200

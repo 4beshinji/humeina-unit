@@ -63,8 +63,9 @@ class VoiceTuner:
         self.output_dir = Path(output_dir or default_output_dir() / "_tuner").expanduser().resolve()
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-    def _auth(self) -> aiohttp.BasicAuth:
-        return aiohttp.BasicAuth(self.username, self.password)
+    def _auth_headers(self) -> dict[str, str]:
+        """VoiSona REST API の Basic 認証ヘッダー（aiohttp.BasicAuth は非推奨）。"""
+        return {"Authorization": aiohttp.encode_basic_auth(self.username, self.password)}
 
     # --- Low-level synthesis + playback ---
 
@@ -105,7 +106,7 @@ class VoiceTuner:
             async with session.post(
                 f"{self.api_url}/speech-syntheses",
                 json=body,
-                auth=self._auth(),
+                headers=self._auth_headers(),
             ) as resp:
                 if resp.status != 201:
                     detail = await resp.text()
@@ -120,7 +121,7 @@ class VoiceTuner:
                 while elapsed < POLL_TIMEOUT:
                     async with poll_session.get(
                         f"{self.api_url}/speech-syntheses/{uuid}",
-                        auth=self._auth(),
+                        headers=self._auth_headers(),
                     ) as resp2:
                         if resp2.status == 200:
                             status = await resp2.json()

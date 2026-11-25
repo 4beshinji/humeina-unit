@@ -71,8 +71,9 @@ class VoisonaProvider(TTSProvider):
     def healthy(self) -> bool:
         return self._healthy
 
-    def _auth(self) -> aiohttp.BasicAuth:
-        return aiohttp.BasicAuth(self.username, self.password)
+    def _auth_headers(self) -> dict[str, str]:
+        """VoiSona REST API の Basic 認証ヘッダー（aiohttp.BasicAuth は非推奨）。"""
+        return {"Authorization": aiohttp.encode_basic_auth(self.username, self.password)}
 
     @property
     def _api_url(self) -> str:
@@ -175,7 +176,7 @@ class VoisonaProvider(TTSProvider):
             async with self.session.post(
                 f"{self._api_url}/speech-syntheses",
                 json=body,
-                auth=self._auth(),
+                headers=self._auth_headers(),
                 timeout=timeout,
             ) as resp:
                 if resp.status != 201:
@@ -217,7 +218,7 @@ class VoisonaProvider(TTSProvider):
                     timeout = aiohttp.ClientTimeout(total=min(15.0, deadline.remaining()))
                     async with self.session.get(
                         f"{self._api_url}/speech-syntheses/{uuid}",
-                        auth=self._auth(),
+                        headers=self._auth_headers(),
                         timeout=timeout,
                     ) as resp:
                         if resp.status != 200:
@@ -294,7 +295,7 @@ class VoisonaProvider(TTSProvider):
         try:
             timeout = aiohttp.ClientTimeout(total=5)
             async with self.session.get(
-                f"{self._api_url}/voices", auth=self._auth(), timeout=timeout
+                f"{self._api_url}/voices", headers=self._auth_headers(), timeout=timeout
             ) as resp:
                 return resp.status == 200
         except Exception:
@@ -304,7 +305,7 @@ class VoisonaProvider(TTSProvider):
         try:
             timeout = aiohttp.ClientTimeout(total=5)
             async with self.session.get(
-                f"{self._api_url}/voices", auth=self._auth(), timeout=timeout
+                f"{self._api_url}/voices", headers=self._auth_headers(), timeout=timeout
             ) as resp:
                 if resp.status != 200:
                     return []

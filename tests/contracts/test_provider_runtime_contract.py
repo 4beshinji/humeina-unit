@@ -344,3 +344,14 @@ def test_d04_provider_contract_declares_typed_capabilities_and_targets() -> None
     }
 
     assert required <= set(vars(tts_ports))
+
+
+def test_voisona_auth_header_uses_basic_scheme_without_deprecated_basic_auth() -> None:
+    import base64
+
+    provider = VoisonaProvider({"username": "user", "password": "pa:ss"})
+
+    header = provider._auth_headers()["Authorization"]
+
+    assert header.startswith("Basic ")
+    assert base64.b64decode(header.removeprefix("Basic ")).decode() == "user:pa:ss"
