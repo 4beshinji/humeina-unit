@@ -81,7 +81,8 @@
 ### P4 遅延 import
 
 - `reader/engine.py` の exvoice import を `ex_voice=True` 時の遅延 import にする。
-- studio 専用の `bootstrap.create_studio_providers` を CLI composition 側へ移す。
+- `bootstrap.create_studio_providers` は studio を import しない汎用 helper のため移動しない
+  （実測で本体 import 時に読み込まれる周辺 package は exvoice のみだった）。
 - テスト: 別プロセスで `import yomiage.reader.engine` / `import yomiage.server` 後、
   `sys.modules` に `yomiage.{exvoice,news,slack,video,studio}` が無い。
 

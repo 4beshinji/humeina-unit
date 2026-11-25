@@ -7,7 +7,7 @@ import time
 from contextlib import nullcontext
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
 
 from loguru import logger
 
@@ -17,8 +17,6 @@ from ..application.voice_parameters import VoiceResolutionContext
 from ..core.models import SourceRef, Utterance, VoiceIntent
 from ..core.plan import UtterancePlan
 from ..core.text import TextDocument
-from ..exvoice.catalog import normalize_wav
-from ..exvoice.manager import ExVoiceManager
 from ..nlp.classifier import TextClassifier
 from ..nlp.pipeline import NLPAnalyzer
 from ..nlp.scene_analyzer import AnalyzedSegment, SceneAnalyzer
@@ -37,6 +35,10 @@ from .bookmark import Bookmark, BookmarkManager
 from .character_db import CharacterDB
 from .param_mapper import ParamMapper
 from .playback import UtterancePlaybackQueue
+
+if TYPE_CHECKING:
+    # EX voice は ex_voice 有効時だけ構築されるため、実行時には import しない。
+    from ..exvoice.manager import ExVoiceManager
 
 
 class ReadingEngine:
@@ -62,7 +64,7 @@ class ReadingEngine:
         vm_mount: str = "Z:",
         output_dir: str | None = None,
         synth_concurrency: int = 2,
-        ex_voice: ExVoiceManager | None = None,
+        ex_voice: "ExVoiceManager | None" = None,
         synthesis_service: SynthesisService | None = None,
         planning_adapter: ReaderPlanningAdapter | None = None,
         playback_queue: UtterancePlaybackQueue | None = None,
@@ -577,6 +579,8 @@ class ReadingEngine:
 
         async def on_played(item: Utterance, _result: Any) -> None:
             if self.ex_voice:
+                from ..exvoice.catalog import normalize_wav
+
                 for clip in self.ex_voice.pop_clips_for(item.order):
                     if self._stop_event.is_set():
                         break
