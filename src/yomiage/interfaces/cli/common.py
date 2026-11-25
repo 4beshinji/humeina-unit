@@ -12,6 +12,11 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
+import typer
+
+from ...features import MissingExtraError
+from ...features import require_extra as _require_extra
+
 
 def _compat_helper(name: str) -> Callable[..., Any]:
     """``yomiage.cli`` の互換 helper を遅延解決する。"""
@@ -20,6 +25,16 @@ def _compat_helper(name: str) -> Callable[..., Any]:
     if module is None:
         from ... import cli as module
     return getattr(module, name)
+
+
+def require_extra(extra: str, *modules: str) -> None:
+    """optional extra が無ければ導入方法を表示して終了コード 1 で終える。"""
+
+    try:
+        _require_extra(extra, *modules)
+    except MissingExtraError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1) from exc
 
 
 def setup_logging(verbose: bool = False) -> None:

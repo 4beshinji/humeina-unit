@@ -14,8 +14,9 @@ def slack_cmd(
     action: str = typer.Argument("start", help="start / stop"),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
-    """Slack監視."""
+    """Slack監視（optional extra ``slack`` が必要）."""
 
+    common.require_extra("slack", "slack_sdk")
     common.setup_logging(verbose)
     config = common.load_config()
 

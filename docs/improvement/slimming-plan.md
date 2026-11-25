@@ -68,7 +68,8 @@
   `dev` は `all` を含む。
 - `yomiage/features.py` に `require_extra(extra, module)` を置く。不足時は案内付きの
   `MissingExtraError` を送出し、CLI では非 0 終了に変換する。
-- `news` / `slack` コマンドと `--video` / `batch video` の入口で呼ぶ。
+- `news` / `slack` コマンドの入口で呼ぶ。video は Pillow 不在時にタイトルカードだけを skip する既存の
+  劣化動作があり（`video/frame_builder.py`）、本体は ffmpeg に依存するため入口では要求しない。
 - テスト（失敗系）: `find_spec` を `None` にして `yomiage news daily` が非 0 で案内を出す。
 
 ### P3 health と API から周辺機能を外す（BREAKING）

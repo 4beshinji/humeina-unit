@@ -21,8 +21,9 @@ def news(
     ),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
-    """ニュース読み上げ."""
+    """ニュース読み上げ（optional extra ``news`` が必要）."""
 
+    common.require_extra("news", "feedparser")
     common.setup_logging(verbose)
     config = common.load_config()
 
