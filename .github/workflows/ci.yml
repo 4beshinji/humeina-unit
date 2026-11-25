@@ -14,9 +14,6 @@ on:
 permissions:
   contents: read
 
-env:
-  UV_CACHE_DIR: ${{ runner.temp }}/uv-cache
-
 jobs:
   tests:
     name: pytest (unit)
